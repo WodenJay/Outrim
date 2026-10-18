@@ -512,7 +512,8 @@ Layer 5    pipeline     TOML 规则：hook.before_tool / hook.after_tool / proxy
   `CharWindow`（400 头 + 200 尾字符）。
 - **`chain.rs:21 never_worse()`**：`estimate_tokens(output) > estimate_tokens(input)` 就返回 `None`；
   注释诚实说明它"只能拒绝变大和空操作，无法判断方法是否在缩小的同时破坏了内容"。
-  `run_chain_caught` 用 `catch_unwind` 保证 fail-open。
+  `run_chain_caught` 用 `catch_unwind` 保证 fail-open；`run_chain_guarded` = `never_worse(input, run_chain_caught(…))`，
+  panic 与“变大”两条都退回原文。
 - **`text/src/lib.rs:83 estimate_tokens_from_len()`** = `(len / 4.0).ceil()`，`text/` 全 139 行。
 - **`proxy/src/tokenizer.rs`** 是另一套：`tiktoken_rs::o200k_base()` 真实 BPE（`Lazy<Option<CoreBPE>>`，
   词表内嵌无网络），加载失败回退 `text.len().div_ceil(4)`；注释自述 “Anthropic's tokenizer is not public,
