@@ -1084,14 +1084,17 @@ RTK 的 `MethodInfo` 用 `lossy: bool` + `recovery: None|Recall|RetrieveTool|Poi
 
 （全部经 crates.io `/api/v1/crates/<n>/<v>` 核于 2026-10-19。）
 
-**lean-ctx 的许可要按分域读**（`LICENSE_MATRIX.toml`，13+ 条 `[[rules]]`）：
+**lean-ctx 的许可要按分域读**（`LICENSE_MATRIX.toml`，**19 条** `[[rules]]`，order 1–19）：
 文件头 `distribution = "apache-host"`、`authority = "LICENSE.md"`、`pre_v4_apache_cut = "b4429b80…"`。
-规则 1 `private-service`、规则 2 `commercial-source`、规则 3 `commercial-license-text`
-都带 `forbidden_public = true`；规则 2 覆盖 `rust/src/commercial/**`、`rust/src/team/**`、
-`rust/src/enterprise/**`、`commercial/**`、`enterprise/**`。
+带 `forbidden_public = true` 的是 **6 条**：order 1 `private-service`、order 2 `commercial-source`、
+order 3 `commercial-license-text`、order 14 `free-runtime-license-draft`、order 16 `enterprise-license`、
+order 17 `private-runtime-build`。规则 2 覆盖 `rust/src/commercial/**`、`rust/src/team/**`、
+`rust/src/enterprise/**`、`commercial/**`、`enterprise/**`；
+规则 1 覆盖 `rust/src/core/license/**`、`rust/src/core/licensing/keygen.rs`、`rust/src/cli/license_cmd.rs`、
+`rust/src/core/billing/success_fee.rs`、`rust/src/core/billing/stripe_invoice.rs`。
 规则 11 `public-trust-core-runtime`（`license = "apache"`）覆盖 `rust/**`，但 `exclude` 里除了
-规则 1/2 的路径，还排掉了 `rust/src/core/billing/success_fee.rs`、`rust/src/core/billing/stripe_invoice.rs`、
-`rust/tests/**`、`rust/examples/**`、`rust/crates/lean-ctx-sdk/**`——后三者由规则 8/9 各自以 apache 覆盖。
+规则 1/2 的那些路径，还排掉了 `rust/tests/**`、`rust/examples/**`、`rust/crates/lean-ctx-sdk/**`
+——后三者由规则 8 `tests-and-examples` / 规则 9 `sdk-and-protocol` 各自以 apache 覆盖。
 
 → 引用 lean-ctx 的 `json_crush.rs`、`ast_prune.rs`、`compressor.rs`（都在 `rust/src/core/` 且不在任何
 排除列表里）属 apache 域；但**引用前要按文件逐个对 `LICENSE_MATRIX.toml` 的 include/exclude 核**，
@@ -1112,8 +1115,9 @@ RTK 的 `MethodInfo` 用 `lossy: bool` + `recovery: None|Recall|RetrieveTool|Poi
 | 相邻重复折叠 | L2 | 日志/构建 | 丢"位置重复"，插入 `[xN]` 行 | 计数、仅相邻、仅非空、run≥3 | 跨距离折叠改因果 | O(n)/O(1) | 手写 | 极低 | — |
 | 模板折叠（token 形状门） | L2 | 日志 | 丢变量值 | 只折形状像 id 的 token；`[×N]`+样本 | 形状门是意外（冒号）；`ls` 丢 4.4% 文件名、73 个目录折成 1 条 | O(n)/O(unique) | 手写 ~240 行 | 低 | Apache-2.0 |
 | Drain 模板树 | L2 | 日志 | 位置化通配 | `simSeq ≥ st`、`max_clusters` | 空行/超长行报错；堆栈帧可能被固化成模板；不保留原文 | 0.9–1.8M 行/s / O(模板) | `drain3 0.3` | 中 | Apache-2.0 |
-| 分级选择 + 全局预算（Kneedle） | L3 | 构建/测试/search | 丢未选中行 | 首末 + 高分 + 上下文 + 上限 | 未重排时真实 cargo 错误只留 3% 信号词元；重排后 100%；对前缀重复型内容给 99%（几乎不压） | O(n log n)/O(n) | lm-resizer `adaptive_sizer.rs`（`flate2`+`md-5`） | 中 | Apache-2.0 |
-| 失败行追回门 | 保护层 | 全部 | 追回若干行 | 原序 + 计数 | 词表覆盖不到的失败形式 | O(n)/O(n) | lm-resizer `diagnostic_gate.rs` | 低 | Apache-2.0 |
+| 分级选择 + 全局预算 | L3 | 构建/测试 | 丢未选中行 | 行级 `LogLevel` 打分（error 1.0 / warn 0.5 / info·unknown 0.1 / debug 0.05 / trace 0.02，栈 +0.3、汇总行 +0.4，封顶 1.0）+ `max_total_lines: 100` | 分数表只看日志级别，不看是否含 `path:line`；源日志无级别标记时全部落到 0.1 | O(n log n)/O(n) | lm-resizer `log_compressor.rs` | 中 | Apache-2.0 |
+| Kneedle 预算选择 | L3 | search/多文件结果 | 预算内取舍 | 拐点检测 + 多样性下限 + zlib 验证 | 未重排时真实 cargo 错误只留 3% 信号词元；重排后 100%；对前缀重复型内容给 99%（几乎不压） | O(n log n)/O(n) | lm-resizer `adaptive_sizer.rs`（`flate2`+`md-5`） | 中 | Apache-2.0 |
+| 失败行追回门 | 保护层 | 全部 | 追回若干行 | `FAILURE_SIGNAL` 正则 + 原序重插 + 计数 | 词表覆盖不到的失败形式；只追回被删的，不改输出内部 | O(n)/O(n) | lm-resizer `diagnostic_gate.rs` | 低 | Apache-2.0 |
 | grep 按文件分组 | L2 | search | 改排版 **+ trim/空行有损** | 任一行不可解析即整块放行 | 短行/单条变大；YAML 缩进被抹；单条 +42% | O(n)/O(hits) | 手写 ~120 行 | 低 | — |
 | `rtk grep` 每文件上限 25 | L3 | search | **丢命中** | 超出 tee 到文件 + `+N more` | 与"分组无损"混淆 | O(n)/O(1) | 手写 | 极低 | — |
 | 路径前缀折叠 | L2 | search/glob | 丢重复前缀 | ≥2 文件 + 公共目录 + 无控制字符 | 绝对路径根 `/` 无收益 | O(n)/O(n) | 手写 ~50 行 | 极低 | — |
