@@ -10,21 +10,25 @@
 | **v2** | `2.0.32`（CHANGELOG `## v2.0.32 — 2026-10-16`） | `843a6c514e606b436a7fe713422ace0a93ad3d61`（tag `v2.0.32`），工作树 HEAD `501b15af26915ba52682e20e220e7e137e89e92f` | `C:/Users/wudon/AppData/Local/Temp/oc-src/opencode` |
 | **v1** | `1.19.3` | `e3c4eb242585dcd77be1a867391b7c25fd47ce52` | `C:/Users/wudon/AppData/Local/Temp/oc-src/opencode-v1` |
 
-`origin` 为 `github.com/sst/opencode`，README 已指向 `github.com/anomalyco/opencode`；两个仓库对同一 commit 的 `blob` 链接都返回 200，本报告统一用 `anomalyco/opencode` 的 permalink。v2 依赖 `effect@4.0.1`。本机实际安装的 CLI 是 **v2.0.26**（`opencode --version`），比快照旧 6 个 patch，凡涉及 CLI 行为处都标注了两者差异。
+`origin` 为 `github.com/sst/opencode`，README 已指向 `github.com/anomalyco/opencode`；两个仓库对同一 commit 的 `blob` 链接都返回 200，本报告统一用 `anomalyco/opencode` 的 permalink。v2 依赖 `effect@4.0.1`。
+
+**[事实] 快照口径**：本地工作树 HEAD 是 tag 之后的 `501b15af2`（仅一条 README 文档提交）。本报告引用到的关键文件里，`packages/core/src/tool.ts`、`codemode/tool.ts`、`session/runner/step.ts`、`tool-output.ts`、`plugin/src/effect/tool.ts`、`shell/result.ts`、`tool/plugin/{shell,read,grep,webfetch}.ts`、`tool/mcp.ts`、`permission.ts`、`file-access.ts`、`tool/runtime.ts`、`session/model-request.ts`、`config/plugin/source.ts`、`plugin/module.ts`、`cli/.../plugin/add.ts` 在 tag→HEAD 之间**逐字节相同**（`git diff --quiet` 校验过），故行号对两份都成立。**唯一有差异的是 `packages/core/src/shell.ts`**（HEAD 改了超时/结束竞态的实现，`EXITED_LIMIT`/`RETENTION`/`DIRECTORY`/`outputDir`/`result()` 的截断与提示逻辑本身未变，仅行号下移 8 行）；引用该文件时本报告同时给出 tag 行号（permalink 用 tag）与 HEAD 行号。
+
+本机实际安装的 CLI 是 **v2.0.26**（`opencode --version`）。本报告不对 26 与 32 的差异下结论：只做过 `--help`/`--version` 观察，**未** 逐 commit diff，也不据 CHANGELOG 推断兼容性。
 
 ---
 
 ## 0. 结论摘要
 
 - **[事实]** v2 提供一等公民的 `ctx.tool.hook("execute.after", …)`，位置在工具执行完成、`Tool.Success` 持久化之前；事件里 `result`（`{output?, content?, metadata?}`）与 `error`（`Tool.Error`）都是**可整体替换的裸字段**，`status: "completed" | "error"` 是判别式。这是修改"首次入上下文"的官方入口。
-- **[事实]** 但 v2 的**内置工具在 `execute.after` 之前就已经自己截断过一轮**：`shell` 尾部截断（2000 行 / 50 KiB）、`read` 头部截断（2000 行 / 50 KiB + 单行 2000 字符）、`grep`/`glob` 条数截断（默认 100）。钩子拿到的**不是原文**。通用 `ToolOutput.truncate`（同为 2000 行 / 50 KiB）在钩子**之后**才跑，所以钩子看到的上限 = 工具自身上限，而非 50 KiB。
-- **[事实]** v1 结论相同但实现不同：`Truncate.output` 在 `Tool.Def.execute` 内部完成，v1 的 `tool.execute.after` 拿到的也是**已截断**字符串（差别是 v1 的提示是一段约 40 token 的免责声明，"…Do NOT read the full file yourself - delegate to save context."，正是用户明确否掉的形态）。**两代都没有"原文钩子"，这是平台约束，不是版本回退。**
-- **[事实]** 原文出口：`shell` 有按 shell 持久化的 `.out` 文件（7 天保留）+ `metadata.truncated` + 文本尾部提示；`mcp-resource`/任意工具溢出到通用 `tool-output/tool_<id>` 文件（7 天保留）但**没有任何消费者读取该路径**，只有模型能看到；`read` 可 `offset` 续读；`grep`/`glob`/`webfetch`/`websearch` **没有原文出口**，只能重跑。
-- **[事实]** 覆盖范围：内置工具、MCP 工具、插件注册的自定义工具全部经过同一个 `execute.after`。例外有两处：① Code Mode（`execute`）里的子调用，`event.tool` 是**子工具名**（钩子照常触发，但外层 `execute` 的结果是另一条独立事件）；② **后台 shell / 后台 subagent 的输出通过 `sessions.synthetic()` 以合成消息进入会话，完全绕过 `execute.after`**。
-- **[事实]** 自动运行：`plugins` 数组里的 npm/Git 包会在激活时 `npm.add` 安装；`opencode plugin add <npm|git spec>` 非交互地把 spec 写进 `~/.config/opencode/opencode.json(c)`（jsonc 保留注释、0600、tmp+rename 原子写）。本地目录 plugin 只能手写配置项（CLI 拒绝本地路径），且**不能**用"插件的 `node_modules` 自带 `effect`"的方式打包。
-- **[事实]** 钩子运行在工具调用的 fiber 内、被 `Effect.uninterruptibleMask(restore => …)` 包住并在 `Effect.forkScoped` 里执行；钩子耗时直接推迟该次 `Tool.Success` 的发布时间，不同工具调用之间相互独立。钩子抛异常（defect）会让该 fiber 以 die 结束，`classifyToolExits` 会把它记为本轮失败原因——**不是静默降级**。
-- **[建议]** 薄 adapter → Rust 的边界：TS 侧只做"注册 `execute.after` + 构造请求 + 回填 `event.result.content` + 失败静默放行"；Rust 侧做压缩与缓存。传输用子进程 stdin/stdout（NDJSON），不要用 argv 传正文。原文缓存写在**项目内**（如 `.outrim/cache/`），可让内置 `read` 直接以 internal 路径读取，免除 `external_directory` 与额外配置。
-- **[建议]** 极短一行位置提示完全可行，且不需要免责声明：v2 的 `read` 本来就会输出 `Read file <path>, lines a-b` 头 + `[Output truncated. Continue reading with offset: N]`，模型对"路径 + 行号 + 续读"这一形态已有先验。Outrim 只需产出同构的一行，其余交给既有 `read`。
+- **[事实]** "钩子看到的上限"**按工具而异，不能一律说成 50 KiB**。有工具内部截断的只有：`shell`（尾部 2000 行 / 50 KiB）、`read`（头部 2000 行 / 50 KiB + 单行 2000 字符）、`grep`/`glob`（条数，默认 100）、`webfetch`（响应体 5 MiB）。**上述之外——MCP server tool、插件注册的自定义工具、`websearch`、`mcp-resource`——工具自身不截断**，钩子里的 `content` 可以**超过 50 KiB**。通用 `ToolOutput.truncate`（2000 行 / 50 KiB）是在钩子**之后**才跑的，所以 **50 KiB 不是钩子的上界**；它是对"钩子之后"那份结果的约束（MCP 另有 16 MiB 的 stdio 帧上限，见 §4.3）。
+- **[事实]** v1 的内置工具同样在 `Tool.execute` 内部就截断（`Truncate.output`），所以 v1 的 `tool.execute.after` 拿到的也是截断后的字符串。仅就此点而言两代相同；v1 的提示还带一段长免责声明（"…Do NOT read the full file yourself - delegate to save context."），正是用户明确否掉的形态。**本报告不比较两代的其他差异。**
+- **[事实]** 原文出口**都不在钩子里**：`shell` 的完整输出落在按 shell 持久化的 `.out` 文件（7 天 + 最近 25 条已退出记录），但路径只在 `content` 文本尾部与 `shellID` 里；通用溢出文件 `tool-output/tool_<id>` 是 `ToolOutput.truncate` **在钩子之后**才写的，**若 Outrim 先把内容压到限额以下，这个文件根本不会被创建**——所以不能当成 after 阶段可复用的原文路径。`read` 可 `offset` 续读；`grep`/`glob` 超限部分进程内无副本；`webfetch`/`websearch` 只有工具自身上限，没有落盘副本。→ **唯一可靠的原文来源是自己把钩子实际收到的输入落盘。**
+- **[事实]** 覆盖范围：内置工具、MCP 工具、插件注册的自定义工具全部经过同一个 `execute.after`。例外有三处：① 后台 shell / 后台 subagent 的输出通过 `sessions.synthetic()` 以合成消息进入会话，绕过 `execute.after`；② provider hosted 工具；③ 未进入 `Tool.execute` 的失败。**另外 Code Mode（`execute`）的子调用虽然也触发钩子，但压子工具的 `content` 不等于给模型省 token**（见 §4.2）。
+- **[事实]** 自动运行：`plugins` 数组里的 npm/Git 包会在激活时 `npm.add` 安装；`opencode plugin add <npm|git spec>` 非交互地把 spec 写进 `~/.config/opencode/opencode.json(c)`（jsonc 保留注释、tmp+rename 原子写、Unix 上 `0o600`）。**这是推荐路径**；只有"本地目录/文件"这种 spec 形态 CLI 才拒绝，需要直接改 jsonc。插件不能用自带 `node_modules` 里的 `effect` 打包。
+- **[事实]** 钩子在每次工具调用的 fiber 内、被 `Effect.uninterruptibleMask(restore => …)` 包住 `restore` 区里执行，并通过 `Effect.forkScoped` 并发；钩子耗时推迟该次 `Tool.Success` 的发布时间。**并发只是逻辑上不互等**——它们仍共享同一个进程的 CPU、事件循环与你说过的任何队列，见 §6.3。钩子抛异常（defect）会让该 fiber 以 die 结束，`classifyToolExits` 记为本轮失败原因，**不是静默降级**。
+- **[建议]** 薄 adapter → Rust 的边界：TS 侧只做"注册 `execute.after` + 构造请求 + 回填 `event.result.content` + 失败 fail-open（但**不吞用户取消/中断**）"；Rust 侧做压缩与缓存。传输用子进程 stdin/stdout（NDJSON），不要用 argv 传正文。原文缓存位置是**待定权衡**（项目内 / 系统 tmp / 宿主 data 各有代价，见 §5.2），本报告不裁定。
+- **[建议]** 极短一行位置提示形态上可行：v2 的 `read` 本来就会输出 `Read file <path>, lines a-b` 头 + `[Output truncated. Continue reading with offset: N]`，模型对"路径 + 行号 + 续读"已有先验。但**"能指回原文"与"能指回当前磁盘文件"不等价**（见 §5.2）。
 
 ---
 
@@ -45,7 +49,7 @@
 
 **[事实]** 兼容层的存在说明现实世界仍以 v1 形态为主：本机 `C:/Users/wudon/.config/opencode/opencode.json` 就是 `plugin: ["superpowers@git+https://github.com/obra/superpowers.git"]` + 空 `plugins/` 目录 + `@opencode-ai/plugin@1.14.23` 依赖。
 
-**[建议]** Outrim 的 OpenCode 集成只面向 v2 写一套 adapter；v1 若要支持，需要第二套 adapter（钩子名、导出形状、工具注册方式全不同），成本约为 v2 的 0.7 倍，不建议首版做。是否支持 v1，属于产品决策，本研究不作裁决。
+**[建议]** Outrim 的 OpenCode 集成只面向 v2 写一套 adapter；v1 若要支持，需要第二套 adapter（钩子名、导出形状、工具注册方式全不同）。**本报告不估算 v1 的额外成本**（无任何测量依据）。是否支持 v1 属于产品决策，本研究不作裁决。
 
 ---
 
@@ -142,7 +146,7 @@ return { ...(output===undefined?{}:{output: afterEvent.result.output}),
 
 → **结论：`content` 是唯一对模型可见的载体；钩子改完的 `content` 既是模型看到的，也是会话库里存的。** 不存在"库里存原文、模型看压缩版"的双轨。
 
-**[建议]** 由此推出两条硬性实现约束：① 绝不能把 `content` 置成空数组（见 §2.5，不会报错，而是静默变成 `undefined` 文本）；② 若同时改 `content` 与 `output`，两者语义要一致，否则 `output` 只对 Code Mode 的 JS 返回值有意义，却会在调试时误导人。
+**[建议]** 由此推出两条硬性实现约束：① 绝不能把 `content` 置成空数组却不补文本：`output` 缺失时会变成字面 `undefined`，`output` 存在时会把结构化 output 序列化后原样送出（见 §2.5）；② 若同时改 `content` 与 `output`，两者语义要一致——`output` 是 Code Mode 脚本看到的程序数据，不应为了压缩而改它（见 §4.2）。
 
 ### 2.4 Effect API 与 Promise API
 
@@ -154,7 +158,7 @@ return { ...(output===undefined?{}:{output: afterEvent.result.output}),
 
 **[建议]** 用 Effect 版：`ctx.tool.hook` 的 `Scope` 语义天然对应"插件卸载即摘钩"，Promise 版要靠 cleanup 函数手工兜。
 
-### 2.5 陷阱：空 `content` 不会报错，会静默变成 `undefined`
+### 2.5 陷阱：空 `content` 不会报错，而会回落到 `stringify(output)`
 
 **[事实+实测]** `normalizeContent`（`packages/core/src/tool/runtime.ts:261-266`）的兜底分支：
 
@@ -166,17 +170,27 @@ export const normalizeContent = (value, output?) => {
 }
 ```
 
-把 `event.result.content` 设成 `[]` 或 `undefined`，结果不是报错，而是一条字面文本 **`undefined`**。本地按同一段逻辑跑过：`normalizeContent([], undefined)` → `[{"type":"text","text":"undefined"}]`；`normalizeContent([], {a:1})` → `[{"type":"text","text":"{\"a\":1}"}]`。
+把 `event.result.content` 设成 `[]` 或 `undefined` 时，`normalizeContent` 会回落到 `stringify(output)`：
 
-→ **后果**：压缩逻辑一旦"把所有文本删了但忘了补提示行"，模型会看到一条 `undefined`，会话不失败、日志不报警。比抛异常更危险。
+- **`output` 也缺失** → `stringify(undefined)` 产生字面文本 **`undefined`**（本地验证：`normalizeContent([], undefined)` → `[{"type":"text","text":"undefined"}]`）。
+- **`output` 存在** → 得到 `JSON.stringify(output)`（本地验证：`normalizeContent([], {a:1})` → `[{"type":"text","text":"{\"a\":1}"}]`），**不是** `undefined`。
 
-**[建议]** adapter 出口加断言：`if (!Array.isArray(content) || content.length === 0) 保持原结果`；并为"压缩后为空"的退化路径写单测。
+→ **后果**：压缩逻辑一旦"把所有文本删了但忘了补提示行"，模型会看到一条 `undefined`（或一段未经压缩的 JSON）——**会话不失败、日志不报警**，比抛异常更难发现。对于带 `output` schema 的工具（MCP、自定义工具），这意味着"压了 content 却没补文本"会把**完整结构化 output 序列化后原样送给模型**，压缩彻底失效。
+
+**[建议]** adapter 出口加断言，但**别写成只允许数组**：
+
+```ts
+// 仅适用于 Outrim 自己允诺的"数组协议"分支；若允许回写 string，需同时接受非空 string
+if (content === undefined || (Array.isArray(content) && content.length === 0)) 保持原结果
+```
+
+并为"压缩后为空"的退化路径（含 `output` 存在与不存在两种）写单测。
 
 ---
 
 ## 3. 关键问题：`execute.after` 拿到的是原文还是已截断？
 
-**答案：已截断，且截断发生在工具内部、钩子之前。** 下面给出逐条链路的源码证据。
+**答案：要分工具看。** 有内部截断的工具（`shell`/`read`/`grep`/`glob`/`webfetch`）在钩子前已处于截断态；MCP、插件自定义工具、`websearch`、`mcp-resource` 在钩子里仍可超过 50 KiB。通用的 50 KiB 截断发生在钩子**之后**。下面给出逐条源码证据。
 
 ### 3.1 通用后置截断（钩子之后）
 
@@ -194,28 +208,33 @@ export const normalizeContent = (value, output?) => {
 
 **[事实]** 该文件可被配置放宽：`packages/core/src/config/plugin/tool-output.ts` 把 `opencode.json` 的 `tool_output.max_lines / max_bytes` 映射到 `ToolOutput.transform(editor.configure(...))`（文档 `config.mdx:307-313` 给了 `{"max_lines":2000,"max_bytes":51200}` 的例子）。**同一个配置值也决定了 shell 自己的截断阈值**（见 3.2），改它会同时影响两处。
 
-### 3.2 各内置工具在钩子前自己截断（核心事实）
+### 3.2 钩子前是否已截断，逐工具区分（核心事实）
 
-| 工具 | 钩子前截断方式 | 阈值 | `metadata` | 原文出口 |
-|---|---|---|---|---|
-| `shell` | **尾部**（保留最后 N 行） | 2000 行 / 50 KiB（读 `tool_output` 配置） | `{status, truncated, exit?, signal?, timeout?, shellID?}` | `global.data/shell/<projectID>/<shellID>.out`（7 天）+ `Shell.output(id,{cursor,limit})` |
-| `read` | **头部**（保留前 N 行） | 2000 行 / 50 KiB，单行 2000 字符截断 | `{truncated}`（媒体文件恒 `false`） | 文件本身，`offset`/`limit` 续读 |
-| `grep` | 条数 | 默认 100 匹配行（`limit+1` 探测） | `{matches, truncated}` | **无**，只能重跑或收窄参数 |
-| `glob` | 条数 | 默认 100 条 | `{count, truncated}` | **无**，重跑 |
-| `webfetch` | 响应体 | 5 MiB | `{contentType}` | **无** |
-| `websearch` | — | 取决于 provider | `{provider}` | **无** |
-| `edit`/`write`/`patch` | — | — | `{files: [...]}` | 产物即文件 |
-| `question` | — | — | `{answers}` | — |
-| `skill` | — | — | `{name, directory}` | — |
-| `subagent`（后台） | 只回占位串 | — | `{sessionID, status}` | 子会话 |
-| `mcp-resource` | 走通用截断 | 2000 行 / 50 KiB | 通用 `{truncated, outputPath}` | `tool-output/` 文件 |
-| MCP server tool | 走通用截断 | 同上 | 同上 | `tool-output/` 文件 |
+**关键区分**：`ToolOutput.truncate` 是在 `execute.after` **之后**才执行的（`step.ts:118-133`）。所以"钩子看到的量"取决于**工具自己有没有内部截断**，不能一概而论：
 
-（逐条依据：`packages/core/src/tool/plugin/{shell,read,grep,glob,webfetch,websearch,edit,write,patch,question,skill,subagent,mcp-resource}.ts`，`packages/core/src/tool/read-filesystem.ts`，`packages/core/src/shell.ts`。）
+| 工具 | 工具内部截断（在钩子**之前**） | 内部阈值 | 钩子可见上限 | `metadata` | 原文出口 |
+|---|---|---|---|---|---|
+| `shell` | **尾部**（保留最后 N 行） | 2000 行 / 50 KiB（读 `tool_output` 配置） | 2000 行 / 50 KiB | `{status, truncated, exit?, signal?, timeout?, shellID?}` | `global.data/shell/<projectID>/<shellID>.out`（7 天 + 最近 25 条）+ `Shell.output(id,{cursor,limit})` |
+| `read` | **头部**（保留前 N 行）+ 单行截断 | 2000 行 / 50 KiB，单行 2000 字符 | 2000 行 / 50 KiB | `{truncated}`（媒体文件恒 `false`） | **当前磁盘文件**，`offset`/`limit` 续读（≠ 当时的原文） |
+| `grep` | 条数 | 默认 100 匹配行（`limit+1` 探测） | 100 条 | `{matches, truncated}` | **无**，只能重跑或收窄参数 |
+| `glob` | 条数 | 默认 100 条 | 100 条 | `{count, truncated}` | **无**，重跑 |
+| `webfetch` | 响应体字节 | 5 MiB | 5 MiB | `{contentType}` | **无**（工具内部上限，**不是**后置通用落盘） |
+| `websearch` | **无内部截断** | — | 仅 provider 返回量 | `{provider}` | **无**（若超 50 KiB，溢出文件在钩子后才产生） |
+| `mcp-resource` | **无内部截断** | — | 不受 50 KiB 限制 | 通用 `{truncated, outputPath}`（**钩子之后**才产生） | 仅后置溢出文件，且**压小后不会创建** |
+| MCP server tool | **无内部截断** | — | 不受 50 KiB 限制（受 16 MiB stdio 帧上限） | 同上 | 同 |
+| 插件自定义工具 | **无内部截断**（除非自己截） | — | 不受 50 KiB 限制 | 同上 | 同 |
+| `edit`/`write`/`patch` | — | — | — | `{files: [...]}` | 产物即文件 |
+| `question` | — | — | — | `{answers}` | — |
+| `skill` | — | — | — | `{name, directory}` | — |
+| `subagent`（后台） | 只回占位串 | — | — | `{sessionID, status}` | 子会话 |
+
+（逐条依据：`packages/core/src/tool/plugin/{shell,read,grep,glob,webfetch,websearch,edit,write,patch,question,skill,subagent,mcp-resource}.ts`，`packages/core/src/tool/mcp.ts`，`packages/core/src/tool/read-filesystem.ts`，`packages/core/src/shell.ts`，`packages/core/src/tool-output.ts`。）
+
+→ **"钩子上限 = 50 KiB" 是错的**。对 `shell`/`read`/`grep`/`glob`/`webfetch` 成立（它们自己截），对 MCP/自定义/`websearch`/`mcp-resource` **不成立**：这些工具的 `content` 在钩子里可以是任意大小，50 KiB 是它们**经过**钩子之后才被通用截断的。
 
 #### `shell`（最重要的一条）
 
-**[事实]** 采集逻辑在 `packages/core/src/shell.ts:236-260`：
+**[事实]** 采集逻辑在 `packages/core/src/shell.ts:228-252`（tag `843a6c5` 行号；HEAD `501b15a` 为 `:236-260`，代码逐字相同）：
 
 ```ts
 const limits = Config.latest(config.entries(), "tool_output")
@@ -257,6 +276,10 @@ const page   = yield* output(id, { cursor: Math.max(0, latest.size - maxBytes), 
 
 → **这两个工具的超限内容在进程内没有任何原文副本**（既无文件也无结构化全量），唯一恢复手段是带着更窄的 `path`/`include`/`pattern` 重跑。
 
+#### `webfetch` / `websearch`
+
+**[事实]** 两者的"无出口"性质不同：`webfetch` 有**工具内部**的 5 MiB 响应体上限（`packages/core/src/tool/html-markdown.ts:50` 的 `MAX_MARKDOWN_BYTES`，`webfetch.ts:13` 的 `MAX_RESPONSE_BYTES` 引用同一值）；`websearch` **没有工具内部上限**，完全取决于 provider 返回多少。两者都**没有**原文落盘——但若是它们超过 50 KiB，那是 `ToolOutput.truncate` **过了钩子之后**才写的溢出文件，不在钩子视野内。
+
 ### 3.3 v1 对照（结论相同、提示更啰嗦）
 
 **[事实]** v1 `packages/opencode/src/session/tools.ts:96-125`：`plugin.trigger("tool.execute.before", …)` → `item.execute(args, ctx)` → 给 attachments 补 id → `output = {...result}` → `plugin.trigger("tool.execute.after", …, output)` → abort 时仍 `completeToolCall` 记录结果。
@@ -266,13 +289,14 @@ const page   = yield* output(id, { cursor: Math.max(0, latest.size - maxBytes), 
 > `The tool call succeeded but the output was truncated. Full output saved to: <file>`
 > `Use the Task tool to have explore agent process this file with Grep and Read (with offset/limit). Do NOT read the full file yourself - delegate to save context.`
 
-→ 这就是用户明确否掉的"免责声明式提示"。**Outrim 的提示要比它短一个数量级。**
+→ 这就是用户明确否掉的"免责声明式提示"。**Outrim 的提示应摒弃这类免责声明**（具体长度未测，本报告不给倍数估算）。
 
-### 3.4 由此得出的三条设计事实
+### 3.4 由此得出的四条设计事实
 
-1. **钩子无法突破工具自身上限**（shell 除外——它有文件；read 除外——它能续读）。想要 >50 KiB 原文，只有两条路：自己接管该工具的 `execute`（`editor.update(id, t => …)`），或按 §5 自己缓存钩子能看到的内容。
-2. **`metadata.truncated` 是一把总开关**。设了它就跳过通用截断；这对 Outrim 有用（自己压缩后不希望再被截一次），也很危险（忘了设就可能二次截断已压缩内容，虽然压缩后通常不会再超限）。
-3. **`shell` 的完整输出天然可复用**，路径就在文本里；`read` 的"原文"就是磁盘文件；其余工具没有原文出口。
+1. **工具内部截断是硬上限，自己缓存 after 看到的输入不能突破它**。对 `shell`/`read`/`grep`/`glob`/`webfetch` 而言，钩子看到的已经是工具裁过的；把这份（已截）内容写进 Outrim 缓存，存到的也只是同一份截断文本。想拿更多只有两条路：自己接管该工具的 `execute`（但**接管同样拿不到该工具内部未截断的中间值**，除非重写其采集逻辑），或改宿主配置把内部阈值调大（`tool_output.max_lines/max_bytes` 只影响 `shell` 与通用截断，不影响 `grep`/`glob`/`webfetch` 的常量）。
+2. **对上表后半段（MCP、自定义工具、`websearch`、`mcp-resource`）自己落盘钩子看到的 `content` 才有价值**：那是这些工具唯一一次原文经过的位置。
+3. **`metadata.truncated` 是通用截断的总开关**（`:68` 第一行 `if (result.metadata?.truncated !== undefined) return result`）——设任何值（含 `false`）都会跳过通用截断，这是源码事实。**但不要把它列为无条件做法**：首要原则是**保留工具原有的 `metadata` 语义**（工具原本没这个键就不要凭空加）；只有在压缩后输出确实已落在安全尺寸内、且不改变原有截断语义时才可能涉及，**绝不能用来绕过宿主的安全上限**（例如把超大 MCP 结果原样放行）。
+4. **`shell` 的 `.out` 文件与 `read` 的磁盘文件都存在，但都不是"钩子那一刻的原文"的直接句柄**：`.out` 是 shell 原始输出的可靠副本（只受 7 天/25 条寿命约束）；`read` 的磁盘文件随时会被后续编辑改写，且 `read` 自身的 2000 行/50 KiB 窗口与单行 2000 字符截断已丢失信息（见 §5.2）。
 
 ---
 
@@ -288,21 +312,31 @@ const page   = yield* output(id, { cursor: Math.max(0, latest.size - maxBytes), 
 
 **[事实]** `packages/core/src/tool.ts:255-275` 的路由顺序：`beforeExecute` → 若 `name === "execute"` 且 codemode 可用则走 `CodeModeTool` → 否则 `direct.get(name)` → 否则 `Tool.Error("No tool named \"<name>\" is currently available…")`。
 
-**[事实]** `packages/core/src/codemode/tool.ts:60-140`：`execute` 的 `execute()` 通过注入的 `executeTool(name, tool, input, context)` 逐个调用子工具，**每个子调用都完整走一遍 `execute.before` / `execute.after`**（`event.tool` 是子工具名，`event.id` 是同一个 `Tool.CallID`）；子结果的处理是：
+**[事实]** `packages/core/src/codemode/tool.ts:94-108`：`execute` 的 `execute()` 通过注入的 `executeTool(name, tool, input, context)` 逐个调用子工具，**每个子调用都完整走一遍 `execute.before` / `execute.after`**（`event.tool` 是子工具名，`event.id` 是同一个 `Tool.CallID`）；子结果的处理是：
 
 ```ts
-content = typeof executed.content === "string" ? [{type:"text",text:executed.content}] : (executed.content ?? [])
-files  += outputFiles(content)                                  // file 项抽出来，不进模型正文
-返回 JS 值：executed.output ?? (text === "" ? null : text)
+const content = typeof executed.content === "string"
+  ? [{ type: "text", text: executed.content }]
+  : (executed.content ?? [])
+const outputFileParts = outputFiles(content)          // file 项抽出来，不进模型正文
+if (executed.output !== undefined) return executed.output        // ← 关键：先用 output，不看 content
+const text = content.flatMap(p => p.type === "text" ? [p.text] : []).join("\n")
+return text === "" ? null : text
 ```
 
-最终 `content = [{type:"text", text: formatResult(result)}, ...files as data: URL]`，`metadata = {toolCalls, error?}`。`formatResult` = `output` + `Warnings:` + `Logs:`。
+最终 `content = [{type:"text", text: formatResult(result)}, ...files as data: URL]`（`:120-130`），`metadata = {toolCalls, error?}`。`formatResult`（`:310-322`）= `formatValue(result.value)` + `Warnings:` + `Logs:`，而 `formatValue` 对非字符串直接 `JSON.stringify(value, null, 2)`。
 
-→ **好消息**：压缩在子工具粒度上天然生效，不需要理解 JS。**注意点**：① 子工具的 `file` 项会被提升到外层 `files`，Outrim 若把压缩后的内容放进 `content` 的文本项，位置是对的；② 外层 `execute` 自己还会再触发一次 `execute.after`（`event.tool === "execute"`），必须幂等或显式跳过；③ 同一 `Tool.CallID` 下可能有多个子调用，Outrim 若用 callID 做缓存键会撞车，需用 `(callID, tool, 序号)`。
+→ **重大语义：只压子工具的 `content` 不保证能省模型 token。** 因为 `if (executed.output !== undefined) return executed.output` 在 `content` **之前**：带 `output` schema 的工具（MCP 服务器给了 `outputSchema` 的、插件自己声明了 `output` 的）会把**未修改的结构化 `output`** 交给 JS；JS 若把该值 `return` 出去，外层 `formatValue` 会 `JSON.stringify` 出完整原文放进外层 `execute` 的 `content`。此时子调用被压小了，模型看到的外层结果仍是大的。
+
+→ **反过来压或删 `output` 也不行**：那是脚本内的程序数据，改它等于篡改工具返回值，会破坏依赖该结构的脚本逻辑与 `outputSchema` 语义。**不应以压缩为目的修改 `output`。**
+
+→ **正确的边界候选**（**需验证，本报告不下结论**）：保留 `output` 原值（程序数据不动），只压子调用 `content`；真正想省 token 得在**外层 `execute` 的 `content`** 上动手（那一层才是模型可见的最终输出），但需要先验证：① 子调用的 `execute.after` 是否真的会在会话里产生独立的模型可见消息（本报告**未验证**；可观测的是 `event.id` 相同）；② 同一 `CallID` 下多次子调用是否都各自进 LLM（**不能默认成立**）。
 
 **[事实]** 哪些工具走 Code Mode：`read/shell/grep/glob/webfetch/websearch/edit/write/patch/question/skill/subagent` 都是 `options: {codemode: false}`（直连）；`opencode.*` 元工具与 `mcp-resource` 是 `{namespace:"opencode", codemode:true}`。MCP 工具默认 codemode（`packages/core/src/mcp/index.ts:305-310` 把 server 配置的 `codemode` 传下来；`plugin/mcp-codemode-defaults.ts` 对 executor.sh 等强制 `false`）。文档 `tools.mdx:216-220` 亦确认："Denying `execute` with resource `*` removes Code Mode and every tool reached only through it, including MCP tools from servers that do not set `codemode: false`."
 
-→ **对 Outrim 的含义**：如果用户或策略禁掉了 `execute`，所有 codemode MCP 工具一起消失；Outrim 的覆盖不受影响（它们本来也不会跑）。但如果 Outrim 想"只在入口压一次"，就必须处理"子调用已压 + 外层 `execute` 又压"的重复。
+→ **对 Outrim 的含义**：如果用户或策略禁掉了 `execute`，所有 codemode MCP 工具一起消失；Outrim 的覆盖不受影响（它们本来也不会跑）。但若想"只在入口压一次"，子调用与外层 `execute` 是**两层**，且外层才是模型可见的最终文本（§4.2）。
+
+**其他注意点**：① 子工具的 `file` 项会被提升到外层 `files`，不属于文本压缩面；② 外层 `execute` 自己也会触发一次 `execute.after`（`event.tool === "execute"`），要防重复处理，但**不要求**代数/幂等性设计——按 key 标记已处理即可，需同时防递归（对已处理过的内容再压）。③ 同一 `Tool.CallID` 下可能有多个子调用，用 `(callID, tool, 序号)` 做缓存键可避开碰撞，但**不要**假定每个子调用都会独立进入模型。
 
 ### 4.3 MCP
 
@@ -322,7 +356,7 @@ editor.add({ name: tool.name,
 - 重新注册：`McpEvent.ToolsChanged` 上 `lock.withPermit` + `Stream.debounce("100 millis")` → `tools.reload()`。
 - 传输上限：`packages/core/src/mcp/stdio.ts:15` `MAX_FRAME_BYTES = 16 MiB`（错误 `MCP stdio frame exceeded 16 MiB`）；客户端超时 `startup 30s / catalog 30s / execution 12h`（`mcp/client.ts:34-36`）。
 
-→ **v2 没有 20 KiB MCP 上限**（那是 v1 与 Pi 的特征）。MCP 大输出走通用 50 KiB 截断，钩子看到 50 KiB 内的内容，原文在 `tool-output/`。
+→ **v2 没有 20 KiB MCP 上限**（那是 v1 与 Pi 的特征）。MCP 工具**自己不做截断**，所以钩子里的 `content` 可以远大于 50 KiB（只受 16 MiB stdio 帧与 12 h 执行超时约束）；50 KiB 是它**过了钩子之后**才被 `ToolOutput.truncate` 施加的，且那时才写溢出文件——**若 Outrim 先把内容压小，溢出文件根本不会产生**。
 
 ### 4.4 自定义工具
 
@@ -349,13 +383,17 @@ editor.add({ name: tool.name,
 
 ### 5.1 现成的原文出口
 
-| 来源 | 位置 | 生命周期 | 可复用性 |
+| 来源 | 位置 | 寿命 | 可复用性（重要：都不是钩子内的句柄） |
 |---|---|---|---|
-| `shell` 完整输出 | `global.data/shell/<projectID>/<shellID>.out` | 7 天（`RETENTION`），同时保留最近 25 条已退出记录（`EXITED_LIMIT`） | **高**：路径已在 `content` 文本里；`Shell.output(id,{cursor,limit})` 可字节分页 |
-| 通用溢出 | `global.data/tool-output/tool_<id>` | 7 天，每小时清理 | **中**：只有 `metadata.outputPath` 指向它，**仓库内无任何消费者**（`grep -rn outputPath packages/*/src` 只命中写入方本身），即它对模型和 TUI 都是不可见的旁路 |
-| `read` 的原文 | 磁盘文件本身 | 永久 | **高**：`offset`/`limit` 续读，官方设计 |
-| `grep`/`glob`/`webfetch`/`websearch` | 无 | — | **无**：只能重跑 |
-| MCP | 通用溢出文件 | 7 天 | 中（同通用溢出） |
+| `shell` 完整输出 | `global.data/shell/<projectID>/<shellID>.out` | 7 天（`RETENTION`）+ 最近 25 条已退出（`EXITED_LIMIT`）——**有限寿命，不是保证** | **中高**：路径在 `content` 文本里 / 可用 `shellID` 拼；`Shell.output(id,{cursor,limit})` 可字节分页。但需验证路径推导与 override 兼容（§5.2） |
+| 通用溢出 | `global.data/tool-output/tool_<id>` | 7 天，每小时清理 | **低**：**在钩子之后才创建**；只有 `metadata.outputPath` 指向它，仓库内无消费者。**若先压小，这个文件根本不存在**，不能当作 after 阶段的原文缓存 |
+| `read` 的当前磁盘文件 | 项目内路径 | 直到下次编辑 | **不等价于原文**：文件可能已被编辑，且 `read` 自身的行窗口/单行 2000 字符截断已丢信息 |
+| `grep`/`glob` | 无 | — | **无**：只能重跑 |
+| `webfetch` | 无（5 MiB 工具内部上限） | — | **无** |
+| `websearch` | 无（无内部上限） | — | **无** |
+| MCP / 自定义工具 | 仅通用溢出 | 7 天 | **同上，钩子内不可得** |
+
+→ **结论：钩子阶段唯一可靠的原文来源是自己把实际收到的输入落盘**，而不是指望宿主已有的文件。
 
 **[事实]** `ToolOutput.truncate` 写文件用的是**完整文本**（`:95` 写 `text`，即所有 text 项 `\n` 拼接后的全文），但只统计 `text` 项——如果工具返回的是"结构化 `output` + 短 `content`"，落盘的是短文本，不是结构化全量。
 
@@ -363,23 +401,37 @@ editor.add({ name: tool.name,
 
 **[事实]** 这两处目录都属于"项目外"：`packages/core/src/file-access.ts:96-123` 判定 internal 的条件是"在 `location.directory` 内或在 `location.project.directory` 内"，否则构造 `externalDirectory` 检查。
 
-**[事实+更正]** 关于 `external_directory` 的默认效果，**读源码与测试后确认是 allow**：`packages/core/src/permission.ts:86-100` 的 `evaluate()` 用 `findLast` 在全部规则里找通配匹配，找不到才回落到 `{action, resource:"*", effect:"ask"}`；而默认 agent 规则集带 `{action:"*",resource:"*",effect:"allow"}`（`packages/schema/src/agent.ts:41-49`），所以 `external_directory` 命中 allow。`packages/core/test/agent.test.ts:151-162,198-205` 直接断言了 `global.data/shell/*/*`、`global.data/tool-output/*`、`global.config/*`、`/outside/*` 的 `external_directory` 都是 `allow`。文档 `permissions.mdx:143-144` 与 `migrate-v1.mdx:126-129` 也一致（migrate 页甚至明确写 "V1 asks before accessing paths outside the project. V2 does not"）。
+**[事实]** 关于 `external_directory` 的默认效果，**读源码与测试后确认是 allow**：`packages/core/src/permission.ts:86-100` 的 `evaluate()` 用 `findLast` 在全部规则里找通配匹配，找不到才回落到 `{action, resource:"*", effect:"ask"}`；而默认 agent 规则集带 `{action:"*",resource:"*",effect:"allow"}`（`packages/schema/src/agent.ts:41-49`），所以 `external_directory` 命中 allow。`packages/core/test/agent.test.ts:151-162,198-205` 直接断言了 `global.data/shell/*/*`、`global.data/tool-output/*`、`global.config/*`、`/outside/*` 的 `external_directory` 都是 `allow`。文档 `permissions.mdx:143-144` 与 `migrate-v1.mdx:126-129` 也一致。唯一例外是用户显式加了 `{action:"external_directory",resource:"*",effect:"ask"}`（文档把它当作"恢复 v1 行为"的推荐做法）。
 
-→ **所以内置 `read` 可以直接读 Outrim 存在 `global.data` 下的缓存，默认不弹权限。** 唯一例外是用户显式加了 `{action:"external_directory",resource:"*",effect:"ask"}`（文档就是把这条当作"恢复 v1 行为"的推荐做法）。
+→ **这只能说明"读项目外的文件默认不弹权限"，不能说项目内缓存就"免掉一切权限分支"**：`read` 自身还有 `read` 动作的权限评估（`authorizeRead`），且 `external_directory` 可被用户策略改成 `ask`/`deny`。
 
-**[建议]** 但缓存仍**优先放项目内**（`.outrim/cache/<hash>.log`）：① 免掉一切权限分支；② 与项目同生命周期，`git clean`/删目录自然回收；③ 恢复读走 internal 分支，`read` 的 `siblingOf` 优化还能省掉重复的外部校验。`global.data` 只作为"项目不可写"时的兜底。
+### 5.2 Outrim 自己的缓存（建议，待定权衡）
 
-### 5.2 Outrim 自己的缓存策略（建议，非事实）
+**[建议] 原文保存是必需的**：既然宿主已有的文件都不在钩子内可得（§5.1），Outrim 必须把钩子实际收到的 `content` 自己落盘，否则没有可指向的东西。缓存位置是**权衡题，本报告不裁定**：
 
-**[建议]** 三级：
+| 位置 | 优点 | 风险 / 代价 |
+|---|---|---|
+| 项目内（如 `.outrim/cache/`） | 若目录可写，`read` 命中的是 internal 分支（仍要过 `read` 权限评估）；删仓即带走 | **不是既定方案**：可能被 `git add`/索引/备份/`grep` 扫入，必须显式 `.gitignore` 或等效排除；多仓/只读仓会失败；**需自己的容量上限与清理**（不会"自然回收"） |
+| 系统 tmp（`os.tmpdir()`） | 不污染仓库；重启可清 | 可能被系统清理（寿命不可控）；Windows 上 `%TEMP%` 可被其他进程读到；路径不稳定 |
+| 宿主 data（`~/.local/share/opencode/...`） | 与 OpenCode 自己的生命周期/清理习惯一致；`external_directory` 默认 allow | 依赖未暴露的 `global.data`，需自己按 XDG 规则拼；受 `external_directory` 策略变影响 |
 
-1. **可直接复用**：`shell` 结果 → 直接把 `.out` 文件路径写进提示行，不复制。省一次写盘，且与 OpenCode 的 7 天保留策略天然一致。
-   **[事实]** 路径有两处来源，都不完美：① `content` 尾部提示串里带绝对路径（`[showing lines X-Y of N; full output saved to <file>]`），但那是**人类可读文本**，格式一改就碎；② `metadata` 里只有 `shellID`，没有 `file`（`tool/plugin/shell.ts:86-93` 的 `toolResult` 只合并 `{status, ...ShellResult.metadata(output), shellID?}`）。插件也拿不到 `global.data` 常量。
-   **[建议]** 用 `shellID` 自己拼：插件与 OpenCode 同进程，`process.env` 一致，按 `packages/util/src/global-roots.ts` 同样的规则算出 `path.join(XDG_DATA_HOME ?? ~/.local/share, "opencode", "shell", ctx.location.project.id, shellID + ".out")`（`packages/core/src/shell.ts:144` 的 `outputDir` 就是这么拼的），**并把"文件是否存在"作为使用前提**；不存在就退回自己写缓存。这样既不解析文本，也不依赖未暴露的 `global.data`。
-2. **截断型工具**（`read`）：不需要缓存——提示行给"路径 + 行号区间"，靠内置 `read` 的 `offset` 续读。**这是成本最低、最贴合既有习惯的恢复路径。**
-3. **无出口型**（`grep`/`glob`/`webfetch`/`websearch`/MCP）：把钩子看到的 `content`（≤ 工具上限）写到 `.outrim/cache/`，提示行给路径。注意这只保住"已截断的原文"，不是真正的全量——应在提示行里**不提"完整"**，只说位置。
+**[事实]** 无论选哪里，**两件事不能当作保证**：① `.outrim/cache/` 不会被 git 扫入（必须显式排除）；② 项目生命周期等回收等于不漏盘（需 set 上限/定时清理，用户可能用 `git clean` 但不会自动清 `~/.local/share`）。
 
-**[建议]** 缓存键至少包含 `sessionID + callID + tool`（Code Mode 下同 callID 会有多个子调用，需加序号）；写入用 `wx` + `0600`（与 OpenCode 自己的 `output-files` 语义一致），失败即放弃压缩、原样放行。
+**[事实] 权限：`0600` 在 Windows 上不是 ACL 保证**。`writePluginConfig` 的 `mode: 0o600` 是 POSIX 语义；Windows 上 Node 只把它当只读标志处理，**不等于"仅本用户可读"**。若原文含敏感内容（env、密钥、客户数据），缓存目录的访问控制需要单独设计（或至少说明未做）。
+
+**[事实] 自己拼 `shell` 路径不是无风险的**：`path.join(global.data, "shell", location.project.id, shellID + ".out")`（tag `843a6c5` 的 `packages/core/src/shell.ts:136` `outputDir`，HEAD `501b15a` 为 `:144`）能算出来，但依赖 ① XDG/`OPENCODE_TEST_HOME` override 与 XDG 规则在其他平台/包装器上一致；② 目录名 `"shell"`（`DIRECTORY`）+ `${id}.out`（tag `843a6c5` 的 `:279`，HEAD `501b15a` 的 `:287`）不变；③ **文件存在不能证明它对应的就是这次钩子看到的输出**——只说明同 ID 的文件在。→ **建议把它作为候选 fallback（以尺寸/时间戳/内容前缀交叉校验），而不是必然路径**；真正可靠的做法仍是自己存一份。
+
+**[建议] 提示行要区分三种语义**（这直接影响"恢复"是否真能找回当初的内容）：
+
+1. **能指回当初原文**（Outrim 自己存的完整输入）：可以说"原文在 X"。
+2. **只能指回当前磁盘文件**（`read`）：**不能**暗示它就是当时的原文——文件可能已经变了，且当时的行窗口/单行截断信息已丢。提示行应只说位置与行号区间，不说"完整"。
+3. **只能指回宿主自己的临时副本**（`shell` 的 `.out`）：寿命 7 天 / 最近 25 条，**不是永久保证**；用户 resume/fork 一个旧会话时指针可能已失效。
+
+**[事实]** 用户 resume / fork 旧会话会让指针失效（`.out` 被 7 天清理、`tool-output` 被 7 天清理、`read` 指向的文件已改）→ **指针的长期有效性需要单独设计**（例如在提示行内带上校验信息，或缓存在项目内并纳入仓库生命周期）。本报告**不**给出设计答案。
+
+**[建议]** 缓存键至少包含 `sessionID + callID + tool`（Code Mode 下同 callID 可能有多个子调用，加序号可避碰撞）；写入用 `wx`（已存在即失败）+ 失败即放弃压缩、原样放行。`0600` 在 POSIX 上可给，Windows 上不要当作安全保证。
+
+**[建议] `read` 例外可以不缓存，但那是省存储的取舍，不是正确性保证**：`read` 的原文仍可由 `offset`/`limit` 续读，但那只对"当前磁盘文件"成立；文件被编辑、`read` 窗口与单行 2000 字符截断都已丢失的信息不会因续读而回来。若提示行要靠它，必须按 §5.2 第 2 条措辞（只给位置与行号区间，不说"完整"）。
 
 ---
 
@@ -401,12 +453,19 @@ toolRuns.push({ call: event, fiber: yield* Effect.uninterruptibleMask((restore) 
 三点推论：
 
 1. **`execute.after` 在 `uninterruptibleMask` 的 `restore` 区内**——可以被中断，但 `truncate` 与 `toolExecution` 在 restore 外，属于不可中断段。→ 压缩最好在钩子里做完，别指望"在 truncate 阶段再补一次"。
-2. **每个 tool call 一条独立 fiber**（`forkScoped`），并行工具调用互不阻塞；但同一调用内，钩子耗时**直接叠加**在该次 `Tool.Success` 的发布时间上（模型要等它）。
+2. **每个 tool call 一条独立 fiber**（`forkScoped`），所以并行调用之间**不互等**；但同一调用内钩子耗时**直接叠加**在该次 `Tool.Success` 的发布时间上（模型要等它）。**"不互等"不等于"互不影响"**：它们仍共享同一进程的 CPU、事件循环与 Rust 侧队列，见 §6.3。
 3. `Tool.Error` 在同一 fiber 内被 `catchTag` 吞掉并转成 `failTool`，不会冒泡成步骤失败。
 
 **[事实]** 钩子抛异常（defect）的后果：`classifyToolExits`（`step.ts:296-325`）把每次 fiber 的 `Cause` 分两类——typed failure（用户拒绝）与 die 原因；**die 原因会被记为 `tools.failure`**，最终映射成该轮 step 失败。所以"钩子出错 = 用户看到失败"，**不是静默降级**。
 
-**[建议]** 钩子里必须全包裹：Rust 调用失败、超时、解析错误一律 `Effect.catchAllCause(() => Effect.void)`（或 `catchTag`），绝不外泄 defect。并设自身超时（例如 200–500 ms），超时即放行。
+**[建议]** 钩子必须 **fail-open**：Rust 调用失败、超时、解析错误都不应外泄 defect。但**不要用 `catchAllCause` 无脑吞掉一切**——`Cause` 里包含**用户取消/中断**（§6.2 的 `interruptTools`），吞掉它等于让压缩掩盖 abort。正确形态是：只捕获工具/序列化/自身超时这类可预期失败，**interrupt 继续传播**：
+
+```ts
+// 示意：catch 可预期失败，但不吞 interrupt
+Effect.catchTag("...", () => Effect.void)  // 或 Effect.catchIf(cause => !Cause.isInterrupted(cause), () => Effect.void)
+```
+
+自身超时的具体数值是**实验参数而非承诺**（本报告未测），超时即放行。超时后的清理/子进程回收也**需实测验证**（不能假定 `Scope` 会自动杀掉外部进程）。
 
 ### 6.2 取消与中断
 
@@ -423,7 +482,9 @@ toolRuns.push({ call: event, fiber: yield* Effect.uninterruptibleMask((restore) 
 
 **[事实]** 并行工具调用是独立 fiber（见 6.1），但**同一调用内的 `execute.after` 链是串行的**（`hooks.trigger` 顺序执行）；多个插件之间也是串行、后看到前者的修改。
 
-**[事实]** Code Mode 内的子调用：`Semaphore.makeUnsafe(1)` 只保护 `calls` 数组与 `context.progress({toolCalls})`（`codemode/tool.ts:80-100`），子工具本身可以并发（`Promise.allSettled`）。→ **Outrim 的钩子会被并发调用**，Rust 侧必须支持并发请求或做本地排队；缓存写盘按 callID 分文件，不要共享可变句柄。
+**[事实]** Code Mode 内的子调用：`Semaphore.makeUnsafe(1)` 只保护 `calls` 数组与 `context.progress({toolCalls})`（`codemode/tool.ts:80-100`），子工具本身可以并发（`Promise.allSettled`）。→ **Outrim 的钩子会被并发调用**，Rust 侧必须能处理并发或做本地排队；缓存写盘按 callID 分文件，不要共享可变句柄。
+
+**[事实]** 并发只是"逻辑上不互等"：所有钩子共用同一个 Node/OpenCode 进程的 CPU 与事件循环，也共用 Rust 侧的进程/队列。若 Rust 侧串行处理，则每次钩子的实际延迟 = 排队等待 + 处理时间，高峰期可能显著超过单次处理耗时。**这一点未测**，但不应写成"互不阻塞"。
 
 **[事实]** v2 没有 v1 那种 `toolExecution: "sequential" | "parallel"` 配置（两处 grep 均无命中）；并行是默认行为。
 
@@ -437,7 +498,7 @@ toolRuns.push({ call: event, fiber: yield* Effect.uninterruptibleMask((restore) 
 
 **[事实]** 会话级附件（用户贴的文件）走另一条路：`attachments.mdx:30-60` —— `uri` + 可选 `name`/`description`，`file://` 支持 `?start=&end=` 行区间，`data:` 内联，单附件解码上限 20 MiB，HTTP(S) 不支持。
 
-**[建议]** Outrim **完全不要碰 `file` 项**（`type === "file"` 原样透传）：图片/PDF 是模型直接消费的模态数据，改写即失效。压缩只作用于 `text` 项；若文本全被压掉必须自己补一条非空文本（否则如 §2.5 会静默产出 `undefined`）。
+**[建议]** Outrim **完全不要碰 `file` 项**（`type === "file"` 原样透传）：图片/PDF 是模型直接消费的模态数据，改写即失效。压缩只作用于 `text` 项；若文本全被压掉必须自己补一条非空文本（否则按 §2.5：`output` 缺失时静默变成字面 `undefined`，`output` 存在时变成未压缩的 JSON）。
 
 ---
 
@@ -504,11 +565,13 @@ opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages
 
 **[事实]** 路径 B 的可行性有上游测试背书：`packages/core/test/plugin.test.ts:91-109` 直接用 `modules.load({type:"add", target: path.join(import.meta.dir, "plugin/fixtures/greeting.ts"), options:{...}})` 加载单个本地 `.ts` 文件并断言其注册的 command 生效。
 
-**[建议]** 首版走 A 或 B 的**全局**变体，绝不要 C。A 的前提是 Outrim 能产出一个 npm 可安装包（含 `server` 导出、`peerDependencies` 声明）；B 更轻但要自己保证 host 模块解析可用。**本地目录 spec 不能用 CLI 安装**（会被 `Npm.isInstallablePackage` 拒绝），只能手写进 `plugins` 数组——这是安装器脚本需要直写 jsonc 的原因（可直接复用 `writePluginConfig` 的写法：读 → jsonc modify → tmp+rename）。
+**[建议]** 首版走 A 或 B 的**全局**变体，绝不要 C。A 的前提是 Outrim 能产出一个可安装包（含 `server` 导出、`peerDependencies` 声明）；B 更轻但要自己保证 host 模块解析可用。
 
-**[事实]** 想用编程方式改配置有硬限制：`Config.update` 的 `Patch` 只含 `shell` 一个字段（`packages/schema/src/config.ts:116-119`、`packages/core/src/config.ts:383-400`，实现是 `modify(text, ["shell"], patch.shell)`），**没有任何公开 API 能往 `plugins[]` 里追加**。→ 安装器必须自己读写 jsonc（照抄 `writePluginConfig`：`parse` → `modify(text,["plugins"],…)` → `applyEdits` → tmp+rename，`mode 0o600`），或者干脆走"复制一个 `.ts` 到 `~/.config/opencode/plugins/`"的路径 B。
+**[事实] 直接改 jsonc 只对某些形态是必需的**：`opencode plugin add`（路径 A）已经把"先装包、再写进 `plugins[]`"全做了（`writePluginConfig`），**不需要自己实现**。只有当分发形态是"本地目录/文件"（路径 B/C）时，`Npm.isInstallablePackage` 才会拒绝、才必须自己写配置——那时可照抄 `writePluginConfig`：`parse` → `modify(text,["plugins"],…)` → `applyEdits` → tmp+rename。
 
-**[事实]** 无法"禁用插件"的坑：v2 CLI help 里没有 `--pure`（本机 v2.0.26 `--help` 已核实），`cli.mdx:668` 仍列 `--pure  Run without external plugins` 属遗留页面。→ 如果用户想临时关掉 Outrim，没有官方开关；只能在 config 里用 `-outrim` 移除或用 `permissions` 影响其行为。
+**[事实]** 我查到的公开配置 API 里没有写 `plugins[]` 的接口：`Config.update` 的 `Patch` 只含 `shell` 一个字段（`packages/schema/src/config.ts:116-119`、`packages/core/src/config.ts:383-400`，实现是 `modify(text, ["shell"], patch.shell)`）。**这不等于"插件机制没有这个能力"**——只说明**这些公开 API 不提供它**，不代表全部插件能力都不可达（例如 `ctx` 暴露的其他域、事件订阅等本报告未穷举）。
+
+**[事实]** 关于"临时禁用"：v2 CLI help 里**没有** `--pure`（本机 v2.0.26 `--help` 已核实），`cli.mdx:668` 仍列 `--pure  Run without external plugins` 属遗留页面。但"没有 `--pure`"**不等于"没有任何禁用方式"**：至少还有 ① 配置里 `-outrim` 移除该插件；② ManagedPolicy（`integration.use` / `plugin:<target>`）阻断；③ 权限策略影响其行为。**未找到等效的"一次性临时开关"**——这只是检索结论，不是存在性证明。
 
 ---
 
@@ -522,7 +585,7 @@ opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages
 
 | 层 | 职责 | 规模 |
 |---|---|---|
-| TS 薄壳（OpenCode 插件） | 注册 `execute.after`；挑选需压缩的结果；构造请求（NDJSON）；把返回文本回填 `event.result.content`；设 `metadata.truncated` 防止二次截断；任何异常静默放行 | 数百行 |
+| TS 薄壳（OpenCode 插件） | 注册 `execute.after`；挑选需压缩的结果；构造请求（NDJSON）；把返回文本回填 `event.result.content`；可预期失败 fail-open（不吞中断）；原文自己落盘并生成一行位置提示 | 数百行 |
 | Rust 核心（单一二进制） | 压缩策略、缓存写盘、提示行生成、并发/超时自保 | 主体 |
 
 **[事实]** 插件自带一个持久化 KV：`ctx.storage.{get,set,remove,scan}`（`packages/plugin/src/effect/storage.ts`、`packages/plugin/src/storage.ts`），底层是 SQLite `kv` 表，命名空间由插件 id 逐字符 hex 编码成 `plugin:<hex>:`（`packages/core/src/plugin/host.ts:623-650`），值必须是 `Schema.Json`。→ **"记住已压过的 callID"这类小状态不需要自己落盘**；但送不进大块原文（JSON + SQLite，不适合当 tool output 缓存）。
@@ -531,7 +594,7 @@ opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages
 
 ### 8.2 传输与生命周期
 
-**[建议]** 用 node `child_process.spawn` + stdin/stdout 的 NDJSON，**不要**用 argv 传正文（Windows 命令行上限约 32 KiB，而 tool output 可达 50 KiB）。请求字段建议镜像 OpenCode 的事件：
+**[建议]** 用子进程 stdin/stdout 传 NDJSON，**不要**用 argv（Windows 命令行上限约 32 KiB，而 `execute.after` 的 `content` 可达 50 KiB 以上——MCP/自定义工具没有内部上限，见 §3.2）。进程创建建议走 `effect/process` 的 `ChildProcessSpawner`（`stdin: "pipe"`），以便挂在插件 scope 上回收；回收语义**需实测**，不能假定 scope 关闭会杀掉外部进程。请求字段建议镜像 OpenCode 的事件：
 
 ```jsonc
 { "id": "<callID>:<tool>:<n>", "tool": "<effective name>", "agent": "<agent id>",
@@ -543,7 +606,7 @@ opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages
 
 响应：`{ "content": [ … ], "metadata": {…}, "pointer": "<一行位置提示>" }`（`pointer` 仅用于日志，正文由 Outrim 自己拼进 `content`）。
 
-**[建议]** 进程模型二选一，取决于后续压测：① 每次调用 spawn-一次-退出（最稳，冷启动约几十 ms，落在 §6.1 的延迟预算内）；② 插件 scope 内常驻一个 sidecar，`Effect.acquireRelease` 保证插件卸载/进程退出时回收。**不要**在插件工厂里起定时器/常驻 socket 而不挂在 Scope 上——OpenCode 会 fork/关闭插件 scope（`plugin.ts` 的 `Scope.fork`/`Scope.close`），未托管的句柄会泄漏。
+**[建议]** 进程模型二选一，取决于后续实测：① 每次调用 spawn-一次-退出（最简单，冷启动开销未测）；② 插件 scope 内常驻一个 sidecar，`Effect.acquireRelease` 尝试在插件卸载时回收（**回收是否生效需实测**）。**不要**在插件工厂里起定时器/常驻 socket 而不挂在 Scope 上——OpenCode 会 fork/关闭插件 scope（`plugin.ts` 的 `Scope.fork`/`Scope.close`），未托管的句柄会泄漏。
 
 **[事实] 上游现成的"附带原生二进制"范式**（`packages/core/src/ripgrep/binary.ts`，可直接照抄）：按 `` `${process.arch}-${process.platform}` `` 选平台包 → 优先用 PATH 上的同名可执行文件 → 否则落到 `global.bin/<name>[.exe]` 并 `Effect.cached` 缓存路径 → 下载/解压（**Windows 走 `%SystemRoot%\System32\tar.exe`**，注释明确说明"不用 PowerShell，因为策略可能封禁；也不依赖 PATH 上的 GNU tar，因为读不了 zip；且 bsdtar 用 ANSI 代码页解码参数，所以先 cd 到临时目录只让它看到 ASCII 文件名"）→ 非 win32 上 `chmod 0o755` → `spawner.spawn(ChildProcess.make(command, args, {cwd, extendEnv: true, stdin: "ignore"}))` 并并发收集 stdout/stderr/exitCode。
 
@@ -551,7 +614,9 @@ opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages
 
 ### 8.3 Rust 侧做不到 / 不该做的事
 
-**[事实]** 看不到超过工具自身上限的原文（`shell` 经文件、`read` 经 `offset` 除外）。想突破必须接管工具的 `execute`（`editor.update("grep", t => …)`），代价是复刻该工具的描述、输入/输出 schema、错误语义，且上游一改版就碎。
+**[事实]** 对有内部截断的工具（`shell`/`read`/`grep`/`glob`/`webfetch`），钩子与接管 `execute` 都**看不到**超出其内部上限的内容：包装现有 `execute`（`editor.update("grep", t => ({...t, execute: ...}))`）拿到的仍是它自己裁过的返回值。要更多只有重写该工具的采集逻辑本身（不是"包装"）。
+
+**[事实] 包装不必复刻描述/schema**：`editor.update(id, fn)` 可以在保留原 `description`/`input`/`output` 的前提下只替换 `execute`（原样透传 `input`、对返回值做后处理）。只有当你需要改变"对模型暴露的契约"（换描述、改 schema）时才涉及复刻——**那是另一类改动，不应和"为了拿原文"混为一谈**。
 
 **[事实]** 改写会同时改变 TUI 显示：`packages/session-ui/src/message/current-tool-state.ts:20-31` 的 `currentToolOutput()` 就是取 `content` 里的文本（running 状态取 `metadata.output`），**没有"查看原文"入口**。而 `packages/session-ui/src/tools/tool-renderer.tsx:1960-2005` 在 `metadata.shellID` 存在时优先显示实时输出流——若 Outrim 把 shell 的 `content` 压小但保留 `shellID`，UI 与模型看到的内容会不一致（视觉上不算错，但会让人以为"模型看到的就是这些"）。
 
@@ -561,36 +626,40 @@ opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages
 
 ### 8.4 延迟预算（事实基础 + 建议）
 
-**[事实]** 钩子在工具调用 fiber 内串行执行（§6.1），其耗时直接推迟该次 `Tool.Success`。并行调用之间不叠加。
+**[事实]** 钩子在工具调用 fiber 内的 `restore` 区执行（§6.1），其耗时直接推迟该次 `Tool.Success`；并行调用之间不互等，但共享同一进程资源（§6.3），实际延迟会互相影响。
 
-**[建议]** 目标 p95 ≤ 200 ms；超时直接放行（宁可这次不压）。压缩是"锦上添花"，不能变成可靠性风险点。
+**[建议]** 迟延预算**尚未由用户定为目标**；若要做实验，可先按 p95 ≤ 200 ms / 超时 200–500 ms 这类**可选设定**去测，但**本报告不承诺任何数值已满足**。原则只有一条：压缩是附加价值，不能变成可靠性风险点，超时即放行。
 
 ---
 
 ## 9. 可选集成形态对比（不裁决）
 
-| 形态 | 覆盖 | 能否拿到 >50 KiB 原文 | 每工具额外延迟 | 用户配置成本 | 主要风险 |
+| 形态 | 覆盖 | 钩子内可见量 | 每工具额外延迟 | 用户配置成本 | 主要风险 |
 |---|---|---|---|---|---|
-| **A. 插件 + `execute.after`** | 内置 + MCP + 第三方工具 + Code Mode 子调用；**不含**后台 shell/subagent/hosted | 否（`shell`/`read`/MCP 溢出文件例外） | 一次进程往返 | 一条 `plugins` 项 / 一个文件 | 钩子 defect 会记为该轮失败；需自保超时 |
-| **B. 插件 + `editor.update(id, …)` 接管工具** | 仅被接管的工具 | 是 | 同 A + 复刻工具的开销 | 同 A | 复刻描述/schema/错误语义；上游改版即碎 |
-| **C. 插件 + `session.hook("context")` 改写请求** | 全量消息（含历史） | 否 | 每次请求 | 同 A | **违反"只首次入口、不改历史"的产品约束**，仅记录 |
-| **D. 代理 / CLI 包装**（拦截模型请求） | 取决于是否改写请求体 | 是（能看到完整请求） | 每个请求 | 高（要接管启动方式） | 破坏 OpenCode 自身的 provider 逻辑与流式；与本产品"轻量、少 prompt"目标冲突 |
+| **A. 插件 + `execute.after`** | 内置 + MCP + 第三方工具 + Code Mode 子调用；**不含**后台 shell/subagent/hosted | **按工具而异**：有内部截断的 5 个工具 = 其上限；MCP/自定义/`websearch` = 不受 50 KiB 限制 | 一次进程往返（与并发的其他钩子共享 CPU/队列） | 一条 `plugins` 项 / 一个文件 | 钩子 defect 会记为该轮失败；需 fail-open 且不吞中断 |
+| **B. 插件 + `editor.update(id, …)` 接管工具** | 仅被接管的工具 | **不自动更多**：包装其 `execute` 拿到的仍是它自己的返回值；要更多必须重写该工具的采集逻辑 | 同 A + 包一层调用的开销 | 同 A | 只需按实际函数边界包装（**不必**复刻描述/schema，除非要改变对模型暴露的契约）；上游改版需跟进 |
+| **C. 插件 + `session.hook("context")`** | 请求级（能拿到全量消息） | 同请求体里的内容（已是截断后） | 每次请求 | 同 A | **能不能"只改首次未发送项"未研究**；若退化成回改历史则违反产品约束 |
+| **D. 代理 / CLI 包装**（拦截模型请求） | 取决于是否改写请求体 | **请求体里已是截断后的工具结果**，不是原始工具输出 | 每个请求 | 高（要接管启动方式） | 破坏 OpenCode 自身的 provider 逻辑与流式；与本产品"轻量、少 prompt"目标冲突 |
 | **E. MCP server 形态**（Outrim 作为 MCP 工具） | 只覆盖显式调用 | 不适用 | — | 中 | 需要模型主动调用，不是"自动入口" |
 
-**[事实]** C 形态技术上确有入口：`packages/core/src/session/model-request.ts:422-426` 的 `agentHook` 在 `prepare()` 里触发 `session.hook("context"|"compaction"|"generate")`，把完整 `{system, messages, tools}` 交给插件（可删工具、可改描述，`plugin/optimize.ts` 就是这么干的）。但它作用于**全部历史**，与"只首次入口"冲突，因此只能作为对照记录。
+**[事实]** C 形态技术上确有入口：`packages/core/src/session/model-request.ts:422-426` 的 `agentHook` 在 `prepare()` 里触发 `session.hook("context"|"compaction"|"generate")`，把完整 `{system, messages, tools}` 交给插件（可删工具、可改描述，`plugin/optimize.ts` 就是这么干的）。
 
-**[建议]** A 作为默认路径（最低配置成本、最全覆盖、与 OpenCode 官方 API 同构）；B 只在确实需要超上限原文时按工具增量启用。**不在本报告里裁决 A/B 谁是最终方案**——需要先有压缩效果与原文可得性的实测数据。
+**[事实+边界]** **"看得到全部历史"不等于"必须改写全部历史"**：该钩子拿到的是完整消息列表，插件完全可以只挑"首次尚未发送的工具结果"改写并固定表示、其余原样返回。**禁止的是对历史条目的回改（已在上下文里的内容再变），不是名字里带 context 的 API 本身。** 这条"选择性首入口"路线**本报告未研究**其可行实现——难点在持久化与重试（改写后的表示需与会话库一致，且不能在同一请求的多次尝试间漂移），需单独验证。
+
+**[建议]** A 作为默认候选（配置成本最低、覆盖最广、与 OpenCode 官方 API 同构）；B 按工具增量启用只在**该工具的内部采集逻辑确实可被替换/重写**时才有意义——单纯包装 `execute` 不会多拿到原文（§8.3）。**两条都未实测，本报告不选优。****不在本报告里裁决 A/B 谁是最终方案**——需要先有压缩效果与原文可得性的实测数据。
+
+**[事实]** 形态 D（proxy / CLI 包装）"能看到完整请求"**不等于能看到完整的原始工具输出**：请求体里已经是经过 `read`/`shell`/`grep` 内部截断与（若溢出）通用截断之后的内容，代理拿到的只是更大的**上下文集**，不是工具的真原文。要拿真原文仍需回到工具本身或自建采集。
 
 ---
 
 ## 10. 未核实 / 待验证清单
 
-1. **本机 v2.0.26 与快照 v2.0.32 的差异**：本报告全部结论基于 32 的快照；26 只验证了 `opencode --version` 与 `--help`（无 `--pure`）。CHANGELOG 里 26→32 之间**没有**任何 `tool.execute.after` / `ToolOutput` 相关条目，最接近的是 v2.0.27 的 "Converted rejected Promise-based plugin tools into normal tool failures instead of crashing their execution path"（#54913，影响 Promise 插件工具的失败映射，不影响 after 钩子契约）与 v2.0.28 的 `ctx.permission.assert` 新增（#54930）。**结论：契约很可能未变，但未逐 commit diff 验证。**
-2. **插件内起子进程的实测**：没有上游插件先例，也没有文档禁止；需实测 OpenCode 关闭插件 scope 时子进程是否随之退出（`Scope` 能否可靠回收 `child_process`）。上游在核心层用的是 `effect/process` 的 `ChildProcessSpawner`（`ripgrep/binary.ts`），它把子进程挂在 Effect scope 上——**建议照抄这条路径而不是裸 `child_process.spawn`**，回收语义天然正确。
+1. **本机 v2.0.26 与快照 v2.0.32 的差异**：本报告全部结论基于 v2.0.32 的快照（tag `843a6c5`；引用到的关键文件在 tag→HEAD `501b15a` 间 `git diff --quiet` 均无差异，仅 `packages/core/src/shell.ts` 行号不同）。本机只验证了 `opencode --version` 与 `--help`，**未做 26↔32 的逐 commit diff**，因此**不对 26 的兼容性下任何结论**（不据 CHANGELOG 推断）。
+2. **插件内起子进程的实测**：没有上游插件先例，也没有文档禁止；需实测 OpenCode 关闭插件 scope 时子进程是否随之退出（`Scope` 能否可靠回收 `child_process`）。上游在核心层用的是 `effect/process` 的 `ChildProcessSpawner`（`ripgrep/binary.ts`），它把子进程挂在 Effect scope 上——**可以照抄这条路径而不是裸 `child_process.spawn`**，但它是否真能把"插件 scope 关闭 → 子进程退出"打通，**仍需实测**，不能假设有此保证。
 3. **`shell` 输出目录在 Windows 上的实测路径**：按 `global-roots.ts` 推导应为 `~/.local/share/opencode/shell/<projectID>/<shellID>.out`（Windows 同样走 XDG 默认值），本机 `~/.local/share/opencode/shell` 目录存在但当前为空（没跑过后台/前台命令），**未实测过落盘文件名**。若实际有出入，§5.2 的"自己拼路径"策略需要调整。
 4. **`ToolOutput` 的 7 天保留是否也在配置里**（只确认了 `RETENTION = Duration.days(7)` 为常量，未见 config 覆盖项）。
-5. **v2 是否有"禁用插件"的用户开关**：快照与 v2.0.26 help 都没有 `--pure`；`cli.mdx:668` 的 `--pure` 描述属遗留（未在源码中找到实现）。
-6. **`sessions.synthetic()` 的注入形态能否被插件改写**（后台 shell/subagent 缺口的唯一补救点）：已确认它**不经过** `session.hook("prompt")`（`synthetic` 直接 `admission.admit`，`prompt` 钩子在 `SessionPrompt.prepare` 里），所以只剩 `session.hook("context")` 能看到它——但那是请求级、作用于全部历史，产品明确排除。**结论：目前没有"只在这一条合成消息入口"的钩子。若必须覆盖后台 shell，只能接受请求级改写。** 待验证：`ctx.event.subscribe` 能否在 admit 之前干预算（未实测，且即便能也属于事件旁路，稳定性不明）。
+5. **插件禁用**：快照与 v2.0.26 `--help` 都没有 `--pure`（`cli.mdx:668` 仍列 `--pure  Run without external plugins`，属遗留页面）。已确认存在的禁用途径有：配置里 `-"<target>"` 移除、ManagedPolicy 的 `integration.use` / `plugin:<target>` 阻断。**未找到等效的“一次性临时开关”**——这是检索结论，不是存在性证明。
+6. **`sessions.synthetic()` 的注入形态能否被插件改写**（后台 shell/subagent 缺口的补救点）：已确认它**不经过** `session.hook("prompt")`（`synthetic` 直接 `admission.admit`，`prompt` 钩子在 `SessionPrompt.prepare` 里），**目前没有“只在这一条合成消息入口”的钩子**。剩下能看到的只有请求级 `session.hook("context")`——那个钩子并不强制改写全部历史（可只挑首次未发送项改写、其余原样返回），但“选择性首入口”的**持久化与重试一致性本报告未研究**，不能视为已可用。待验证：`ctx.event.subscribe` 能否在 admit 之前干预算（未实测，且即便能也属事件旁路，稳定性不明）。
 7. **`tool_output.max_lines/max_bytes` 调大后的实际内存/延迟影响**（理论上可以让 `shell`/`read` 上限更大，从而让钩子看到更多原文；但也会让模型上下文膨胀）。
 8. **`read` 的 `siblingOf` 外部校验复用**（`file-access.ts:143-161`）在多工具并发时是否仍成立（只读了代码与 `file-access.test.ts`，未做并发实测）。
 
@@ -614,7 +683,7 @@ opencode plugin add 'git+https://github.com/anomalyco/opencode.git#path:packages
 
 - `packages/core/src/tool-output.ts:13-140` — [`MAX_LINES`/`MAX_BYTES`/`truncate`/落盘/清理](https://github.com/anomalyco/opencode/blob/843a6c514e606b436a7fe713422ace0a93ad3d61/packages/core/src/tool-output.ts#L13-L140)
 - `packages/core/src/config/plugin/tool-output.ts` + `services/www/src/docs/content/config.mdx:307-313` — `tool_output` 配置
-- `packages/core/src/shell.ts:236-300`（文件共 469 行）— [`Shell.result()` 尾部截断 + `output()` 分页](https://github.com/anomalyco/opencode/blob/843a6c514e606b436a7fe713422ace0a93ad3d61/packages/core/src/shell.ts#L236-L300)
+- `packages/core/src/shell.ts:228-252`（tag `843a6c5`，文件共 455 行；`outputDir` 在 `:136`、`${id}.out` 在 `:279`）→ HEAD `501b15a` 因超时实现重写整体下移 8 行（`:236-260`、`:144`、`:287`，文件 469 行），代码相同 — [`Shell.result()` 尾部截断 + `output()` 分页](https://github.com/anomalyco/opencode/blob/843a6c514e606b436a7fe713422ace0a93ad3d61/packages/core/src/shell.ts#L228-L252)
 - `packages/core/src/shell/result.ts` — `notice` / `metadata` / `notification`
 - `packages/core/src/tool/plugin/shell.ts:20-105,108-293`（文件共 293 行）— 描述、`resultMessages`、`prepare`、后台降级与 `notifyWhenDone`
 - `packages/core/src/tool/plugin/read.ts:19-140` — `toModelContent` / 媒体项 / 错误文案 / AGENTS.md 副作用
