@@ -1052,7 +1052,8 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 #### 4.6.3 失效例子
 
 - Python 缩进语义：RTK `MinimalFilter` 用 `advance_triple_quote()` 状态机（`core/filter.rs:167`），
-  `core/filter.rs:540` 起有 **9 个** 三引号/引号复用相关测试（`core/filter.rs:543`–`704`），`core/filter.rs:733` 起另有 **5 个**
+  `core/filter.rs:540`-`732` 这个分节里有 **10 个** 测试（`:543`-`:704` 是 9 个 `test_minimal_python_*`，
+  `:720` 的 `test_minimal_filter_removes_comments` 收尾）；`core/filter.rs:733`-`801` 分节另有 **5 个**
   块注释/`#2385`（`src/*.rs` 里的 `/*` 被当块注释）相关测试——说明这类坑是连续踩出来的。
 - Rust 的 `//` 出现在字符串里：同上，`#2385` 的修复是"只在行首判断块注释开始"。
 - 宏/属性/条件编译：正则路线无法识别 `#[cfg(...)]` 与 `impl` 块归属，会把 `impl` 里的函数签名当顶层。
@@ -1483,7 +1484,7 @@ tokenizer 维度由 E12 单独覆盖。
 - [`engine/builtin/default.toml`](https://github.com/rtk-ai/rtk/tree/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/builtin)（含 posthook/proxy/terse/verbatim-diffs/delegate-reads）
 - [`src/core/config.rs:223-247`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/config.rs#L223-L247)（`grep_max_per_file: 25`）
 - [`src/cmds/system/search.rs:633,845,899-902,1178`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/cmds/system/search.rs#L633)（`fold_path_prefix`、`grep_max_per_file` 使用、`compact_path`）
-- [`src/core/filter.rs:167,540,733`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/filter.rs#L167)（三引号状态机 + 9 个相关测试；`#2385` 块注释 + 5 个测试）
+- [`src/core/filter.rs:167,540,733`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/filter.rs#L167)（三引号状态机 `advance_triple_quote`；`// --- Python triple-quoted strings ---` 分节 `:540-732` 内 **10 个** `fn test_`；`#2385` 块注释分节 `:733-801` 内 **5 个**）
 - [`src/core/guard.rs:21`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/guard.rs#L21)、
   [`proxy/src/tokenizer.rs`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/proxy/src/tokenizer.rs)（o200k_base + 回退）
 - [`proxy/src/pipeline/ccr/mod.rs:69,94,116,130,342`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/proxy/src/pipeline/ccr/mod.rs#L69)（阈值分档、`read_min_tokens = usize::MAX`、`strategy_mode`）
