@@ -208,17 +208,20 @@ github 1.021），结论在两个版本上一致。
 实测（附录 A.4）：
 
 ```
-serde_json 默认               {"big":123456789012345678901234567890} → 1.2345678901234568e+29
-                              {"dup":1,"dup":2} → {"dup":2}       {"f":2.50} → {"f":2.5}
-                              {"u":"\u00e9"} → {"u":"é"}          {"esc":"a\/b"} → {"esc":"a/b"}
-                              {"neg":-0} → {"neg":-0.0}           {"space" : 1 , "b" : 2 } → 键序改变
-arbitrary_precision          大整数逐字保留；1.0 保持 1.0；2.50 保持 2.50；-0 保持 -0
-+ preserve_order             但 {"e":1e6} → {"e":1e+6}（指数写法被重写）
+默认（不 feature）             {"big":123456789012345678901234567890} → {"big":1.2345678901234568e+29}
+                              {"f":2.50} → {"f":2.5}      {"e":1e6} → {"e":1000000.0}
+                              {"neg":-0} → {"neg":-0.0}   {"f":1.0} → {"f":1.0}（小数点保留）
+                              {"u":"\u00e9"} → {"u":"é"}  {"esc":"a\/b"} → {"esc":"a/b"}
+                              {"dup":1,"dup":2} → {"dup":2}；空白全删；键序＝出现序
++ arbitrary_precision         大整数逐字保留；1.0 保持 1.0；2.50 保持 2.50；-0 保持 -0
++ preserve_order              但 {"e":1e6} → {"e":1e+6}（指数写法被重写）
                              {"dup":1,"dup":2} 仍然塌成 {"dup":2}
+                             {"u":"\u00e9"} → {"u":"é"}、{"esc":"a\/b"} → {"esc":"a/b"} 照旧
 ```
 
 → **`arbitrary_precision` 给的是数值文本保真，不是字节保真**：重复键仍会塌、`1e6` 变 `1e+6`、
-`\u00e9` 变 `é`、空白消失。RTK 也**没开**这个 feature（`engine/Cargo.toml:15` 只开了 `preserve_order`），
+`\u00e9` 仍变 `é`、`a\/b` 仍变 `a/b`、空白消失。
+RTK 也**没开**这个 feature（`engine/Cargo.toml:15` 只开了 `preserve_order`），
 所以它标 `lossy: true` 是对的。lean-ctx 的 lossless 模式实测 `reconstruct` 结果与原文
 **Value 相等但字节不等**（键被提进 `_defaults` 后顺序变了，附录 A.4 的 `jc` 探针输出 first diff at byte 12）。
 "lossless" 必须限定到某一层比较器（§5.1）。
@@ -1333,7 +1336,8 @@ A.3 **TOON**：`/tmp/sc2/toon/<case>.{pretty.json,min.json,toon}` 由 `/tmp/prob
 计数 `/tmp/m21.py`（8 种形状，字符/token 双栏）。真实语料 `/tmp/toonrt/src/bin/real.rs` → 计数 `/tmp/m22.py`。
 版本对照 `/tmp/toon05`（`toon-format =0.5.0`，RTK 所用版本）。round-trip `/tmp/toonrt/src/main.rs`。
 
-A.4 **JSON**：`/tmp/aptest`（`serde_json` 默认 vs `arbitrary_precision + preserve_order` 矩阵）；
+A.4 **JSON**：`/tmp/aptest`（`arbitrary_precision + preserve_order`）、
+`/tmp/aptest2`（默认 feature，用来出"默认"那四行的对照值）；
 `/tmp/jc`（编译 lean-ctx `json_crush.rs`，测 `crush_lossless` 的 reconstruct 与 `crush_lossy` 的 `_dropped`）。
 
 A.5 **squeez 模板折叠**：`/tmp/sqtest`（真实语料批量）、`/tmp/sq2`（形状对照 A–J6，
