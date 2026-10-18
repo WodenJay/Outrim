@@ -143,7 +143,7 @@ install.txt    1101 ch   18 行 → render=None（never_worse 拦下）        4
 | RTK 真实 fixture `grep_content_small.json`（43 条单文件） | 860 | 788 | -8.4% | -10.8% |
 | RTK 真实 fixture `grep_content_large_truncated.json`（250 条） | 3410 | 2554 | -25.1% | -44.4% |
 | 真实 fixture 正文 + 41 字符路径（只换路径） | 1247 | 797 | -36.1% | -39.5% |
-| 43 条 / 单文件 / 41 字符路径 + 26 字符正文（合成） | 1032 | 539 | -47.8% | -54.6% |
+| 43 条 / 单文件 / 41 字符路径 + 25 字符正文（合成） | 1032 | 539 | -47.8% | -54.6% |
 | 39 条 / `a.rs:1:x` 极短行 | 233 | **247** | **+6.0%** | +12.1% |
 | 1 条命中 | 26 | **37** | +42.3% | +43.1% |
 | 5 条 + 1 行 `-C` 上下文 | 62 | 62 | 0.0%（整块放行） | 0.0% |
@@ -298,15 +298,18 @@ grep.txt / find.txt / cargo_err_color.txt       0.0%（不折叠，符合形状�
 | 堆栈 | 2.66 | -33.5% | -25.8% | +32.9% | Dense |
 
 `squeez` 的 `classify()` 把几乎所有内容判成 `Dense`，然后按 `/2.0` 除——在真实语料上比它自己
-的 `estimate()` 更差（grep +104.9%、mcp +128.7%），而 `wrap.rs:582,584,659,661` 用的正是
+的 `estimate()` 更差（grep +104.9%、mcp +128.7%），而 `wrap.rs:581-585` 与 `:658-662` 用的正是
 `estimate_classed`（`config.class_density` 默认 true）。squeez 的文档只承诺"non-ASCII ~1 token/char"，
 没有给中文的百分比；实测 `estimate()` 在中文日志上是 -8.0%（低估），是同表里最好的非 ASCII 结果，
 但同一份内容走 `estimate_classed` 变成 -75.1%（因为它把中文判成 `Prose` 再除 3.7）。
 
 顺带修正一个易错的换算：squeez 的 `net_win_min_tokens = 24`（`config.rs:353`）是**估算** token。
-通用换算是 `真 token = 24 × (chars/token) / (估算器的 chars/token)`；对 `chars/4`（分母 4）就退化成
-`24 × 4 / (chars/token)`：散文约 21、cargo 日志约 42、grep.txt 约 23、`ls.txt` 约 45、中文约 104、base64 约 56。
-而 `wrap.rs:581,658` 实际用的是 `estimate_classed`（Dense 除 2.0、Prose 除 3.7），所以真实分母不是 4：
+推导：估算器 `est = chars / (估算器的 chars/token)`，真实 `真 = chars / (真实 chars/token)`，
+两式消掉 `chars` 得 **`真 = est × (估算器的 chars/token) / (真实 chars/token)`**。
+对 `chars/4`（估算器的 chars/token = 4）就退化成 `24 × 4 / (chars/token)`：
+散文 21.5、cargo 日志 41.6、grep.txt 23.4、`ls.txt` 44.7、中文 104.3、base64 56.0。
+而 `wrap.rs:581-585` 与 `:658-662` 实际用的是 `estimate_classed`（Dense 除 2.0、Prose 除 3.7），
+所以估算器的分母不是 4，同一阀值对应的真 token 也不同：
 按 classed 口径 24 单位只对应 grep.txt **11.7**、中文 **96.4**、`ls.txt` 22.4 个真 token。
 
 好消息：`chars/4` 用来给 **RTK 自己的 head/tail 输出**做闸门时误差极小（附录 A.2，
@@ -821,9 +824,10 @@ RTK 只开了 `preserve_order`（`engine/Cargo.toml:15`），所以它标 `lossy
 #### 4.5.2 骨架
 
 RTK `strategy.rs:213 JsonSkeleton`：字符串 >24 字符 → `"short…" (N chars)`；`depth==0` 数组 → `[N× first]`；
-`depth>=2` 对象 → `{N keys}`；`depth==1` 数组 → `[N items]`。
-`JSON_SKELETON_MAX_CHARS=700` 用在两处：对象键循环累计长度 >700 时停下补 `… +N more keys`；
-最后若整体 >900 字符再硬截断补 `…`（`:283-293`）。所以骨架的**上界是 900 字符**，不是 700。
+`depth==1` 数组 → `[N items]`；`depth>=2` 对象 → `{N keys}`。
+`JSON_SKELETON_MAX_CHARS=700`（`:31`）用在两处：对象键循环在 `out.len() > 700` 时停下补 `… +N more keys`；
+最后若整体 >900 字符（`MAX_CHARS + 200`）再硬截断补 `…`（`:283-293`）。所以骨架的**上界是 900 字符**，不是 700。
+（注：四处 `len()` 都是**字节**，中文/emoji 会提前触发。）
 `cmds/system/json_cmd.rs` 另有一套：`--keys-only`，默认截断 >80 字符字符串、数组 >5 项变 `[first, ... +N more]`。
 
 实测（40 项 GitHub 风格响应，附录 A.13）：pretty 3824 → minified 2253 → **skeleton 28 tok**。
@@ -965,19 +969,21 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
   （`proxy/src/tokenizer.rs`，`tiktoken-rs`，失败回退 `len/4`）。
 - squeez：两条路。`estimate()` = `ceil(alnum/3.8 + punct/2.0 + wide)`（blank 不计；`wide` 是非 ASCII **字符数**）；
   `estimate_classed()` = 按 64 KiB 头部样本分类后 Dense `/2.0`、Prose `/3.7`、Mixed 回退 `estimate`。
-  `config.class_density` 默认 true，所以 `wrap.rs:582,584,659,661` 走的是 classed 路径。
+  `config.class_density` 默认 true，所以 `wrap.rs:581-585` 与 `:658-662` 走的是 classed 路径。
+  （两条路的分叉代码：`if config.class_density { estimate_classed(..) } else { estimate_scaled(..) }`。）
   源码注释引 pxpipe："dense payloads (JSON/code/diffs, N=391) run ~1.91 chars/token,
   while English prose runs ~3.5-3.7"——**二手来源，未核**（§8）。
 - lm-resizer：`tokenizer/` 三后端（tiktoken 字节等价、HF `tokenizer.json`、估算），
   文档自述 proxy 尚未接线，且 Anthropic tokenizer 未公开。
 
-**偏差表见 §0.1-8。** 三条操作结论：
+**偏差表见 §0.1-8。** 四条操作结论：
 
 1. **相对闸门用 `chars/4` 是安全的**：`never_worse` 比较的是同一段内容的两次估算，
    误差同向抵消；在 RTK 自己的 head/tail/structural 输出上实测削减率误差 ≤0.7 个百分点（附录 A.2）。
-2. **绝对预算必须用真实 tokenizer**：squeez 的 `net_win_min_tokens = 24` 是估算 token，
-   换真实 token 要除以估算器的 chars/token（`24 × 4 / (chars/token)`），中文约 104、散文约 21，差 5 倍；
-   而 squeez 实际用的是 classed 估算器，同一阈值在 grep.txt 上只相当于 **11.7** 个真 token。
+2. **绝对预算必须用真实 tokenizer**：squeez 的 `net_win_min_tokens = 24`（`config.rs:353`）是**估算** token 单位，
+   换真 token 的公式是 `真 = 估算 × 4 / (chars/token)`（因为 `chars/4` 口径下 `估算 = chars/4`，
+   而 `真 = chars / (chars/token)`）：中文 104、散文 21，差 5 倍；
+   而 squeez 实际用的是 classed 估算器（分母不是 4），同一阈值在 grep.txt 上只相当于 **11.7** 个真 token。
 3. **`chars/4` 的"4"到底除什么，中文上差 46 个百分点**：RTK 的 `estimate_tokens` 是
    `text.len() / 4`（`text/src/lib.rs:83`，`len()` 是 **bytes**），而 Python 侧 `chars/4` 常按字符数算。
    同一份中文日志（920 字符 / 2760 字节 / 1000 token）：按字节算是 -31.0%，按字符算是 **-77.0%**。
@@ -1331,7 +1337,7 @@ trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径。
 - [`engine/src/methods/cap.rs:12-15`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/src/methods/cap.rs#L12-L15)、
   [`progress.rs`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/src/methods/progress.rs)（含 `test_crlf_normalized_to_lf`）、
   [`dedup.rs`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/src/methods/dedup.rs)、
-  [`rle.rs:8-16`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/src/methods/rle.rs#L8-L16)、
+  [`rle.rs:12-21`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/src/methods/rle.rs#L12-L21)、
   [`strip_line_numbers.rs`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/src/methods/strip_line_numbers.rs)、
   [`truncate.rs:1-5`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/src/methods/truncate.rs#L1-L5)
 - [`engine/builtin/default.toml`](https://github.com/rtk-ai/rtk/tree/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/builtin)（含 posthook/proxy/terse/verbatim-diffs/delegate-reads）
