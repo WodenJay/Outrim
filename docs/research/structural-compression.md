@@ -86,7 +86,23 @@ publicly available distribution … whichever comes first"。
 
 12 个工具里只有 9 个触发（`open`/`edit`/`insert` 从不触发——这批轨迹的 `open` 全部 ≤111 行，
 p99 = 104 行，所以"读文件"这条最贵的路径根本进不了窗口）。语料级只削 6.4%，
-但一旦触发就丢掉 18%–73% 的错误信号；`ls` 削 84.6% 只剩 18% 的错误词元。
+因为窗口在 12 个工具的绝大多数调用上不生效。
+
+**只看真正触发的那 29 条（附录 A.16）结论要重得多**：
+
+| 工具 | n | tokens | cap 后 | 削减 | error 词元保留 | `path:line` 保留 |
+|---|---:|---:|---:|---:|---:|---:|
+| search_dir | 4 | 144,000 | 20,392 | 85.8% | **35%** | – |
+| submit | 8 | 143,186 | 20,352 | 85.8% | **7%** | – |
+| ls | 5 | 90,913 | 12,192 | 86.6% | **18%** | – |
+| find_file | 5 | 49,608 | 13,287 | 73.2% | **43%** | – |
+| sphinx-build | 1 | 25,504 | 2,577 | 89.9% | **0%** | 3% |
+| python / find / python3 / make / cd / cat / pytest | 7 | 81,703 | 22,392 | 33%–89% | 5%–100% | 24%–100% |
+| **合计** | 29 | **545,009** | **90,988** | **83.3%** | **32.5%** | **5.5%** |
+
+→ 一旦触发，`cap(50,200)` 平均削掉 83% 的 token，同时**只剩 32.5% 的错误词元**、
+`path:line` 只剩 5.5%。上表"合计 82.5%"是被那两个巨型工具的错误词元数拉高的；
+按触发样本算才是真实代价。
 
 (b) 用 `rtk-engine` 在真实语料上跑 `strategy::render`（附录 A.2）：
 
@@ -701,7 +717,8 @@ RTK `methods/grep_group.rs`：
 这个 `k` 选择器值得单独看（我直接编译了它的 `adaptive_sizer.rs` 跑真实语料，附录 A.14）。
 算法三层：`n <= 8` 全留 → simhash 去重后 ≤3 组就直接留 3 → 否则在"唯一 bigram 覆盖率曲线"上
 找拐点（要求偏离对角线严格 >0.05），有多样性下限 `n*(0.3+0.7*diversity)`；
-最后用 zlib(level=1) 压缩比差 >15% 就把 k 调高 20%。依赖只有 `flate2` + `md-5`。
+最后用 zlib(level=1) 压缩比差 >15% 就把 k 调高 20%。依赖只有 `flate2 1` + `md-5 0.10`
+（该 crate 自己 `license = "Apache-2.0"`，仓内 `LICENSE` 是 Apache-2.0 全文）。
 
 关键发现：**`k` 的选择强烈依赖"输入的排列顺序"**。它默认 `items` 是按重要性排好序的，
 只保前 k 条。直接把原始行序喂进去，信号损失很严重（附录 A.14，信号词元 =
@@ -1046,13 +1063,18 @@ RTK 的 `MethodInfo` 用 `lossy: bool` + `recovery: None|Recall|RetrieveTool|Poi
 
 （全部经 crates.io `/api/v1/crates/<n>/<v>` 核于 2026-10-19。）
 
-**lean-ctx 的许可要按分域读**（`LICENSE_MATRIX.toml`）：`distribution = "apache-host"`，
-`pre_v4_apache_cut = "b4429b80…"`；规则 11 `public-trust-core-runtime`（class `public_trust_core`，apache）
-覆盖 `rust/**` 等，**排除** `rust/src/commercial/**`、`rust/src/team/**`、`rust/src/enterprise/**`、
-`rust/src/core/license/**`、`rust/src/core/licensing/keygen.rs`、`rust/src/cli/license_cmd.rs`；
-这些由另一条 `commercial-source` 规则（class `commercial`）覆盖。
-→ 引用 lean-ctx 的 `json_crush.rs` / `ast_prune.rs`（均在 `rust/src/core/` 且不在排除列表里）属于 apache 域，
-但**引用前要按文件逐个核**，不能按"整个仓库 Apache-2.0"概括。
+**lean-ctx 的许可要按分域读**（`LICENSE_MATRIX.toml`，13+ 条 `[[rules]]`）：
+文件头 `distribution = "apache-host"`、`authority = "LICENSE.md"`、`pre_v4_apache_cut = "b4429b80…"`。
+规则 1 `private-service`、规则 2 `commercial-source`、规则 3 `commercial-license-text`
+都带 `forbidden_public = true`；规则 2 覆盖 `rust/src/commercial/**`、`rust/src/team/**`、
+`rust/src/enterprise/**`、`commercial/**`、`enterprise/**`。
+规则 11 `public-trust-core-runtime`（`license = "apache"`）覆盖 `rust/**`，但 `exclude` 里除了
+规则 1/2 的路径，还排掉了 `rust/src/core/billing/success_fee.rs`、`rust/src/core/billing/stripe_invoice.rs`、
+`rust/tests/**`、`rust/examples/**`、`rust/crates/lean-ctx-sdk/**`——后三者由规则 8/9 各自以 apache 覆盖。
+
+→ 引用 lean-ctx 的 `json_crush.rs`、`ast_prune.rs`、`compressor.rs`（都在 `rust/src/core/` 且不在任何
+排除列表里）属 apache 域；但**引用前要按文件逐个对 `LICENSE_MATRIX.toml` 的 include/exclude 核**，
+不能按"整个仓库 Apache-2.0"概括，也不能只记住规则 11 的那几条排除项。
 
 ---
 
@@ -1081,7 +1103,7 @@ RTK 的 `MethodInfo` 用 `lossy: bool` + `recovery: None|Recall|RetrieveTool|Poi
 | TOON | L2 | 统一标量数组 | 数值文本规范化 | 形状门 + 与 minified 比 **token** | 真实服务数组 +27%；嵌套/长值无效 | 统一数组 encode 1.6 ms/34 KB（21–22 MB/s） | `toon-format 0.7` | 低 | MIT |
 | 源码签名骨架 | L2 | 源码 | 丢函数体 | 签名/导入/doc/闭合括号 | 需要改代码时有害；正则对宏/impl 失效 | 解析 O(bytes)，grammar 0.5–2 MB/语言 | `tree-sitter` + grammars；或 `regex` | 高（TS）/ 低（正则） | MIT |
 | token 真实计数 | 度量 | 全部 | 无 | 只用相对比较 / 绝对预算用真实值 | Anthropic 无公开 tokenizer | 首次初始化毫秒级；词表 2–4 MB | `tiktoken-rs` | 低—中 | MIT |
-| 头尾窗口 | L3 | 全部 | 丢中间 | 仅"已确认无信号" | 轨迹语料：只削 6.4%，触发处只留 82.5% 错误词元 | O(n)/O(n) | 手写 | 极低 | — |
+| 头尾窗口 | L3 | 全部 | 丢中间 | 仅"已确认无信号" | 语料级只削 6.4%；触发的那 29 条平均削 83%，错误词元只剩 32.5%、`path:line` 只剩 5.5% | O(n)/O(n) | 手写 | 极低 | — |
 
 **吞吐参考（`rtk-engine` release，Windows x86_64，附录 A.2/A.12）**：
 
@@ -1350,6 +1372,10 @@ A.14 **Kneedle 预算选择器**：`/tmp/ask`（`#[path]` 直接编译 lm-resize
 `cargo run --release -- <corpus> [bias]`；bias 默认 1.0，`min_k = 10`，`max_k = n`。
 第二个“按信号密度重排”的对照在同一 `main.rs` 里（信号词元定义为含
 error/fail/panic/assert/exception/warn 或 `file:line` 形态的空白分隔词）。
+
+A.16 **`cap(50,200)` 只看触发样本**：`/tmp/m33.py`（与 `m15.py` 同一语料与正则，
+但跳过 `cap(o) is o` 的未触发样本，汇总触发样本的 token 与 error/`path:line` 计数）。
+→ 29 条触发样本：545,009 → 90,988 tok（-83.3%），error 保留 32.5%，`path:line` 保留 5.5%。
 
 A.15 **grep 分组收益 vs 路径长度/形态**：同一脚本内联测量（43 命中 × 同一正文，只替换路径前缀），
 复刻 `grep_group.rs` 的 gate（`splitn(3,':')` + 第二段 `parse::<usize>()`）与输出格式。
