@@ -364,10 +364,29 @@ git log --color=always                    55785 字符 / 16824 tok → 11310 tok
 （`ESC[6n12;40R` 这一行是"正确行为"的对照：CSI 在 `n` 终结，后面的 `12;40R` 是模型输出，四者都保留。）
 
 → 只有 `engine/src/shape.rs:49-86` 的状态机同时覆盖 CSI 与 OSC（BEL 与 ST 两种终止符），
-但它在 `ESC(B` 上留下一个多余的 `B`（把 `(` 当终结字节）。产品里应该用 `vte 0.15`（状态机）
-或 `strip-ansi-escapes 0.2.1`，不要手抄任何一个现有实现。
+但它在 `ESC(B` 上留下一个多余的 `B`（把 `(` 当终结字节）。
 常见误述是"OSC 这点 RTK 处理了、squeez 没处理"——它**只在 `shape.rs` 层面成立**，
 在 `ansi` 方法层面正好相反（方法用的是正则，OSC 全残留）。
+
+**推荐的第三方实现也已实测**（附录 A.22，`vte 0.15.0` 与 `strip-ansi-escapes 0.2.1` 各写一遍）：
+
+```
+input                 strip-ansi-escapes        vte（自定义 Perform）
+"a\tb\tc"             "abc"      ← tab 丢失     "a\tb\tc"
+"line1\r\nline2"      "line1\nline2"  ← CR 丢失  "line1\r\nline2"
+"10%\r20%\r30%"       "10%20%30%"  ← 全部 CR     "10%\r20%\r30%"
+"ding\x07dong"        "dingdong" ← BEL 丢失     "dingdong"（我的 Perform 也没转发 BEL）
+"ab\x08c"             "abc"      ← BS 丢失      "abc"
+```
+
+`vte` 只提供状态机（`Perform::print` / `execute`），**要什么就自己往回调里写**——
+所以它是唯一能做到"只删 SGR/OSC、保留一切控制字符"的方案；
+`strip-ansi-escapes` 用 `vte` 但只把 `\n` 从 `execute` 里转发出去（`0.2.1` 的 `src/lib.rs:157-170`：`print` 写字符、`execute` 只认 `b'\n'`），其余控制字符全丢。
+而且在**不含 `ESC` 的真实文件**上它也会改字节：
+`traceback.txt`（200 个 CRLF 的 CR）、`engine/src/strategy.rs`（656 个 CR）、`engine/src/methods/cap.rs`（162 个 CR）都被它删掉，
+`grep.txt`/`ls.txt`/`find.txt`/`gitlog.txt`/`bench.py` 则字节不变。
+→ 结论：**用 `vte` 自己写 20 行 `Perform`，不要用 `strip-ansi-escapes`**；
+若用后者，必须把 CR/tab 的处理放在它外面（先取 CR 末帧再 strip），否则会静默丢掉进度条的重绘信息。
 
 ### 0.2 候选与适用条件（不做优先级排序）
 
@@ -388,7 +407,7 @@ git log --color=always                    55785 字符 / 16824 tok → 11310 tok
 | JSON 骨架 | 目标是"看形状"而非"读内容" | 40 项响应 3824→2253→**28** tok | 所有值都没了，回答不了"某条记录是什么" | 无 |
 | JSON 投影 | 已知相关字段（调用参数/Schema/键名匹配） | 40 项取 3/5 字段 2253→1523 tok（-32%） | 选错字段的值全部丢失 | 待补：字段信号从哪里来 |
 | 列式铲平（`_defaults`） | 数组内对象键/值高度重复 | 40 项 8 字段：6755→4681 字符（-30.7%），**不 bytes 可逆** | 键序改变；高熵列会被丢（`_dropped`） | 待补：Value 等价是否足够 |
-| TOON | 统一标量数组 **且** 键名相对值很长 | uniform_500 -44.9% token | 真实服务数组 **+27%**；嵌套/长值无用 | 待补：其他 tokenizer 上是否仍成立 |
+| TOON | 统一标量数组 **且** 键名相对值很长 | uniform_500 -44.9% token | 真实服务数组 **+27%**；嵌套/长值无用 | 已做（附录 A.19：`o200k_base` 上平铺型数值不变） |
 | 源码签名骨架 | "读文件做定位"，不随后 Edit | 600 函数 -49.3% 字符，签名 600/600 | 轨迹里 25.1% 的 open（69.9% 的 open token）随后被 Edit | E6（部分）：是否引发额外重读待补 |
 | Kneedle 预算选择（`compute_optimal_k`） | **候选集已按重要性排序** | 重排后信号词元保留 100%；未重排时真实 cargo 错误只留 3% | 假设顺序即重要性；对"前缀重复"型内容给 99%（几乎不压） | E10（附录 A.14） |
 | 头尾窗口 | 仅"已确认无信号"时的兜底 | 见 §0.1-3 | 见 §0.1-3 | 不做默认 |
@@ -581,8 +600,9 @@ across turns and the upstream prompt cache keeps hitting -- `validate` enforces 
 
 **成本**：O(n) 单遍，无额外分配；`contains('\x1b')` 快路径让无转义输入零开销。**复杂度：低。**
 
-**复用**：`vte 0.15`（`Apache-2.0 OR MIT`，终端状态机）或 `strip-ansi-escapes 0.2.1`
-（`Apache-2.0/MIT`）。别手抄现有四个实现中的任何一个。
+**复用**：`vte 0.15`（`Apache-2.0 OR MIT`，终端状态机）——自己实现 `Perform`，只白名单保留
+需要的控制字符。`strip-ansi-escapes 0.2.1` 已经实测会丢 tab/CR/BEL/BS（附录 A.22），**不要用**。
+别手抄现有四个实现中的任何一个。
 
 ### 4.2 相邻重复折叠 / RLE
 
@@ -780,7 +800,13 @@ RTK `methods/grep_group.rs`：
    `parts[1].parse::<usize>()` 失败 → `Outcome::Continue(原文)`（`:47`），
    **收益为 0（非负收益，也非负损失）**。Windows 上 `grep`/`rg` 默认输出就是这种形态，
    所以这个技术在默认 Windows 环境里基本不触发。这是实测（附录 A.15），不是推测。
-3. `never_worse` 必须存在：短行（+6.0%）和单条（+42.3%）会变大，`chars/4` 与真实 token 同向，能拦住。
+3. `never_worse` 必须存在，但它是 `bytes/4` 口径的弱闸门：短行（+6.0%）和单条（+42.3%）这两种在示例里能拦住，
+   大规模扫下来并不总是同向。附录 A.21 在 1480 个分组用例上逐例对比 `bytes/4` 与 `cl100k` 的“是否变小”判定：
+   **8.2% 符号相反**——73 例假拒（真实已变小却被丢，最差 -8.8%）、38 例假通（真实变大却被放行，最差 +18.3%）。
+   根因是 `     1: x`（5 tok）比 `hay:1:x`（4 tok）字符更少而 token 更多；翻转集中在**极短正文**上，
+   正文越长两边越一致（附录 A.21 的 `m50.py`：63 个真实压缩输出对上只有 2 例翻转）。
+   → 假设：对“重排版型”压缩应当直接用真 tokenizer 计数，或至少在短正文上禁用分组。这项尚未在
+   真 tokenizer 成本（`tiktoken-rs` 词表 2–4 MB）上验证，标为待定。
 4. **不能宣称"只改排版"**：trim 与空行跳过是有损的，YAML/缩进敏感内容的语义就在缩进里
    （附录 A.1 的 `m19.py`：4 条缩进 YAML 命中 41→44 tok，缩进被抹平；含一条空行命中的 3 条输入
    25→34 tok，空行消失。两者都被 `never_worse` 拒了，但那是运气）。
@@ -1170,7 +1196,7 @@ RTK 的 `MethodInfo` 用 `lossy: bool` + `recovery: None|Recall|RetrieveTool|Poi
 | 多模式匹配 | `aho-corasick` | 1.1.5 | Unlicense OR MIT | 信号行检测 |
 | 字节查找 | `memchr` / `bstr` | 2.8.3 / 1.13.1 | Unlicense OR MIT / MIT OR Apache-2.0 | |
 | 终端状态机 | `vte` | 0.15.0 | Apache-2.0 OR MIT | 推荐用于 ANSI |
-| ANSI 剥离 | `strip-ansi-escapes` | 0.2.1 | Apache-2.0/MIT | 覆盖 OSC |
+| ANSI 剥离 | ~~`strip-ansi-escapes`~~ | 0.2.1 | Apache-2.0/MIT | **实测会丢 tab/CR/BEL/BS**；只用 `vte` 自写 |
 | TOON | `toon-format` | 0.7.0 | MIT | RTK 钉 0.5.0 |
 | 日志模板 | `drain3` | 0.3.0 | Apache-2.0 | 依赖偏重，可重写 |
 | 真实 tokenizer | `tiktoken-rs` | 0.12.1 | MIT | 词表 2–4 MB |
@@ -1212,7 +1238,7 @@ order 17 `private-runtime-build`。规则 2 覆盖 `rust/src/commercial/**`、`r
 
 | 技术 | 层 | 内容类型 | 信息变化 | 保留规则 | 实测/已知失效 | CPU / 内存 | Rust 复用 | 复杂度 | 许可 |
 |---|---|---|---|---|---|---|---|---|---|
-| ANSI/OSC 剥离 | L1 | 全部终端输出 | 去渲染指令 | 保留文本 | 现有四个实现都不完整；OSC/私有模式/`ESC(B` 会残留或吞字 | O(n)/O(1)，无 `ESC` 零开销 | `vte`、`strip-ansi-escapes` | 低 | Apache-2.0 OR MIT |
+| ANSI/OSC 剥离 | L1 | 全部终端输出 | 去渲染指令 | 保留文本 | 现有四个实现都不完整；OSC/私有模式/`ESC(B` 会残留或吞字；`strip-ansi-escapes` 丢控制字符 | O(n)/O(1)，无 `ESC` 零开销 | `vte`（自写 Perform） | 低 | Apache-2.0 OR MIT |
 | CR 进度帧取末帧 | L1 | 交互式 CLI | 丢中间帧 + CRLF→LF | 末帧全文 | `\r` 多段覆盖丢信息 | O(n)/O(1) | 手写 | 低 | — |
 | 行号剥离 | L1 | 文件读 | 丢定位（可再生） | 仅 `TRUSTED_SEPS` + `file_coords` | `12:` 误判；按行号 Edit 时有害；Tab 档实测 -8.8% ~ -14.5% tok | O(n)/O(1) | 手写 | 低 | — |
 | 相邻重复折叠 | L2 | 日志/构建 | 丢"位置重复"，插入 `[xN]` 行 | 计数、仅相邻、仅非空、run≥3 | 跨距离折叠改因果 | O(n)/O(1) | 手写 | 极低 | — |
@@ -1583,7 +1609,7 @@ lean-ctx/.../json_crush.rs   587     6210 ->  5487  -11.6%   -18.3%   -17.4%
 
 合成 `    let value_i = compute(i);` ×100/1000/10000 行、Tab 编号：-9.1% / -9.1% / -13.9%
 （1–4 位行号与 Tab 合并成 1 token，5 位数字要 2 token，所以万行以上更贵）。
-`cat -n` 输出 `%6d	%s`，落在 Tab 档；`nl -ba` 默认也是 Tab。
+`cat -n` 输出 `%6d\t%s`，落在 Tab 档；`nl -ba` 默认也是 Tab。
 注意：这里**只测"剥掉后省多少"**，没有测"下游因为少了行号而多跑一轮"的代价。
 
 A.21 **`chars/4` 闸门的符号翻转率**：`/tmp/m51.py`，对 grep 分组做 10 种路径 × 4 种正文 ×
@@ -1603,12 +1629,32 @@ cases: 1480 | sign flips: 122 (8.2%)
 （`a.rs` + 长正文 ×10、`engine/src/hay.rs` ×3），说明这种翻转集中在**短正文**上：
 正文越长，路径占总 token 的比例越高，`chars/4` 与真实计数越一致。
 
+A.22 **`vte` vs `strip-ansi-escapes` 的控制字符保真**：`C:/tmp/vecchk`（`vte 0.15.0` + `strip-ansi-escapes 0.2.1`），
+`src/main.rs`（13 种转义形态并排）、`src/bin/c2.rs`（控制字符对照）、`src/bin/c3.rs`（真实语料字节差）。
+`strip_ansi_escapes::strip` 内部是 `vte::Parser` 驱动一个 `Perform` 实现，该实现只处理 `print` 与白名单
+`execute`（只回吐 `\n`；`0.2.1` 的 `src/lib.rs:157-170`），`csi_dispatch`/`esc_dispatch`/`osc_dispatch`/`hook` 全为空实现——
+所以它不只是"去转义"，还会吞掉 `\t`、`\r` 和 BEL。关键结果：
+
+```
+输入                  strip-ansi-escapes        vte（自定义 Perform 保留 \t\r\n）
+"a\tb\tc"             "abc"                     "a\tb\tc"
+"10%\r20%\r30%"       "10%20%30%"               "10%\r20%\r30%"
+"line1\r\nline2"      "line1\nline2"            "line1\r\nline2"
+"ding\x07dong"        "dingdong"                "dingdong"（我的 Perform 未转发 BEL，两边都吞）
+```
+
+真实文件上 `strip-ansi-escapes` 的字节差：`traceback.txt` −200（**全部是 CRLF 的 CR**）、
+`engine/src/strategy.rs` −656、`engine/src/methods/cap.rs` −162、`cargo_err_color.txt` −30279、
+`gitlog_color.txt` −6400；`grep.txt`/`ls.txt`/`find.txt`/`gitlog.txt`/`bench.py` 不变。
+`vte` 侧 13 种转义形态全部正确剥离（含 OSC-8 BEL/ST、`ESC(B`、`CSI ?25l`、`CSI 38:5:196m`、8-bit C1）。
+→ 选 `vte` 而不是 `strip-ansi-escapes` 的理由是**可控性**（能自己决定回吐哪些控制字符），不是体积或速度差异。
+
 **复现注意**
 - `chars` 一律按 Unicode 字符数（Rust `chars().count()`），`bytes` 明写。
 - `tiktoken` 的 `cl100k_base` 与 Claude 实际 tokenizer 无关（§8-1）。
 - 所有 RTK 数值取自提交 `e542dca0`；`toon-format` 数值取自 `0.7.0`，与 RTK 钉的 `0.5.0` 交叉验证了两个关键用例。
 - 探针都不入库：仓库里只有本文。探针源码留在 `%TEMP%`（少数输出落在 `C:/tmp`，见 A.3/A.12），
-  节点（文件 + 函数 + 参数）在 A.1–A.21 里可定位；
+  节点（文件 + 函数 + 参数）在 A.1–A.22 里可定位；
   依赖版本见 §5.4 与本节环境行。
 - 本轮对每个引用过的脚本都重跑了一次以确认还能复现（`sc2/m1.py`、`m10.py`、`m14.py`、`m21.py`、`m31.py`、
   `m34.py`、`m35.py`、`meas5.py`、`meas6.py`、`m46.py`、`m47.py`、`m48.py`、`m50.py`、`m51.py`），数字与正文一致。
