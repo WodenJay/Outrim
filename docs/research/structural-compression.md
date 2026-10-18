@@ -1404,21 +1404,21 @@ A.14 **Kneedle 预算选择器**：`/tmp/ask`（`#[path]` 直接编译 lm-resize
 第二个“按信号密度重排”的对照在同一 `main.rs` 里（信号词元定义为含
 error/fail/panic/assert/exception/warn 或 `file:line` 形态的空白分隔词）。
 
-A.16 **`cap(50,200)` 只看触发样本**：`/tmp/m33.py`（与 `m15.py` 同一语料与正则，
-但跳过 `cap(o) is o` 的未触发样本，汇总触发样本的 token 与 error/`path:line` 计数）。
-→ 29 条触发样本：545,009 → 90,988 tok（-83.3%），error 保留 32.5%，`path:line` 保留 5.5%。
-
 A.15 **grep 分组收益 vs 路径长度/形态**：`/tmp/m34.py`（43 命中 × 同一正文，只换路径，
 实测 4/6/10/11/17/41/60 字符七档，对应 2/2/4/3/5/12/17 tok）
 + `/tmp/m35.py`（真实 fixture 正文 × 11 字符 vs 41 字符路径，用来把“正文短”与“路径短”两个因素分开）。
 复刻 `grep_group.rs` 的 gate（`splitn(3,':')` + 第二段 `parse::<usize>()`）与输出格式。
 `C:/…` 与 `C:\…` 两种形态触发 gate 失败 → 原文放行。
 
+A.16 **`cap(50,200)` 只看触发样本**：`/tmp/m33.py`（与 `m15.py` 同一语料与正则，
+但跳过 `cap(o) is o` 的未触发样本，汇总触发样本的 token 与 error/`path:line` 计数）。
+→ 29 条触发样本：545,009 → 90,988 tok（-83.3%），error 保留 32.5%，`path:line` 保留 5.5%。
+
 **复现注意**
 - `chars` 一律按 Unicode 字符数（Rust `chars().count()`），`bytes` 明写。
 - `tiktoken` 的 `cl100k_base` 与 Claude 实际 tokenizer 无关（§8-1）。
 - 所有 RTK 数值取自提交 `e542dca0`；`toon-format` 数值取自 `0.7.0`，与 RTK 钉的 `0.5.0` 交叉验证了两个关键用例。
-- 探针都不入库：仓库里只有本文。探针源码留在 `%TEMP%`，节点（文件 + 函数 + 参数）在 A.1–A.15 里可定位；
+- 探针都不入库：仓库里只有本文。探针源码留在 `%TEMP%`，节点（文件 + 函数 + 参数）在 A.1–A.16 里可定位；
   依赖版本见 §5.4 与本节环境行。
 - 时间是本机单次测量（无重复试验、无 CI），只用于"数量级"判断；`drain_probe` 与 `renderprobe`
   的两次运行出现过 2 倍差异，凡此类都写成区间。
