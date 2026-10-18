@@ -1179,7 +1179,9 @@ trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径。
 见 §4.3.4。已确认空行炸弹、吞吐、堆栈帧被固化成模板字面量。
 
 **E9 真实轨迹语料的工具分布与规模**（`m13.py`、`m15.py`）
-10037 条非空 observation / 649.6 万 token；`edit`/`open`/`goto`/`insert` 占 **80.9%** 语料 token（top-12 里占 83.1%）且全部不触发窗口。
+10037 条非空 observation / 649.6 万 token（58 个工具名）；`edit`/`open`/`goto`/`insert` 四个工具占 **80.9%**
+语料 token，且**全部不触发窗口**（`edit` 36.2%、`open` 24.5%、`goto` 11.7%、`insert` 8.6%）。
+换句话说：cap 的成本（83% 削减 / 32.5% 错误词元）只落在占语料 8.4% token 的 29 条超大输出上。
 
 **E10 Kneedle 预算选择器在真实语料上的可移植性与排序依赖**（`/tmp/ask`，附录 A.14）
 直接编译 lm-resizer 的 `adaptive_sizer.rs`：真实 cargo 错误日志上未重排时只保留 **3%** 信号词元
