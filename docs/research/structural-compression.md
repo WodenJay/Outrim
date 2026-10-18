@@ -42,6 +42,8 @@ publicly available distribution … whichever comes first"。
 并且 `--no-default-features` 可以把 `rtk-engine` 整个从依赖图里移除（`docs/guide/resources/editions.md:66-77`，
 该处同时复述了 grant 的边界并指向 `contact@rtk-ai.app`）。
 `text/` 是 `rtk-text`，`license = "Apache-2.0"`、`publish = false`、单依赖 `regex`、共 139 行。
+**BUSL 不止 engine**：`proxy/Cargo.toml:17` 与 `plugin/Cargo.toml:8` 也都是 `BUSL-1.1`，
+只有根 `Cargo.toml:30` 的 `rtk` CLI 与 `text/Cargo.toml:8` 是 Apache-2.0。
 
 → 结论：**读机制、重写实现**。这不只是许可洁癖：§4 里几乎所有技术点都要改（见 4.1、4.4），
 照抄反而会照抄它们的缺陷。
@@ -410,7 +412,7 @@ token 估算与阈值、Rust 复用面与许可。
 
 | 项目 | 仓库 | 提交 | 版本 | 许可 |
 |---|---|---|---|---|
-| RTK | `github.com/rtk-ai/rtk` | [`e542dca0`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/Cargo.toml) | 0.49.0 | **Apache-2.0（CLI + `rtk-text`）+ BUSL-1.1（`rtk-engine`）** |
+| RTK | `github.com/rtk-ai/rtk` | [`e542dca0`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/Cargo.toml) | 0.49.0 | **Apache-2.0（`rtk` CLI + `rtk-text`）+ BUSL-1.1（`rtk-engine` + `rtk-proxy` + `plugin`）** |
 | LM Resizer | `github.com/phuetz/lm-resizer` | [`c3007c25`](https://github.com/phuetz/lm-resizer/blob/c3007c25197a98a359e5304c2d28949968d39247/Cargo.toml) | 0.2.6 | Apache-2.0 |
 | squeez | `github.com/claudioemmanuel/squeez` | [`b8d46531`](https://github.com/claudioemmanuel/squeez/blob/b8d46531efa550f41d6f4057af125fcf4c812bbc/Cargo.toml) | 1.48.18 | Apache-2.0 |
 | lean-ctx | `github.com/yvgude/lean-ctx` | [`dc41bb19`](https://github.com/yvgude/lean-ctx/blob/dc41bb19982e5bd93a2c0862702bfd3a0bcea169/LICENSE_MATRIX.toml) | 3.11.4 | Apache-2.0（分域，见 §5.4） |
@@ -526,15 +528,20 @@ across turns and the upstream prompt cache keeps hitting -- `validate` enforces 
 （`line.rsplit('\r').find(|seg| !seg.is_empty())`），显式 `lossy: true, recovery: Recall`。
 它同时把 CRLF 规范化成 LF（测试 `test_crlf_normalized_to_lf`），这条容易被忽略。
 
-**行号**：`methods/strip_line_numbers.rs` 是 `lossy: true, recovery: Recovery::None, idempotent: false`，
-门是 `if !normalized.had_numbering || !normalized.file_coords { return Outcome::Skip }`。
+**行号**：`methods/strip_line_numbers.rs:12-20` 是 `lossy: true, recovery: Recovery::None, idempotent: false`，
+门是 `if !normalized.had_numbering || !normalized.file_coords { return Outcome::Skip }`（`:25`）。
+`had_numbering` / `file_coords` 由 `shape::normalize`（`shape.rs:113-167`）算：
+非空行 ≥5、能解析成 `num<sep>…` 的行占 ≥80%、所有编号行同一分隔符、编号严格递增，四条全成立才算
+`had_numbering = true`；再看分隔符是否属于 `TRUSTED_SEPS = ['\t','→','|']`（`shape.rs:8`）。
+`ALL_SEPS` 包含 `':'`，但 `':'` 不在 `TRUSTED_SEPS` 里，所以 `grep -n` 的 `12:` 形态**必然**被拒。
 默认 `enabled = false`（posthook.toml）。
 
 **失效例子**
 - OSC/私有模式残留（§0.1-10 表）。
 - `\r` 多段覆盖的程序会丢中间段。
-- 行号：`grep -n` 的 `12:` 若被当行号剥掉会改语义；RTK 用 `TRUSTED_SEPS` 排除了 `:`。
-  但反过来，**按行号做 Edit 的 agent 需要行号**，所以这也解释了 §0.1-7 的 `ls` 现象不是行号问题。
+- 行号：`grep -n` 的 `12:` 若被当行号剥掉会改语义；RTK 用 `TRUSTED_SEPS` 排除了 `:`，
+  且要求编号严格递增（`grep -C` 的重叠上下文不递增 → 整块不剦）。
+  反过来，**按行号做 Edit 的 agent 需要行号**，所以这也解释了 §0.1-7 的 `ls` 现象不是行号问题。
 
 **这三个子项不是普遍语义无损，各自有前提**（§1 把 L1 记为“条件无损”就是这个意思）：
 
@@ -542,7 +549,7 @@ across turns and the upstream prompt cache keeps hitting -- `validate` enforces 
 |---|---|---|
 | strip ANSI | 用的是完整终端状态机（CSI 全参数类 + OSC 的 BEL/ST + 私有模式 `?` + `ESC(` 类字符集切换）；OSC 8 超链的可见文本与 URL 分离处理 | 漏 OSC 就残留字节；吞错字符就吃掉正文（lean-ctx）；`ESC(B` 处理错会多出一个 `B` |
 | CR 取末帧 | 输出方确实用 `\r` 做“重绘同一行”（进度条），且末帧就是最终状态 | 多段覆盖（`\r` 分段打印不同内容）会丢中间段；`\r` 后无新帧的行会变成空行；CRLF 会被改成 LF |
-| 剥行号 | 行号前缀可识别（`TRUSTED_SEPS`）**且**下游不靠行号定位（不再拿`12:`去 Edit）；单文件与多文件一致 | 剥掉 `grep -n` 的 `12:` 会改语义；要按行号编辑时 agent 得重读原文（多一轮上下文） |
+| 剥行号 | 行号前缀可识别（`TRUSTED_SEPS` = `\t`/`→`/`|`，**不含 `:`**）**且** `shape::normalize` 的四条判据全成立（非空行 ≥5、编号行占 ≥80%、所有行同一分隔符、编号严格递增）**且** 下游不靠行号定位 | 剥掉 `grep -n` 的 `12:` 会改语义；要按行号编辑时 agent 得重读原文（多一轮上下文）；编号不严格递增（如 `grep -C` 重叠上下文）时整块弃用，不会错剥 |
 
 三条都是“**输出侧的渲染层**去掉后文本仍可读”，不保证“**信息**不变”：颜色可能编码了级别
 （红=error），行号可能编码了顺序，CR 覆盖可能编码了“这条被后一条取代”的因果。
@@ -1079,11 +1086,11 @@ RTK 的 `MethodInfo` 用 `lossy: bool` + `recovery: None|Recall|RetrieveTool|Poi
 |---:|---:|---:|
 | 8 字符 | 5.20 tok | 3.00 tok |
 | 12 字符 | 7.10 tok | 4.00 tok |
-| 16 字符 | 9.73 tok | 5.80 tok |
+| 16 字符 | 9.73 tok | 6.00 tok |
 | 24 字符 | 13.47 tok | 8.00 tok |
 
 单条方差很大（16 位 hex 一条实测 15 tok、另一条 7 tok），所以上表里的 `7a3f9c2e1b4d6a80` = 15 是**该样本**的值，
-不代表均值。结论：**同样字符长度下十进制比 hex 便宜约 35–40%**，8 位十进制只需 3 token
+不代表均值（同长度 hex 样本均值 9.73）。结论：**同样字符长度下十进制比 hex 便宜 38%–44%**，8 位十进制只需 3 token
 （数字串按 ~2–3 位一 token 合并）。`[+1873L 74039156]` = 10 tok 是很好的折中：
 带被删行数（有助于模型判断"要不要取回"）+ 3 token 的句柄。
 `[xN]`、`[N lines elided]` 这类纯计数标记都很便宜（≤6 tok）。
@@ -1159,27 +1166,28 @@ order 17 `private-runtime-build`。规则 2 覆盖 `rust/src/commercial/**`、`r
 | JSON 骨架 | L2 | JSON | 丢所有值 | 键/长度/类型/小字符串 | 回答不了"这条记录是什么" | O(n)/O(n) | 手写 ~120 行 | 低 | — |
 | JSON 投影 | L2 | JSON | **丢未选中字段**（保留被选字段的真实值） | 需要字段相关性信号 | 选错字段 = 信息归零 | O(n)/O(n) | `serde_json` + `jsonpath-rust` | 低—中 | MIT |
 | 列式铲平（`_defaults`） | L2 | JSON 数组 | 键序变；lossy 版丢高熵列 | 2× 收益门 + 外置原文 | lossless 版也不是字节可逆 | O(n)/O(n) | lean-ctx `json_crush.rs`（apache 域） | 中 | Apache-2.0 |
-| TOON | L2 | 统一标量数组 | 数值文本规范化 | 形状门 + 与 minified 比 **token** | 真实服务数组 +27%；嵌套/长值无效 | 统一数组 encode 1.6 ms/34 KB（21–22 MB/s） | `toon-format 0.7` | 低 | MIT |
+| TOON | L2 | 统一标量数组 | 数值文本规范化 | 形状门 + 与 minified 比 **token** | 真实服务数组 +27%；嵌套/长值无效 | 统一数组 encode 1.35–1.47 ms/35 KB（23–25 MB/s） | `toon-format 0.7` | 低 | MIT |
 | 源码签名骨架 | L2 | 源码 | 丢函数体 | 签名/导入/doc/闭合括号 | 需要改代码时有害；正则对宏/impl 失效 | 解析 O(bytes)，grammar 0.5–2 MB/语言 | `tree-sitter` + grammars；或 `regex` | 高（TS）/ 低（正则） | MIT |
 | token 真实计数 | 度量 | 全部 | 无 | 只用相对比较 / 绝对预算用真实值 | Anthropic 无公开 tokenizer | 首次初始化毫秒级；词表 2–4 MB | `tiktoken-rs` | 低—中 | MIT |
 | 头尾窗口 | L3 | 全部 | 丢中间 | 仅"已确认无信号" | 语料级只削 6.4%；触发的那 29 条平均削 83%，错误词元只剩 32.5%、`path:line` 只剩 5.5% | O(n)/O(n) | 手写 | 极低 | — |
 
 **吞吐参考（`rtk-engine` release，Windows x86_64，附录 A.2/A.12）**：
+每次均跑 3 遍取区间，同一台机器上单次波动可达 ±30%，所以给区间而不是单值。
 
 ```
-strategy::render 全量（含校验）  2.9216 MB → 58 ms   (50 MB/s)
-单独 classify（自写原型）        600 函数源码 0.61 ms/op (141 MB/s)
-                                 3000 行日志  0.48 ms/op (307 MB/s)
-                                 2000 grep 命中 0.45 ms/op (358 MB/s)
-模板折叠 + 槽位统计              3000 行日志  2.40 ms/op (61 MB/s)
-                                 600 函数源码 1.79 ms/op (48 MB/s)
-grep 分组                       2000 命中    0.80 ms/op (200 MB/s)
-TOON encode                      500 行统一数组 1.64 ms/op (21 MB/s)
-Drain train+match                1600 行→4 模板 2.6 ms；匹配 0.9–1.8M 行/s
+strategy::render 全量（含校验）  2.9216 MB → 47–72 ms   (41–63 MB/s)
+单独 classify（自写原型）        600 函数源码  0.56–0.60 ms/op (143–155 MB/s)
+                                 3000 行日志  0.42–0.45 ms/op (322–351 MB/s)
+                                 2000 grep 命中 0.29–0.48 ms/op (337–546 MB/s)
+模板折叠 + 槽位统计              3000 行日志  1.92–2.03 ms/op (72–76 MB/s)
+                                 600 函数源码 1.49–1.73 ms/op (50–58 MB/s)
+grep 分组                       2000 命中    0.74–0.91 ms/op (176–216 MB/s)
+TOON encode                      500 行统一数组 1.35–1.47 ms/op (23–25 MB/s)
+Drain train+match                1600 行→4 模板 1.0–2.6 ms；匹配 0.9–1.8M 行/s
 ```
 
 → 这些操作都在**单毫秒到几十毫秒**量级，对首 token 延迟不构成风险；唯一例外是 `render()` 的全量通关
-（50 MB/s，因为它对每份语料都先 normalize + extract + JSON 试解析）。
+（41–63 MB/s，因为它对每份语料都先 normalize + extract + JSON 试解析）。
 入口压缩应该按内容类型直接分派，不要对每段输出都跑完整分类。
 
 ---
