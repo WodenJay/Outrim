@@ -199,7 +199,7 @@ mcp.json 137697 字符 minified → toon 1.139 字符 / 1.070 token   （原始 
 
 → **TOON 只在"键名相对值很长"的表格型数组上赢，且必须与 minified 比 token，不能比字符**；
 单行数组上它只值 -5.6% token（上表第一行）——`is_uniform_flat_array` 要求 `len() >= 2` 正好把这个
-无效区间挡在外面；真实服务数组上它是 +27% token。规范自己也把这一点列为非目标（`SPEC.md:100-103`：
+无效区间挡在外面；真实服务数组上它是 +27% token。规范自己也把这一点列为非目标（`SPEC.md:104-106`：
 "not intended to replace: JSON for non-uniform or deeply nested structures where repeated keys are not dominant"）。
 RTK 钉的是 `toon-format 0.5.0`（`engine/Cargo.toml:17`）；我用 0.5.0 交叉验过同样两例（uniform 0.521、
 github 1.021），结论在两个版本上一致。
@@ -894,9 +894,14 @@ lossy 铲平     310 字符（0.046）  _dropped=[id, latency_ms, name, trace, t
 
 TOON（`SPEC.md` v4.4）是 JSON 数据模型的行式、缩进式编码，四种形态：
 inline（原始类型数组，`[3]: 1,2,3`）、list、tabular（`users[2]{id,name}:` + 行）、keyed tabular。
-规范强制：数组保序；对象键序除 tabular 按表头重排外保序；数字必须是**最简规范十进制**
-（`1e6`→`1000000`、`-0`→`0`、`1.0`→`1`），NaN/±Inf→null，孤立代理项报错。
+规范强制（`SPEC.md:197-225`）：数组保序；对象键序除 tabular 按表头重排外保序；
+数字在 `1e-6 ≤ |n| < 1e21` 内必须是**最简规范十进制**（`1e6`→`1000000`、`-0`→`0`、`1.0`→`1`、
+`1.5000`→`1.5`），越界（`|n| < 1e-6` 或 `|n| ≥ 1e21`）**允许**用指数写法；NaN/±Inf→null；
+超出宿主数值域的值（任意精度小数、超长整数）**二选一**：带引号的十进制字符串，或会丢精度的近似数；
+含未配对代理项（U+D800–U+DFFF）的字符串**不许编码，必须报错**（`SPEC.md:226`，不得替换成 U+FFFD）。
 tabular 内一层嵌套对象可折进表头（`customer{name,country}`），行保持扁平。
+注意 tabular 的键序「相等」是专门定义过的：`§9.3`/`§9.5` 下解码键序等于表头字段序，
+所以"Value 相等"在这个编码里已经内建了重排例外，不是严格的对象相等。
 
 实测（`toon-format 0.7.0` + `serde_json`，附录 A.3）
 
