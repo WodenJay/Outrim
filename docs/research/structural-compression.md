@@ -109,15 +109,15 @@ p99 = 105 行（2125 条），远低于 `MAX_LINES = 300`，所以"读文件"这
 (b) 用 `rtk-engine` 在真实语料上跑 `strategy::render`（附录 A.2）：
 
 ```
-grep.txt     238366 ch 2000 行 → headtail   →   3293 ch (-98.6%)   58155→871 tok
-find.txt      76379 ch 1709 行 → headtail   →   1137 ch (-98.5%)   18722→306 tok
-ls.txt        41817 ch  800 行 → headtail   →   1516 ch (-96.4%)   19490→725 tok
-traceback.txt 10660 ch  200 行 → headtail   →   1464 ch (-86.3%)    3240→453 tok
-gitlog.txt   992659 ch 15631 行→ headtail   →   1447 ch (-99.9%)  252909→283 tok
-bench.py       8648 ch  211 行 → structural →   2952 ch (-65.9%)    2602→897 tok
-json.txt      42630 ch    1 行 → json-skeleton → 124 ch (-99.7%)   18160→50 tok
-mcp.json     137697 ch    1 行 → json-skeleton → 112 ch (-99.9%)   30101→39 tok
-install.txt    1101 ch   18 行 → render=None（never_worse 拦下）        417→417
+grep.txt     238366 ch 2000 非空行 → headtail   →   3293 ch (-98.6%)   58155→871 tok
+find.txt      76379 ch 1709 非空行 → headtail   →   1137 ch (-98.5%)   18722→306 tok
+ls.txt        41817 ch  800 非空行 → headtail   →   1516 ch (-96.4%)   19490→725 tok
+traceback.txt 10660 ch  200 非空行 → headtail   →   1464 ch (-86.3%)    3240→453 tok
+gitlog.txt   992659 ch 15631 非空行→ headtail   →   1447 ch (-99.9%)  252909→283 tok
+bench.py       8648 ch  211 非空行 → structural →   2952 ch (-65.9%)    2602→897 tok
+json.txt      42630 ch    1 非空行 → json-skeleton → 124 ch (-99.7%)   18160→50 tok
+mcp.json     137697 ch    1 非空行 → json-skeleton → 112 ch (-99.9%)   30101→39 tok
+install.txt    1101 ch   18 非空行 → render=None（never_worse 拦下）        417→417
 ```
 
 （`ch` 为 Unicode 字符数，`tok` 为 cl100k 真实计数；`cut%` 用 token 算，`chars/4` 算出的削减率
@@ -784,7 +784,7 @@ RTK `methods/grep_group.rs`：
 折叠后还要过 `never_worse`（`search.rs:588`）。
 **实测**（`m37.py`，本地语料）：`find.txt`（1709 行绝对路径，公共前缀 `/tmp/hr/`）
 ch 76378→62729（-17.9%）、tok 18721→15269（**-18.4%**）；`ls.txt`（872 行相对名）公共前缀只有 `/`
-→ **不折**；`grep.txt`（1500 行 `path:line:text`，不满足 bare-file-list 条件）强拆路径后为 -11.7% ch / -10.8% tok
+→ **不折**；`grep.txt`（2000 行 `path:line:text`，不满足 bare-file-list 条件）强拆路径后为 -11.7% ch / -10.8% tok
 — 这个数字不能算作该技术的收益，只说明"改掉格式后还有多少剩余冗余"。
 → 结论：这个技术对小而深的配置仓库有用（20% 量级），对平坦目录几乎无效。
 `compact_path()`（`:1178`）把 >50 字符且 >3 层的路径压成 `first/.../parent/leaf`——
@@ -1241,7 +1241,7 @@ Drain train+match                1600 行→4 模板 1.0–2.6 ms；匹配 0.9�
 **E1 形状分类在真实语料上的分布**（`engprobe/bin/shapeprobe`）
 10 份真实语料：`repetitive` 5 份（grep/find/ls/gitlog/install）、`nested` 3 份
 （`bench.py`、`failing.py`、`traceback.txt`——后者因 4 空格堆栈帧 `indent_sd=6053` 被判 nested）、
-`structured` 2 份（`json.txt`、`mcp.json`，均为单行 JSON）。`install.txt`（18 行）`prefix_rep=500` 刚好压线。
+`structured` 2 份（`json.txt`、`mcp.json`，均为单行 JSON）。`install.txt`（18 非空行）`prefix_rep=500` 刚好压线。
 → 阈值 1500/500/950 在这批语料上"能跑"，但 `nested` 与代码的分界靠 `indent_sd` 单特征，日志会混进来。
 
 **E2 grep 分组忠实性**（`sc2/m1.py`、`sc2/m2.py`、`sc2/m5.py`、`m10.py`、`m19.py`）
