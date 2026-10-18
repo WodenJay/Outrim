@@ -492,6 +492,9 @@ across turns and the upstream prompt cache keeps hitting -- `validate` enforces 
 `after_tool.web` 用 `web`。`json-reads` 与 `strip-line-numbers` 都是 `enabled = false`。
 
 `builtin/proxy.toml`（extends default）只加 `cache-align`，并注明 "CCR … not enabled here"。
+注意三者的作用点不同：`default` 的 `normalize` 作用在 **proxy.request**（发送前，不落盘）；
+`posthook` 的 `after_tool.*` 作用在 **hook**（工具返回后、写入 conversation 前），
+这才是“入口”语义；`proxy.toml` 只做 cache 对齐。
 
 → **这里有一处直接的自相矛盾**：`default.toml` 头部断言 "Nothing here is lossy"，
 而它启用的 `normalize` 链里 `progress` 的 `MethodInfo` 是 `lossy: true, recovery: Recall`
@@ -1187,7 +1190,7 @@ order 17 `private-runtime-build`。规则 2 覆盖 `rust/src/commercial/**`、`r
 | 失败行追回门 | 保护层 | 全部 | 追回若干行 | `FAILURE_SIGNAL` 正则 + 原序重插 + 计数 | 词表覆盖不到的失败形式；只追回被删的，不改输出内部 | O(n)/O(n) | lm-resizer `diagnostic_gate.rs` | 低 | Apache-2.0 |
 | grep 按文件分组 | L2 | search | 改排版 **+ trim/空行有损** | 任一行不可解析即整块放行 | 短行/单条变大；YAML 缩进被抹；单条 +42% | O(n)/O(hits) | 手写 ~120 行 | 低 | — |
 | `rtk grep` 每文件上限 25 | L3 | search | **丢命中** | 超出 tee 到文件 + `+N more` | 与"分组无损"混淆 | O(n)/O(1) | 手写 | 极低 | — |
-| 路径前缀折叠 | L2 | search/glob | 丢重复前缀 | ≥2 文件 + 公共目录 + 无控制字符 | 绝对路径根 `/` 无收益 | O(n)/O(n) | 手写 ~50 行 | 极低 | — |
+| 路径前缀折叠 | L2 | search/glob | 丢重复前缀 | 仅 `-l`/`--files` 类形状 + ≥2 文件 + 公共目录 + 无 `\0\r\x1b` | 公共前缀为 `/` 时不折；Windows `\` 路径不折；折叠后过 `never_worse` | O(n)/O(n) | 手写 ~50 行 | 极低 | — |
 | JSON minify | L1/L2 | JSON | 空白；数值文本/重复键/转义可能变 | 需要字节/Value 契约时分档声明 | `1e29` 塌成 f64；`1e6`→`1e+6`；`{"a":1,"a":2}`→`{"a":2}` | O(n)/O(n) | `serde_json` | 极低 | MIT OR Apache-2.0 |
 | JSON 骨架 | L2 | JSON | 丢所有值 | 键/长度/类型/小字符串 | 回答不了"这条记录是什么" | O(n)/O(n) | 手写 ~120 行 | 低 | — |
 | JSON 投影 | L2 | JSON | **丢未选中字段**（保留被选字段的真实值） | 需要字段相关性信号 | 选错字段 = 信息归零 | O(n)/O(n) | `serde_json` + `jsonpath-rust` | 低—中 | MIT |
