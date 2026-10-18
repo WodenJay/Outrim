@@ -204,6 +204,12 @@ mcp.json 137697 字符 minified → toon 1.139 字符 / 1.070 token   （原始 
 RTK 钉的是 `toon-format 0.5.0`（`engine/Cargo.toml:17`）；我用 0.5.0 交叉验过同样两例（uniform 0.521、
 github 1.021），结论在两个版本上一致。
 
+**`o200k_base` 交叉复测（附录 A.19）**：8 个合成形状 + 2 份真实语料上，token 比在两种编码下几乎相同
+（uniform_500 两边都是 0.551，`long_strings` 都是 0.992，`wide_keys` 都是 0.327）；
+只有嵌套型差异大（`deep_nest_4` 0.383 → 0.352、`github_issues_40` 1.216 → 1.176）。
+真实语料上 `json.txt` 1.273 → 1.235、`mcp.json` 1.070 → 1.056。
+→ "TOON 只在键名长于值时才赢" 这个结论对 tokenizer 不敏感；变的是嵌套型的程度，不是方向。
+
 **6. 三种实现都把 JSON "lossless" 用错了，而 `arbitrary_precision` 只能保住数值文本，保不住字节。**
 
 `engine/src/methods/minify_json.rs:1` 文件头写 "lossless JSON compaction via serde_json re-serialization"，
@@ -1253,6 +1259,8 @@ trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径。
 见 §0.1-5、§0.1-6、§4.5。已确认：字符比与 token 比差异大；真实服务数组 TOON 负收益；
 `arbitrary_precision` 只保数值文本；lean-ctx lossless 铲平不是字节可逆。
 
+tokenizer 维度由 E12 单独覆盖。
+
 **E6 源码裁剪的适用边界（部分）**（`m16.py`、`m17.py`）
 25.1% 的 open（69.9% 的 open token）随后被 Edit；18.7% 的 `old_string` 逐字来自最后一次读（8.0% token）。
 → 仍缺"骨架是否引发额外重读"的直接测量（需要跑 agent）。
@@ -1291,11 +1299,20 @@ trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径。
 注意 `grep.rendered` 的第二次 `[… 1 lines elided …]` 指的是**第一遍留下的井号标记行**被当普通行处理，
 不是内容丢失——但这也说明标记本身会参与下一轮分类。
 
+**E12 tokenizer 敏感性**（`m46.py`、`m47.py`，附录 A.19）
+8 个合成形状 + 2 份真实语料在 `cl100k_base` 与 `o200k_base` 下对比：
+`uniform_500` 两边都是 0.551、`long_strings` 0.992、`wide_keys` 0.327、`csv_in_string` 0.882、
+`mixed_types` 0.899、`1_row` 0.944——**完全一致**；分叉的只有嵌套型
+（`deep_nest_4` 0.383→0.352、`github_issues_40` 1.216→1.176）和真实语料（`json.txt` 1.273→1.235、
+`mcp.json` 1.070→1.056）。
+→ 结构性结论（TOON 只在键名相对值长时赢、平铺型不受编码影响）不依赖 tokenizer；
+具体百分数依赖。Claude 侧无公开 tokenizer，该维度仍为未知。
+
 ### 待补（需要模型或上游，本轮不做）
 
 - **端到端净收益**：压缩后模型是否多读一次原文、多问一轮。任何局部压缩率都证明不了这个，
   需要真实 agent 跑分（本轮无模型侧测量）。
-- **其他 tokenizer**：`o200k_base` 与 Claude 侧的字符/token 关系（Claude 无公开 tokenizer）。
+- **其他 tokenizer**：`o200k_base` 已补测（附录 A.19，方向不变）；Claude 侧仍无公开 tokenizer，未测。
 - **头尾窗口 vs 信号保护的对照**：同一轨迹上"`cap`"与"`cap` + 信号固定"的成功率差异；
   本轮只测了信号保留率，没测任务成功率。
 - **tree-sitter 在 Rust/TS/Python 上的 query 正确率**：需要人工标注集。
@@ -1319,7 +1336,9 @@ trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径。
 
 1. **Anthropic 的真实 tokenizer 未公开**：Claude 侧 token 数只能估算。本文全部实测用 cl100k_base，
    对 Claude 只能作"内容类别间的相对关系"参考。
-2. **TOON 在其他 tokenizer 上的收益**：只测了 cl100k（`o200k_base` 未测）。
+2. **TOON 在其他 tokenizer 上的收益**：cl100k 与 `o200k_base` 都测了（附录 A.19），
+   8 个合成形状与 2 份真实语料上方向一致、平铺型数值几乎不变（uniform/wide_keys/long_strings 完全一致），
+   嵌套型差 1–4 个百分点。Claude 侧仍无公开 tokenizer，**未测**。
    `toon-format` 规范附录的 benchmark 属 informative 且由参考实现测量，**未核**。
 3. **Drain 在"构建/测试日志"上的聚类质量**：论文评测是系统日志（HDFS/BGL 等），非编译器输出。
    本轮只测了合成日志的吞吐与三类坑，**真实 cargo/pytest 上的模板数与错误类型区分度未测**。
@@ -1508,14 +1527,32 @@ A.18 **`fold_path_prefix` 收益**：`/tmp/m37.py`，逐行复刻 `search.rs:633
 `grep.txt` 是 `path:line:text`，真实调用路径上根本不会进 `is_bare_file_list`，此处只作为“强拆后残余冗余”参考。
 注意：脚本不含 `never_worse`（`search.rs:588`），因为折叠只在真正有共享前缀时发生且必然变小。
 
+A.19 **TOON 在 `o200k_base` 上的交叉复测**：`/tmp/m46.py`（8 个合成形状，读 `C:/tmp/sc2/toon/*.min.json` 与 `*.toon`）
+与 `/tmp/m47.py`（两份真实语料；`json.txt`/`mcp.json` 的 minified 由 `json.dumps(separators=(',',':'))` 现场生成）：
+
+```
+case                 cl100k min→toon  ratio | o200k min→toon  ratio
+1_row                     18→ 17  0.944  |     18→ 17  0.944
+csv_in_string            803→708  0.882  |    803→708  0.882
+deep_nest_4              553→212  0.383  |    602→212  0.352
+github_issues_40        2413→2934  1.216  |   2494→2934  1.176
+long_strings_10x1200    2082→2066  0.992  |   2082→2066  0.992
+mixed_types              228→205  0.899  |    228→205  0.899
+uniform_500            10002→5509  0.551  |  10002→5509  0.551
+wide_keys_20            1602→ 524  0.327  |   1602→ 524  0.327
+json.txt (真实)        12961→16502 1.273  |  13361→16502 1.235
+mcp.json (真实)        30101→32219 1.070  |  30579→32285 1.056
+```
+→ 平铺型（uniform/wide_keys/long_strings/csv/mixed/1_row）两边数字完全相同；分叉的只有嵌套型。
+
 **复现注意**
 - `chars` 一律按 Unicode 字符数（Rust `chars().count()`），`bytes` 明写。
 - `tiktoken` 的 `cl100k_base` 与 Claude 实际 tokenizer 无关（§8-1）。
 - 所有 RTK 数值取自提交 `e542dca0`；`toon-format` 数值取自 `0.7.0`，与 RTK 钉的 `0.5.0` 交叉验证了两个关键用例。
 - 探针都不入库：仓库里只有本文。探针源码留在 `%TEMP%`（少数输出落在 `C:/tmp`，见 A.3/A.12），
-  节点（文件 + 函数 + 参数）在 A.1–A.18 里可定位；
+  节点（文件 + 函数 + 参数）在 A.1–A.19 里可定位；
   依赖版本见 §5.4 与本节环境行。
 - 本轮对每个引用过的脚本都重跑了一次以确认还能复现（`sc2/m1.py`、`m10.py`、`m14.py`、`m21.py`、`m31.py`、
-  `m34.py`、`m35.py`、`meas5.py`、`meas6.py`），数字与正文一致。
+  `m34.py`、`m35.py`、`meas5.py`、`meas6.py`、`m46.py`、`m47.py`），数字与正文一致。
 - 时间是本机单次测量（无重复试验、无 CI），只用于"数量级"判断；`drain_probe` 与 `renderprobe`
   的两次运行出现过 2 倍差异，凡此类都写成区间。
