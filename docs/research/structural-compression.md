@@ -119,7 +119,7 @@ install.txt    1101 ch   18 行 → render=None（never_worse 拦下）        4
 ```
 
 （`ch` 为 Unicode 字符数，`tok` 为 cl100k 真实计数；`cut%` 用 token 算，`chars/4` 算出的削减率
-与它相差 ≤0.35 个百分点（附录 A.2 逐行复算），因为 `render()` 的 `floor` 与 `count` 内部就用的 `bytes/4`——见 §4.7。
+与它相差 ≤0.7 个百分点（附录 A.2 逐行复算，最大是 `bench.py` 的 0.68pp），因为 `render()` 的 `floor` 与 `count` 内部就用的 `bytes/4`——见 §4.7。
 
 10 份真实语料里 5 份被判 `repetitive`（grep/find/ls/gitlog/install）、3 份 `nested`
 （`bench.py`、`failing.py`、`traceback.txt`），只有 `json.txt` 与 `mcp.json` 走到 `json-skeleton`。
@@ -290,7 +290,7 @@ grep.txt / find.txt / cargo_err_color.txt       0.0%（不折叠，符合形状�
 | cargo 构建日志 | 2.31 | -42.3% | -45.8% | -45.8% | Mixed |
 | 源码 | 3.06 | -23.6% | -13.2% | +52.9% | Dense |
 | minified JSON | 3.34 | -16.6% | +16.2% | +66.8% | Dense |
-| 中文日志 | 0.92 | **-77.0%** | -8.0% | -75.1% | Prose |
+| 中文日志 | 0.92 | **-77.0%**（按字符）/ -31.0%（按字节） | -8.0% | -75.1% | Prose |
 | base64 | 1.71 | -57.1% | -53.7% | -53.6% | Prose |
 | diff | 2.86 | -28.6% | -23.1% | +42.8% | Dense |
 | 堆栈 | 2.66 | -33.5% | -25.8% | +32.9% | Dense |
@@ -308,7 +308,7 @@ grep.txt / find.txt / cargo_err_color.txt       0.0%（不折叠，符合形状�
 按 classed 口径 24 单位只对应 grep.txt **11.7**、中文 **96.4**、`ls.txt` 22.4 个真 token。
 
 好消息：`chars/4` 用来给 **RTK 自己的 head/tail 输出**做闸门时误差极小（附录 A.2，
-8 份有输出的语料上 `chars/4` 与真实 token 的削减率相差 ≤0.35 个百分点，最大是 `bench.py` 的 0.34pp），
+8 份有输出的语料上 `bytes/4` 与真实 token 的削减率相差 ≤0.7 个百分点，最大是 `bench.py` 的 0.68pp），
 因为输出已经是"短行、结构均匀"的形状。
 真正需要真实 tokenizer 的是**原始语料**上的绝对预算。
 
@@ -967,11 +967,16 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 **偏差表见 §0.1-8。** 三条操作结论：
 
 1. **相对闸门用 `chars/4` 是安全的**：`never_worse` 比较的是同一段内容的两次估算，
-   误差同向抵消；在 RTK 自己的 head/tail/structural 输出上实测削减率误差 ≤0.35 个百分点（附录 A.2）。
+   误差同向抵消；在 RTK 自己的 head/tail/structural 输出上实测削减率误差 ≤0.7 个百分点（附录 A.2）。
 2. **绝对预算必须用真实 tokenizer**：squeez 的 `net_win_min_tokens = 24` 是估算 token，
    换真实 token 要除以估算器的 chars/token（`24 × 4 / (chars/token)`），中文约 104、散文约 21，差 5 倍；
    而 squeez 实际用的是 classed 估算器，同一阈值在 grep.txt 上只相当于 **11.7** 个真 token。
-3. **不要用 `estimate_classed` 这类"分类 + 除数"的启发式**：在真实语料上它比 `estimate` 差，
+3. **`chars/4` 的"4"到底除什么，中文上差 46 个百分点**：RTK 的 `estimate_tokens` 是
+   `text.len() / 4`（`text/src/lib.rs:83`，`len()` 是 **bytes**），而 Python 侧 `chars/4` 常按字符数算。
+   同一份中文日志（920 字符 / 2760 字节 / 1000 token）：按字节算是 -31.0%，按字符算是 **-77.0%**。
+   所以引用任何"`chars/4` 误差"时都必须写明分母是 `str.len()` 还是 `chars().count()`；
+   本文 §0.1-8 表给的是**字符口径**，用字节口径的只有本行。
+4. **不要用 `estimate_classed` 这类"分类 + 除数"的启发式**：在真实语料上它比 `estimate` 差，
    因为它把 8 份真实语料判成 7 份 `Dense` 然后除 2（只有 `gitlog.txt` 是 `Mixed`）。分类器本身也不稳：
    同一份 `gitlog.txt` 因为 `::` 出现在 ASCII art 里被判 `Mixed`，于是它反而是唯一走 `estimate` 的。
    方向也不一致——`grep`/`mcp` 高估 105%/129%，`chinese`/`base64` 低估 75%/54%，
@@ -1211,7 +1216,7 @@ trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径。
 → 仍缺"骨架是否引发额外重读"的直接测量（需要跑 agent）。
 
 **E7 估算器决策分歧率（部分）**（`m31.py`）
-§0.1-8 表。已确认 `chars/4` 在相对闸门上够用（RTK 输出上削减率误差 ≤0.35pp），
+§0.1-8 表。已确认 `chars/4` 在相对闸门上够用（RTK 输出上削减率误差 ≤0.7pp），
 `estimate_classed` 在真实语料上更差。仍缺"同一语料上 `never_worse` 决策是否翻转"的直接统计。
 
 **E8 Drain 可行性**（`drain_probe`）
