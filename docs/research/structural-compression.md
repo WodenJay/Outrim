@@ -214,12 +214,11 @@ squeez `src/strategies/log_template.rs:98 looks_like_id()` 要求整个 token �
 或带 `-`/`_` 的复合 id。**键名与值的写法决定它是否折叠**，于是：
 
 ```
-F  "ERROR code={n} at handler_{i}: failed validation on field f_{k}" ×60   →  0 折叠 (+0.0%)
-J1 同上，去掉 handler_{i} 后的冒号                                       →  1 行 (-96.5%)
-J2 保留冒号                                                             →  0 折叠 (+0.0%)
-J3 冒号前后加空格（"handler_{i} :"）                                     →  1 行 (-96.5%)
+F  "ERROR code={n} at handler_{i}: failed validation on field f_{k}" ×60  →  0 折叠 (+0.0%)  ← 基准
+J1 去掉 handler_{i} 后的冒号                                             →  1 行 (-96.5%)
+J3 冒号前加空格（"handler_{i} :"）                                       →  1 行 (-96.5%)
 J4 每行再变一个英文词（validation/parsing/timeout/overflow）              →  4 行 (-85.9%)
-J5 "a.rs:{n}:3 failed to parse" ×60                                     →  0 折叠 (+0.0%)
+J5 "a.rs:{n}:3 failed to parse" ×60                                      →  0 折叠 (+0.0%)
 ```
 
 原因是 `is_variable()` 剥的是 `,;()[]{}"'<>`，**不含 `:`**，所以 `handler_0:` 的 core 是 `handler_0:`，
@@ -563,15 +562,17 @@ F ERROR code= handler_: 60→60 行  0.0%     ← handler_0: 的冒号破坏复�
 G 裸 hex              60→ 1 行 -96.0%
 H 裸 epoch            60→ 1 行 -96.2%
 I 小数 + 单位         60→ 1 行 -95.2%
-J1 去掉那个冒号       60→ 1 行 -96.5%     ← 一行之差
-J4 每行变一个英文词   60→ 4 行 -85.9%     ← 变化词也进模板
-J5 "a.rs:{n}:3" ×60   60→60 行  0.0%      ← path:line:col 不被折叠
+F 的变体（同一 60 行，只改一处写法）：
+J1 去掉那个冒号        60→ 1 行 -96.5%    ← 一行之差
+J3 冒号前加空格        60→ 1 行 -96.5%    ← 空格把冒号切出 token
+J4 每行再变一个英文词  60→ 4 行 -85.9%    ← 变化词也进模板
+J5 "a.rs:{n}:3" ×60    60→60 行  0.0%     ← path:line:col 不被折叠
 ```
 
 `looks_like_id()`（`:98`）的四条判定：`numeric_shaped`（只含数字与 `.:-/T+`）、`is_num_unit`
 （数字 + ≤4 字母/`%` 后缀）、hexish（≥8 位、≥2 数字、全 hex-or-dash）、
 compound（含数字 + 含 `-`/`_` + 全字母数字或 `-_.`）。`is_variable()` 先 trim `,;()[]{}"'<>`——
-**不含 `:`**，这就是 J1/J2/J3 差异的来源。同理 `a.rs:12:3` 里的 `:` 让 `looks_like_id` 判否，
+**不含 `:`**，这就是 J1/J3 与 F 的差异来源。同理 `a.rs:12:3` 里的 `:` 让 `looks_like_id` 判否，
 所以源码 `path:line:col` 引用不会被折叠（J5）——这对"错误定位必须保留"是好消息，
 但也意味着**这类内容在这套算法下完全没有收益**。
 
@@ -861,6 +862,11 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 
 → 结论：**签名骨架在 70% 的读 token 上不可安全使用**（这些读的下一步就是改文件）。
 可用的窄场景是"读文件做定位/回答结构问题"，需要能判定"这次读不是为编辑做准备"。
+
+**这条边界不是可选的**：把它当默认行为，等于在最常被 Edit 的那 70% 读上删掉函数体，
+而 `old_string` 里 8.0% 的逐字引用正是从上一次读里取的。入口层能看到"工具调用 + 参数"，
+所以可以按 `open`/`read` 与 `edit`/`write` 的先后关系判定；但**跨会话或跨分支的历史读不可见**，
+那时只能退化为"不裁剪"。
 
 #### 4.6.3 失效例子
 
