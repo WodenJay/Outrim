@@ -467,13 +467,23 @@ Layer 5    pipeline     TOML 规则：hook.before_tool / hook.after_tool / proxy
 [[hook.before_tool.shell]]    action = "rewrite"  name = "rtk-rewrite"
 [guards] never_worse = true   min_size = 512
 ```
-头部自述 "Nothing here is lossy" 与 "Benchmark: not published"。
+头部自述（原文）："Nothing here is lossy and nothing rewrites conversation history." 与
+"Benchmark: not published."；同一段注释还说明了 `normalize` 的 cache 论证：
+"Each method is a pure function of the block's own content, so the request prefix stays byte-identical
+across turns and the upstream prompt cache keeps hitting -- `validate` enforces that property
+(\"not cache-stable\" is an error under `proxy.request`). `rtk-proxy --normalize false` turns it off."
 
 `builtin/posthook.toml`（extends default）新增：`after_tool.shell`（`when={is_rtk_command=false}`）用 `term`；
 `lockfiles`（`basename_in` 四个 lockfile）；`after_tool.search` 用 `matches`（即 `grep-group`）；
 `after_tool.web` 用 `web`。`json-reads` 与 `strip-line-numbers` 都是 `enabled = false`。
 
 `builtin/proxy.toml`（extends default）只加 `cache-align`，并注明 "CCR … not enabled here"。
+
+→ **这里有一处直接的自相矛盾**：`default.toml` 头部断言 "Nothing here is lossy"，
+而它启用的 `normalize` 链里 `progress` 的 `MethodInfo` 是 `lossy: true, recovery: Recall`
+（`progress.rs:18-27`，注释自陈 "overwritten segments are gone … Lossy-by-design, recoverable"）；
+`dedup` 也是 `LOSSLESS_TRANSFORM` 但输出会插入 `[xN]` 行。所以那句话只能理解为
+"默认链里没有 L2/L3 选择性删除"，不能当作"字节无损"的宣传语引用。
 
 → **设计可借，行为不可照抄**：它的默认入口压缩是 `term` 链；最有意思的 `shape` 只在可选 proxy 路径上，
 且默认对 `Read` 关闭（`read_min_tokens = usize::MAX`）。
@@ -751,7 +761,7 @@ RTK `methods/grep_group.rs`：
 
 #### 4.5.1 minify：不是字节无损，`arbitrary_precision` 也不够
 
-`serde_json` 解析再序列化。**必须知道的六处变化**（附录 A.4）：
+`serde_json` 解析再序列化。**必须知道的五类变化**（附录 A.4）：
 
 | 输入 | 默认 | `+arbitrary_precision +preserve_order` |
 |---|---|---|
@@ -769,8 +779,10 @@ RTK 只开了 `preserve_order`（`engine/Cargo.toml:15`），所以它标 `lossy
 
 #### 4.5.2 骨架
 
-RTK `strategy.rs:213 JsonSkeleton`：字符串 >24 字符 → `"short…" (N chars)`，`depth==0` 数组 → `[N× first]`，
-`depth>=2` 对象 → `{N keys}`，总长上限 700 字符（`JSON_SKELETON_MAX_CHARS`）。
+RTK `strategy.rs:213 JsonSkeleton`：字符串 >24 字符 → `"short…" (N chars)`；`depth==0` 数组 → `[N× first]`；
+`depth>=2` 对象 → `{N keys}`；`depth==1` 数组 → `[N items]`。
+`JSON_SKELETON_MAX_CHARS=700` 用在两处：对象键循环累计长度 >700 时停下补 `… +N more keys`；
+最后若整体 >900 字符再硬截断补 `…`（`:283-293`）。所以骨架的**上界是 900 字符**，不是 700。
 `cmds/system/json_cmd.rs` 另有一套：`--keys-only`，默认截断 >80 字符字符串、数组 >5 项变 `[first, ... +N more]`。
 
 实测（40 项 GitHub 风格响应，附录 A.13）：pretty 3824 → minified 2253 → **skeleton 28 tok**。
