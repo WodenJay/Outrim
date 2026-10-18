@@ -298,9 +298,11 @@ grep.txt / find.txt / cargo_err_color.txt       0.0%（不折叠，符合形状�
 没有给中文的百分比；实测 `estimate()` 在中文日志上是 -8.0%（低估），是同表里最好的非 ASCII 结果，
 但同一份内容走 `estimate_classed` 变成 -75.1%（因为它把中文判成 `Prose` 再除 3.7）。
 
-顺带修正一个易错的换算：squeez 的 `net_win_min_tokens = 24`（`config.rs:353`）是**估算** token，
-换成真实 token 是 `24 × (chars/token) / 4`：散文约 21、cargo 日志约 42、grep.txt 约 23、
-`ls.txt` 约 45、中文约 104、base64 约 56。
+顺带修正一个易错的换算：squeez 的 `net_win_min_tokens = 24`（`config.rs:353`）是**估算** token。
+通用换算是 `真 token = 24 × (chars/token) / (估算器的 chars/token)`；对 `chars/4`（分母 4）就退化成
+`24 × 4 / (chars/token)`：散文约 21、cargo 日志约 42、grep.txt 约 23、`ls.txt` 约 45、中文约 104、base64 约 56。
+而 `wrap.rs:581,658` 实际用的是 `estimate_classed`（Dense 除 2.0、Prose 除 3.7），所以真实分母不是 4：
+按 classed 口径 24 单位只对应 grep.txt **11.7**、中文 **96.4**、`ls.txt` 22.4 个真 token。
 
 好消息：`chars/4` 用来给 **RTK 自己的 head/tail 输出**做闸门时误差极小（附录 A.2，
 8 份有输出的语料上 `chars/4` 与真实 token 的削减率相差 ≤0.35 个百分点，最大是 `bench.py` 的 0.34pp），
@@ -705,9 +707,10 @@ RTK `methods/grep_group.rs`：
 结论四条：
 1. **收益 ∝ 路径 token 占每行总 token 的比例**，不是路径字符数。同一份 43 命中正文，
    只改路径（附录 A.15）：`haystack.rs`（11 字符/3 tok）**-17.8%**、
-   `src/haystack.rs`（15/5）**-27.1%**、`crates/…/haystack.rs`（41/12）**-47.8%**、
-   73 字符 runner 绝对路径（22 tok）**-62.3%**。分组输出几乎不随路径变化（530→551 tok），
-   所以削减率完全由原始每行里的重复路径预算决定。
+   `src/haystack.rs`（15/5）**-27.1%**、`crates/…/haystack.rs`（41/12）**-41 字符 → -47.8%**、
+   72 字符/22 tok 深路径 **-62.4%**。分组输出本身几乎不随路径变化
+   （`a.rs` 530 tok → 72 字符路径 549 tok，涨的 19 tok 就是表头里的路径），
+   所以削减率完全由原文每行里重复的路径预算决定。
 2. **门是硬的，但也把绝对路径整块挡在门外**：`C:/…` 与 `C:\…` 形态的第一个 `:` 落在盘符后，
    `parts[1].parse::<usize>()` 失败 → `Outcome::Continue(原文)`（`:47`），
    **收益为 0（非负收益，也非负损失）**。Windows 上 `grep`/`rg` 默认输出就是这种形态，
@@ -935,7 +938,8 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 1. **相对闸门用 `chars/4` 是安全的**：`never_worse` 比较的是同一段内容的两次估算，
    误差同向抵消；在 RTK 自己的 head/tail/structural 输出上实测削减率误差 ≤0.35 个百分点（附录 A.2）。
 2. **绝对预算必须用真实 tokenizer**：squeez 的 `net_win_min_tokens = 24` 是估算 token，
-   换真实 token 是 `24 × (chars/token) / 4`，中文时约 104、散文约 21。差 5 倍。
+   换真实 token 要除以估算器的 chars/token（`24 × 4 / (chars/token)`），中文约 104、散文约 21，差 5 倍；
+   而 squeez 实际用的是 classed 估算器，同一阈值在 grep.txt 上只相当于 **11.7** 个真 token。
 3. **不要用 `estimate_classed` 这类"分类 + 除数"的启发式**：在真实语料上它比 `estimate` 差，
    因为它把 8 份真实语料判成 7 份 `Dense` 然后除 2（只有 `gitlog.txt` 是 `Mixed`）。分类器本身也不稳：
    同一份 `gitlog.txt` 因为 `::` 出现在 ASCII art 里被判 `Mixed`，于是它反而是唯一走 `estimate` 的。
@@ -1395,7 +1399,8 @@ A.16 **`cap(50,200)` 只看触发样本**：`/tmp/m33.py`（与 `m15.py` 同一�
 但跳过 `cap(o) is o` 的未触发样本，汇总触发样本的 token 与 error/`path:line` 计数）。
 → 29 条触发样本：545,009 → 90,988 tok（-83.3%），error 保留 32.5%，`path:line` 保留 5.5%。
 
-A.15 **grep 分组收益 vs 路径长度/形态**：同一脚本内联测量（43 命中 × 同一正文，只替换路径前缀），
+A.15 **grep 分组收益 vs 路径长度/形态**：`/tmp/m34.py`（43 命中 × 同一正文，只换路径：4/11/15/18/41/60 字符）
++ `/tmp/m35.py`（真实 fixture 正文 × 11 字符 vs 41 字符路径，用来把“正文短”与“路径短”两个因素分开）。
 复刻 `grep_group.rs` 的 gate（`splitn(3,':')` + 第二段 `parse::<usize>()`）与输出格式。
 `C:/…` 与 `C:\…` 两种形态触发 gate 失败 → 原文放行。
 
