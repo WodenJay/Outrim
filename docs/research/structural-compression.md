@@ -60,7 +60,7 @@ publicly available distribution … whichever comes first"。
 内置默认入口压缩是 `term` 链：`ansi → progress → dedup → base64-elide → cap`（`engine/src/methods/mod.rs:54`）。
 另外 `minify-json` 也不在任何链里（`JSON_CHAIN = [base64-elide, toon]`，toon 失败时回退 minified）。
 
-还有一条同样重要的分档：`floor_for_tool()`（`ccr/mod.rs:130`）给 `ReadFile` 的阈值是
+还有一条同样重要的分档：`floor_for_tool()`（`proxy/src/pipeline/ccr/mod.rs:130`）给 `ReadFile` 的阈值是
 `read_min_tokens() = usize::MAX`——**默认永不压缩 Read**，注释理由是"恢复成本"而非"体积"。
 `Bulk`（Bash/WebFetch）默认 300，其他工具 1500。
 
@@ -157,6 +157,22 @@ install.txt    1101 ch   18 非空行 → render=None（never_worse 拦下）   
 不是路径短——`m1.py` 里 41 字符路径 + 长正文的合成用例是 -47.8%，把**同一份 fixture 正文**的路径换成
 41 字符后是 **-36.1%**（附录 A.15 `m35.py`，1247→797 tok）；差的那 11.7pp 全部来自正文长度。
 `never_worse` 确实拦住了变大那两种（`chars/4` 也同向：95→107、18→26）。
+
+**同一个"2000 条"能是 -47% 也能是 +14%**（附录 A.23）：收益由**唯一路径数 × 路径长度**决定，而非行数。
+2000 行同样正文、只换路径形态（`m56.py`）：
+
+| 路径形态 | 唯一文件 | 原始 tok | 分组后 | 变化 |
+|---|---:|---:|---:|---:|
+| 单文件单目录（`mod_0.rs`） | 1 | 55010 | 29036 | -47.2% |
+| 40 文件同目录（`mod_N.rs`） | 40 | 55010 | 29698 | -46.0% |
+| 40 文件 40 目录 | 40 | 55010 | 29698 | -46.0% |
+| 200 文件同目录 | 200 | 55010 | 32418 | -41.1% |
+| 40 文件短目录（`src/mod_N.rs`） | 40 | 39010 | 29418 | -24.6% |
+| 40 文件无目录（`mod_N.rs`） | 40 | 37010 | 29378 | -20.6% |
+| **2000 文件 2000 目录** | 2000 | 57010 | **65019** | **+14.0%** |
+| 单文件绝对路径（`C:/…`） | 1 | 61010 | — | gate 失败，整块放行 |
+
+所以引用分组收益时必须同时给出行数**与**唯一文件数；只写"2000 条 -46%"没有信息量。
 
 **另一个硬限制**：绝对路径让整块 gate 失败（附录 A.15）。`C:/…` 形态中第一个 `:` 落在盘符后，
 `splitn(3,':')` 的第 2 段是 `/vibe_project/…`，`parse::<usize>()` 失败 → `Outcome::Continue(原文)`。
@@ -345,7 +361,7 @@ git log --color=always                    55785 字符 / 16824 tok → 11310 tok
 → ANSI 是"几乎零成本、不常触发"的保险，不是头条收益。它的真实价值取决于上游会不会带色
 （Claude Code / Pi 这类 host 常常已经剥过），所以**必须做成零成本的快路径**（无 `\x1b` 直接返回）。
 
-**10. 三个 strip_ansi 实现都不完整，包括 RTK 的 `ansi` 方法。**
+**10. 四个 strip_ansi 实现都不完整，包括 RTK 的 `ansi` 方法；而最常被推荐的第三方库 `strip-ansi-escapes` 也丢控制字符。**
 
 `engine/src/methods/ansi.rs` 标 `MethodInfo::LOSSLESS_TRANSFORM`，实际调 `rtk_text::strip_ansi`，
 正则 `\x1b\[[0-9;]*[a-zA-Z]`（`text/src/lib.rs:18-23`）。四路对照实测（附录 A.8）：
@@ -381,7 +397,7 @@ input                 strip-ansi-escapes        vte（自定义 Perform）
 
 `vte` 只提供状态机（`Perform::print` / `execute`），**要什么就自己往回调里写**——
 所以它是唯一能做到"只删 SGR/OSC、保留一切控制字符"的方案；
-`strip-ansi-escapes` 用 `vte` 但只把 `\n` 从 `execute` 里转发出去（`0.2.1` 的 `src/lib.rs:157-170`：`print` 写字符、`execute` 只认 `b'\n'`），其余控制字符全丢。
+`strip-ansi-escapes` 用 `vte` 但只把 `\n` 从 `execute` 里转发出去（`strip-ansi-escapes-0.2.1/src/lib.rs:157-170`：`print` 写字符、`execute` 只认 `b'\n'`），其余控制字符全丢。
 而且在**不含 `ESC` 的真实文件**上它也会改字节：
 `traceback.txt`（200 个 CRLF 的 CR）、`engine/src/strategy.rs`（656 个 CR）、`engine/src/methods/cap.rs`（162 个 CR）都被它删掉，
 `grep.txt`/`ls.txt`/`find.txt`/`gitlog.txt`/`bench.py` 则字节不变。
@@ -394,14 +410,14 @@ input                 strip-ansi-escapes        vte（自定义 Perform）
 
 | 技术 | 适用条件（已验证） | 收益量级（cl100k） | 已验证的失效 | 前置实验 |
 |---|---|---|---|---|
-| ANSI/OSC 剥离 | 内容含 `ESC`；无 `ESC` 时零成本短路 | 真实带色输出 -32.8% / -67.9% token；轨迹语料 0% | 三个现有实现都不完整；OSC/私有模式会残留 | 待补：上游 host 是否带色 |
+| ANSI/OSC 剥离 | 内容含 `ESC`；无 `ESC` 时零成本短路 | 真实带色输出 -32.8% / -67.9% token；轨迹语料 0% | 四个被比较的实现全不完整；推荐的 `strip-ansi-escapes` 还会丢 tab/CR/BEL/BS；OSC/私有模式会残留 | 待补：上游 host 是否带色 |
 | CR 进度帧取末帧 | 行内 `\r` 覆盖（进度条） | 轨迹语料 0.27% token / 0.3% obs | 用 `\r` 多段覆盖时丢中间段；CRLF 会被规范化成 LF | 无（量级已定，做零成本短路即可） |
 | 相邻重复折叠 | 日志/构建输出有连续相同行 | 40 条相同 warning：319→11 tok（-96.6%） | 8 份真实语料上 0 次触发；标记行会双向碰撞（不幂等）；跨距离折叠会改因果 | 待补：真实轨迹上的触发率 |
 | 模板折叠 + 槽位门 | 变量形状是"可枚举噪声"，且折叠后仍能定位 | 形状命中时 -96% 量级 | squeez 的形状门是意外（§0.1-7）；`ls` 丢 4.4% 文件名 | 待补：高基数槽位是否改变任务答案 |
 | Drain 模板树 | 需要"位置化参数 + 可检索参数值" | 0.9–1.8M 行/秒匹配；1600 行→4 模板 | 空行/超长行 `LineTooLong`；不保留原文；堆栈帧会被固化成模板 | 已做合成；待补真实 cargo/pytest 模板质量 |
 | 失败行追回门 | 任何 L2/L3 之后 | 追回被删的失败行与解释行 | 词表覆盖不到的失败形式 | 无（源码 + 正则即可移植） |
-| grep 按文件分组 | 命中行是 `path:line:content`，路径占每行 token 的比例高 | 路径 41 字符 -47.8%（同正文）；11 字符 -17.8%；真实 fixture -8.4%（正文短）；真实 `grep.txt` -26% | 短行/单条会变大；`trim()` 与空行跳过是有损；绝对路径整块放行 | 无（已足量） |
-| 路径前缀折叠 | 多文件结果且**仅有** `-l`/`--files-with-matches`/grep `-L`/rg `--files` 这类形状旗标；有公共目录；无 `\0\r\x1b` | `find.txt`（1709 行绝对路径，前缀 `/tmp/hr/`）-17.9% ch / **-18.4% tok** | 公共前缀只到 `/`（如相对名列表）就不折；Windows `\` 路径不折；`compact_path` 会破坏可点击性 | 无（附录 A.18） |
+| grep 按文件分组 | 命中行是 `path:line:content`，路径占每行 token 的比例高 | 同 2000 行：共一个文件 -47.2%，40 文件 -46.0%，200 文件 -41.1%，**2000 文件 +14.0%**（附录 A.23）；真实 fixture -8.4% | 短行/单条会变大；唯一路径数多时反而变大；`trim()` 与空行跳过是有损；绝对路径整块放行 | 无（已足量） |
+| 路径前缀折叠 | 多文件结果且**仅有** `-l`/`--files-with-matches`/grep `-L`/rg `--files` 这类形状旗标；有公共目录；无 `\0\r\x1b` | 同一批 798 文件：前缀 3 字符 -10.8% tok、56 字符 **-69.8%**；本地 `find.txt`（前缀 `/tmp/hr/`）-18.4% | 公共前缀只到 `/`（如相对名列表）就不折；Windows `\` 路径不折；收益完全取决于共享前缀长度 | 无（附录 A.18） |
 | 剥行号前缀 | 见 §4.1：仅当行号可识别**且**下游不靠行号定位 | Tab 分隔的五份真实源码 -8.8% ~ -14.5% tok（`cat -n` 就是这一档） | 按行号 Edit 时有害；`grep -C` 重叠上下文整块弃用；默认应关闭 | 无（附录 A.20） |
 | JSON minify | 输入是合法 JSON | pretty→minified 体量视缩进而定 | 大整数/重复键/`1e6`/转义会变；非字节可逆 | 无（已足量） |
 | JSON 骨架 | 目标是"看形状"而非"读内容" | 40 项响应 3824→2253→**28** tok | 所有值都没了，回答不了"某条记录是什么" | 无 |
@@ -557,7 +573,8 @@ across turns and the upstream prompt cache keeps hitting -- `validate` enforces 
 - RTK `methods/ansi.rs`：`if !input.contains('\x1b')` 快路径，否则调 `rtk_text::strip_ansi`
   ——**正则**，只覆盖 CSI 数字/分号参数，漏 OSC、私有模式 `?`、`ESC(B`。
 - RTK `shape.rs:49 strip_ansi`：手写状态机，覆盖 CSI（`0x40..=0x7e` 终结）与 OSC（BEL / ESC `\`），
-  但 `_ => { it.next(); }` 会把 `ESC(B` 的 `B` 吞掉。
+  但末端的 `_ => { chars.next(); }` 只吃掉 `ESC` 后那**一个**字符，所以 `ESC(B` 会剩下一个多余的 `B`
+  （实测输出 `Bplain`）。
 - squeez `smart_filter::strip_ansi`：`ESC` + `[` 后丢到字母为止；非 `[` 的转义原样留下（OSC 全残留）。
 - lean-ctx `compressor.rs:13`：`ESC` 后一直丢到"字母"为止——OSC 的情况下第一个字母就是 URL 的首字母，
   所以会吃掉正文（实测 `link` → `ttps://x.y` 之类）。
@@ -796,6 +813,10 @@ RTK `methods/grep_group.rs`：
    `src/hay.rs` 的 `/` 与 `.` 占 token，字符数并不决定预算。
    分组输出本身几乎不随路径变化（同一序列下 530 → 533 → 539 → 544 tok，
    涨的那点就是表头里多出的那一份路径），所以削减率完全由原文每行里重复的路径预算决定。
+   同样重要的是**唯一文件数**：同样的 2000 行、只换路径形态，共一个文件是 -47.2%、40 文件 -46.0%、
+   200 文件 -41.1%、**2000 文件反而 +14.0%**（附录 A.23，`m56.py`）——每文件只有一条命中时，
+   `[file] … (1):` 表头加上两行包装的开销超过了省下的路径。
+   所以引用分组收益必须同时给出行数、唯一文件数与路径形态，单写"2000 条 -46%"没有信息量。
 2. **门是硬的，但也把绝对路径整块挡在门外**：`C:/…` 与 `C:\…` 形态的第一个 `:` 落在盘符后，
    `parts[1].parse::<usize>()` 失败 → `Outcome::Continue(原文)`（`:47`），
    **收益为 0（非负收益，也非负损失）**。Windows 上 `grep`/`rg` 默认输出就是这种形态，
@@ -815,11 +836,17 @@ RTK `methods/grep_group.rs`：
 遇 `\0`/`\r`/`\x1b` 或 <2 个文件就放弃；只在**整组件**边界切；而且只在
 `is_bare_file_list`（`-l`/`--files-with-matches`/grep `-L`/rg `--files`，且**没有其他形状旗标**）为真时才跑，
 折叠后还要过 `never_worse`（`search.rs:588`）。
-**实测**（`m37.py`，本地语料）：`find.txt`（1709 行绝对路径，公共前缀 `/tmp/hr/`）
-ch 76378→62729（-17.9%）、tok 18721→15269（**-18.4%**）；`ls.txt`（872 行相对名）公共前缀只有 `/`
-→ **不折**；`grep.txt`（2000 行 `path:line:text`，不满足 bare-file-list 条件）强拆路径后为 -11.7% ch / -10.8% tok
-— 这个数字不能算作该技术的收益，只说明"改掉格式后还有多少剩余冗余"。
-→ 结论：这个技术对小而深的配置仓库有用（20% 量级），对平坦目录几乎无效。
+**实测**（`m54.py` / `m55.py`，附录 A.18）：`find.txt`（1709 行绝对路径，公共前缀 `/tmp/hr/`，5 字符）
+ch 76379→62729（-17.9%）、tok 18722→15269（**-18.4%**）；`ls.txt`（`ls -lR` 输出，不是文件清单）公共前缀只有 `/`
+→ **不折**；`grep.txt` 是 `path:line:text`，真实调用路径上根本不会进 `is_bare_file_list`。
+真正决定收益的是**共享前缀的字符长度**：同一批 798 个真实文件（`git ls-files`），前缀 3 字符时
+只有 -10.8% tok，10 字符 -25.4%，27 字符 -40.2%，37 字符 -55.0%，56 字符 **-69.8%**；
+而分组后的字符数恒定（~26.3 KB），变的是 token（8115 → 24075）——长路径被切碎成更多 token。
+`find.txt` 的 -18.4% 因此只是这 5 字符前缀的结果，不能外推到真绝对路径。
+其他拒绝分支都实测过：仅 basenames / 末两级路径 / 两个根 → `no shared component`；
+两个根在根下时 → `prefix.len() <= 1`；Windows `\` 路径 → 不折（代码注释里的 KNOWN LIMITATION）；
+OSC-8 超链（`rg --hyperlink-format`）→ 控制字符拒绝。
+→ 结论：对小而深的配置仓库有用（真实 `git ls-files` 量级 -40% ~ -70% tok），对相对名列表零收益。
 `compact_path()`（`:1178`）把 >50 字符且 >3 层的路径压成 `first/.../parent/leaf`——
 **破坏可点击/可打开的路径**，属有损，必须独立开关。
 
@@ -847,7 +874,10 @@ ch 76378→62729（-17.9%）、tok 18721→15269（**-18.4%**）；`ls.txt`（87
 | `grep.txt` | 2000 | 1984 | 99%（几乎不压） | 99% |
 | `ls.txt` | 872 | 796 | **80%** | k=796，100% |
 
-两个结论：
+（此表 `n` 是喂给选择器的**原始行数**（含空行），与 §0.1-3 表中 `shape::extract` 看到的
+非空行数（`ls.txt` = 800）不是同一个分母。）
+
+三个结论：
 1. 它在一手错误日志上把信息量压到 3%（k=32/1323）**是因为它假定调用方已经排好序**。
    这个前提不适用的场景（原始工具输出）下它比头尾窗口还危险。
 2. 反过来，只要把"信号行"提到前面，同一个选择器的保留率就是 100%——
@@ -1012,8 +1042,8 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 
 #### 4.6.3 失效例子
 
-- Python 缩进语义：RTK `MinimalFilter` 用 `advance_triple_quote()` 状态机（`filter.rs:167`），
-  `filter.rs:540` 起有 **10 个** 三引号/引号复用相关测试，`filter.rs:733` 起另有 **5 个**
+- Python 缩进语义：RTK `MinimalFilter` 用 `advance_triple_quote()` 状态机（`core/filter.rs:167`），
+  `core/filter.rs:540` 起有 **9 个** 三引号/引号复用相关测试（`core/filter.rs:543`–`704`），`core/filter.rs:733` 起另有 **5 个**
   块注释/`#2385`（`src/*.rs` 里的 `/*` 被当块注释）相关测试——说明这类坑是连续踩出来的。
 - Rust 的 `//` 出现在字符串里：同上，`#2385` 的修复是"只在行首判断块注释开始"。
 - 宏/属性/条件编译：正则路线无法识别 `#[cfg(...)]` 与 `impl` 块归属，会把 `impl` 里的函数签名当顶层。
@@ -1292,9 +1322,10 @@ Drain train+match                1600 行→4 模板 1.0–2.6 ms；匹配 0.9�
 `structured` 2 份（`json.txt`、`mcp.json`，均为单行 JSON）。`install.txt`（18 非空行）`prefix_rep=500` 刚好压线。
 → 阈值 1500/500/950 在这批语料上"能跑"，但 `nested` 与代码的分界靠 `indent_sd` 单特征，日志会混进来。
 
-**E2 grep 分组忠实性**（`sc2/m1.py`、`sc2/m2.py`、`sc2/m5.py`、`m10.py`、`m19.py`）
+**E2 grep 分组忠实性**（`sc2/m1.py`、`sc2/m2.py`、`sc2/m5.py`、`m10.py`、`m19.py`、`m50.py`-`m56.py`）
 见 §0.1-4。已确认：整块放行生效（`-C` 上下文）、`never_worse` 拦住两种变大情形、
-trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径。
+trim/空行确实有损、`rtk grep` 的 25/file 是另一条路径；收益对**唯一路径数**极敏感
+（同 2000 行：1 文件 -47.2% → 2000 文件 **+14.0%**，附录 A.23）。
 
 **E3 无损层净收益**（`m12.py`、`m14.py`、`m25.py`、`ansicmp`）
 见 §0.1-9。轨迹语料 ANSI = 0；真实带色输出 -32.8%/-67.9%；四个 strip 实现均不完整。
@@ -1313,9 +1344,11 @@ tokenizer 维度由 E12 单独覆盖。
 25.1% 的 open（69.9% 的 open token）随后被 Edit；18.7% 的 `old_string` 逐字来自最后一次读（8.0% token）。
 → 仍缺"骨架是否引发额外重读"的直接测量（需要跑 agent）。
 
-**E7 估算器决策分歧率（部分）**（`m31.py`）
-§0.1-8 表。已确认 `chars/4` 在相对闸门上够用（RTK 输出上削减率误差 ≤0.35pp，最大 `bench.py` 0.34pp），
-`estimate_classed` 在真实语料上更差。仍缺"同一语料上 `never_worse` 决策是否翻转"的直接统计。
+**E7 估算器决策分歧率**（`m31.py`、`m50.py`、`m51.py`）
+§0.1-8 表。已确认 `chars/4` 在“输出形状同族”的相对闸门上够用（RTK 输出上削减率误差 ≤0.35pp，
+最大 `bench.py` 0.34pp），`estimate_classed` 在真实语料上更差。
+**闸门翻转率已直接测过**（附录 A.21）：1480 个 grep 分组用例上 8.2% 符号相反（73 假拒 / 38 假通）；
+63 个真实压缩输出对上只有 2 例翻转。
 
 **E8 Drain 可行性**（`drain_probe`）
 见 §4.3.4。已确认空行炸弹、吞吐、堆栈帧被固化成模板字面量。
@@ -1365,7 +1398,8 @@ tokenizer 维度由 E12 单独覆盖。
   本轮只测了信号保留率，没测任务成功率。
 - **tree-sitter 在 Rust/TS/Python 上的 query 正确率**：需要人工标注集。
 - **行号剥离的下游代价**：收益已测（附录 A.20，Tab 档 -8.8% ~ -14.5% tok），但"按行号 Edit 时要重读"
-  这个代价没有量化（需要 agent 跑分）。路径前缀折叠已测（附录 A.18，`find.txt` -18.4% tok）。
+  这个代价没有量化（需要 agent 跑分）。路径前缀折叠已测（附录 A.18，真实 798 文件 `git ls-files` 上
+  -10.8% ~ -69.8% tok，取决于共享前缀长度）。
 
 ### 局部压缩率不能证明什么
 
@@ -1440,7 +1474,7 @@ tokenizer 维度由 E12 单独覆盖。
 - [`engine/builtin/default.toml`](https://github.com/rtk-ai/rtk/tree/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/engine/builtin)（含 posthook/proxy/terse/verbatim-diffs/delegate-reads）
 - [`src/core/config.rs:223-247`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/config.rs#L223-L247)（`grep_max_per_file: 25`）
 - [`src/cmds/system/search.rs:633,845,899-902,1178`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/cmds/system/search.rs#L633)（`fold_path_prefix`、`grep_max_per_file` 使用、`compact_path`）
-- [`src/core/filter.rs:167,540,733`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/filter.rs#L167)（三引号状态机 + 10 个相关测试；`#2385` 块注释 + 5 个测试）
+- [`src/core/filter.rs:167,540,733`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/filter.rs#L167)（三引号状态机 + 9 个相关测试；`#2385` 块注释 + 5 个测试）
 - [`src/core/guard.rs:21`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/src/core/guard.rs#L21)、
   [`proxy/src/tokenizer.rs`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/proxy/src/tokenizer.rs)（o200k_base + 回退）
 - [`proxy/src/pipeline/ccr/mod.rs:69,94,116,130,342`](https://github.com/rtk-ai/rtk/blob/e542dca0bdcc262fa035dcf7fc33910cdcc8cdaf/proxy/src/pipeline/ccr/mod.rs#L69)（阈值分档、`read_min_tokens = usize::MAX`、`strategy_mode`）
@@ -1570,11 +1604,41 @@ A.17 **`dedup` 的直接触发/幂等/标记碰撞**：`/tmp/engprobe`（`src/bi
   `ok`/`[x40]`/`done` → 7→7 tok。
 - token 由 `idem3` 写盘 + `tiktoken cl100k_base` 计数（与前文同环境）。
 
-A.18 **`fold_path_prefix` 收益**：`/tmp/m37.py`，逐行复刻 `search.rs:633-678`（含 `\0`/`\r`/`\x1b` 拒绝、
-<2 行、空行、整组件切、`prefix.len() <= 1` 拒），对本地语料跑：
-`find.txt` 1709 行 → `-17.9% ch / -18.4% tok`；`ls.txt` 公共前缀只有 `/` → `None`；
-`grep.txt` 是 `path:line:text`，真实调用路径上根本不会进 `is_bare_file_list`，此处只作为“强拆后残余冗余”参考。
-注意：脚本不含 `never_worse`（`search.rs:588`），因为折叠只在真正有共享前缀时发生且必然变小。
+A.18 **`fold_path_prefix` 收益**：`/tmp/m54.py` 与 `/tmp/m55.py`，逐行复刻 `search.rs:633-678`（含 `\0`/`\r`/`\x1b` 拒绝、
+<2 行、空行、整组件切、`prefix.len() <= 1` 拒、`{prefix} ({N} files)` 表头），
+`m55.py` 用真实的 798 文件清单（`git ls-files` in rtk@e542dca）只换合成根：
+
+```
+root                                                      pfx      ch    ch%    tok   tok%
+/p/                                                         3   28605  +8.3%   8115 -10.8%
+/tmp/                                                       5   30201 +13.2%   8115 -10.8%
+/home/u/p/                                                 10   34191 +23.3%   9711 -25.4%
+/home/user/project/                                        19   41373 +36.6%   9711 -25.4%
+/home/user/projects/outrim/                                27   47757 +45.0%  12105 -40.2%
+/Users/wudon/dev/vibe_project/Outrim/                      37   55737 +52.9%  16095 -55.0%
+C:/Users/wudon/AppData/Local/Temp/ccresearch/rtk-ai_rtk/   56   70899 +62.9%  24075 -69.8%
+relative (cwd = repo)                                  no fold; 26211 ch 7233 tok
+```
+
+`m54.py` 的本地语料/合成用例：
+
+```
+find.txt as-is (1709 绝对路径)     fold '/tmp/hr/'          ch 76379→62729 (-17.9%)  tok 18722→15269 (-18.4%)
+find.txt 仅 basenames                reject: no shared component
+find.txt 末 2 级                      reject: no shared component
+ls.txt (ls -lR，不是文件清单)        reject: no shared component
+20 条深层配置路径                   fold '/home/u/proj/.config/tool/' ch 870→388 (-55.4%)  tok 280→152 (-45.7%)
+50 个同目录 rust 文件               fold '/home/u/proj/src/'        ch 2250→1429 (-36.5%) tok 650→410 (-36.9%)
+两个根 /a + /b                        reject: prefix.len() <= 1 ('/')
+20 条 Windows 反斜杠路径             reject: no shared component
+20 条 OSC-8 超链路径                 reject: control char
+```
+
+→ 收益几乎完全由**共享前缀的字符长度**决定，与文件数关系小：同一批 798 个文件，前缀 3 字符时
+只有 -10.8% tok，56 字符时 -69.8%；而分组后的**字符数恒定**（~26.3 KB），变的是 token
+（8115 → 9711 → 12105 → 16095 → 24075）——长路径被切碎更多 token。
+反过来说：`find.txt` 的 -18.4% 只是 `/tmp/hr/` 这个 5 字符前缀的结果，不能外推到真实绝对路径。
+注意：脚本不含 `never_worse`（`search.rs:588`），因为折叠只在真正有共享前缀时发生。
 
 A.19 **TOON 在 `o200k_base` 上的交叉复测**：`/tmp/m46.py`（8 个合成形状，读 `C:/tmp/sc2/toon/*.min.json` 与 `*.toon`）
 与 `/tmp/m47.py`（两份真实语料；`json.txt`/`mcp.json` 的 minified 由 `json.dumps(separators=(',',':'))` 现场生成）：
@@ -1632,7 +1696,7 @@ cases: 1480 | sign flips: 122 (8.2%)
 A.22 **`vte` vs `strip-ansi-escapes` 的控制字符保真**：`C:/tmp/vecchk`（`vte 0.15.0` + `strip-ansi-escapes 0.2.1`），
 `src/main.rs`（13 种转义形态并排）、`src/bin/c2.rs`（控制字符对照）、`src/bin/c3.rs`（真实语料字节差）。
 `strip_ansi_escapes::strip` 内部是 `vte::Parser` 驱动一个 `Perform` 实现，该实现只处理 `print` 与白名单
-`execute`（只回吐 `\n`；`0.2.1` 的 `src/lib.rs:157-170`），`csi_dispatch`/`esc_dispatch`/`osc_dispatch`/`hook` 全为空实现——
+`execute`（只回吐 `\n`；见 `strip-ansi-escapes-0.2.1/src/lib.rs:157-170`），`csi_dispatch`/`esc_dispatch`/`osc_dispatch`/`hook` 全为空实现——
 所以它不只是"去转义"，还会吞掉 `\t`、`\r` 和 BEL。关键结果：
 
 ```
@@ -1649,14 +1713,35 @@ A.22 **`vte` vs `strip-ansi-escapes` 的控制字符保真**：`C:/tmp/vecchk`�
 `vte` 侧 13 种转义形态全部正确剥离（含 OSC-8 BEL/ST、`ESC(B`、`CSI ?25l`、`CSI 38:5:196m`、8-bit C1）。
 → 选 `vte` 而不是 `strip-ansi-escapes` 的理由是**可控性**（能自己决定回吐哪些控制字符），不是体积或速度差异。
 
+A.23 **grep 分组收益与路径形态的依赖**：`C:/tmp/m56.py`，同样的 2000 行、同一个正文模板
+（`    let value_{i} = compute({i});`），只换路径形态，按真实 `grep_group` 输出格式重写：
+
+```
+路径形态                 唯一文件   原始 tok   分组后     变化
+单文件单目录                   1    55010    29036   -47.2%
+40 文件同目录                 40    55010    29698   -46.0%
+40 文件 40 目录               40    55010    29698   -46.0%
+200 文件同目录               200    55010    32418   -41.1%
+40 文件短目录                 40    39010    29418   -24.6%
+40 文件无目录                 40    37010    29378   -20.6%
+2000 文件 2000 目录          2000    57010    65019   +14.0%
+单文件绝对路径 C:/…             1    61010       —   gate 失败
+```
+
+关键：前六行的分组后 token 几乎不变（29.0k→29.7k→32.4k），变的是**原始行的 token**（37k→39k→55k）——
+路径越长、每行重复的预算越大。最后一行是反例：表头与 `[file] … (1):` 行的开销在每文件只有 1 条命中时
+超过重复路径的节省（分组后反而 65k）。`never_worse` 应该拦住这种，但 `bytes/4` 与真实 token
+方向可能不一致（发现 3 与 A.21）。
+
 **复现注意**
 - `chars` 一律按 Unicode 字符数（Rust `chars().count()`），`bytes` 明写。
 - `tiktoken` 的 `cl100k_base` 与 Claude 实际 tokenizer 无关（§8-1）。
 - 所有 RTK 数值取自提交 `e542dca0`；`toon-format` 数值取自 `0.7.0`，与 RTK 钉的 `0.5.0` 交叉验证了两个关键用例。
 - 探针都不入库：仓库里只有本文。探针源码留在 `%TEMP%`（少数输出落在 `C:/tmp`，见 A.3/A.12），
-  节点（文件 + 函数 + 参数）在 A.1–A.22 里可定位；
+  节点（文件 + 函数 + 参数）在 A.1–A.23 里可定位；
   依赖版本见 §5.4 与本节环境行。
 - 本轮对每个引用过的脚本都重跑了一次以确认还能复现（`sc2/m1.py`、`m10.py`、`m14.py`、`m21.py`、`m31.py`、
-  `m34.py`、`m35.py`、`meas5.py`、`meas6.py`、`m46.py`、`m47.py`、`m48.py`、`m50.py`、`m51.py`），数字与正文一致。
+  `m34.py`、`m35.py`、`meas5.py`、`meas6.py`、`m46.py`、`m47.py`、`m48.py`、`m50.py`、`m51.py`、
+  `m52.py`、`m54.py`、`m55.py`、`m56.py`），数字与正文一致。
 - 时间是本机单次测量（无重复试验、无 CI），只用于"数量级"判断；`drain_probe` 与 `renderprobe`
   的两次运行出现过 2 倍差异，凡此类都写成区间。
