@@ -86,9 +86,9 @@ publicly available distribution … whichever comes first"。
 | find | 85 | 1 | 37,241 | 14,761 | 60.4% | 40% | – |
 | **合计** | | | **6,321,092** | **5,915,821** | **6.4%** | **82.5%** | **100%** |
 
-12 个工具里只有 9 个触发（`open`/`edit`/`insert` 从不触发——这批轨迹的 `open` 全部 ≤111 行，
-p99 = 104 行，所以"读文件"这条最贵的路径根本进不了窗口）。语料级只削 6.4%，
-因为窗口在 12 个工具的绝大多数调用上不生效。
+12 个工具里只有 9 个触发（`open`/`edit`/`insert` 从不触发——这批轨迹的 `open` 观测全部 ≤112 行，
+p99 = 105 行（2125 条），远低于 `MAX_LINES = 300`，所以"读文件"这条最贵的路径根本进不了窗口）。
+语料级只削 6.4%，因为窗口在 12 个工具的绝大多数调用上不生效。
 
 **只看真正触发的那 29 条（附录 A.16）结论要重得多**：
 
@@ -178,6 +178,7 @@ matches vanish"；`content.trim()`（`:66`）与 `if line.trim().is_empty() { co
 
 | 形状 | minified 字符 | TOON 字符 | 字符比 | minified token | TOON token | **token 比** |
 |---|---:|---:|---:|---:|---:|---:|
+| 1 行对象（`[{a,b}]`） | 39 | 33 | 0.846 | 18 | 17 | 0.944 |
 | 500 行统一对象（id/name/email/active） | 34421 | 17948 | 0.521 | 10002 | 5509 | **0.551** |
 | 10 行 × 20 个长键名 | 5121 | 856 | 0.167 | 1602 | 524 | 0.327 |
 | 50 行嵌套 4 层 | 1341 | 257 | 0.192 | 553 | 212 | 0.383 |
@@ -197,7 +198,8 @@ mcp.json 137697 字符 minified → toon 1.139 字符 / 1.070 token   （原始 
 ```
 
 → **TOON 只在"键名相对值很长"的表格型数组上赢，且必须与 minified 比 token，不能比字符**；
-真实服务数组上它是 +27% token。规范自己也把这一点列为非目标（`SPEC.md:100-103`：
+单行数组上它只值 -5.6% token（上表第一行）——`is_uniform_flat_array` 要求 `len() >= 2` 正好把这个
+无效区间挡在外面；真实服务数组上它是 +27% token。规范自己也把这一点列为非目标（`SPEC.md:100-103`：
 "not intended to replace: JSON for non-uniform or deeply nested structures where repeated keys are not dominant"）。
 RTK 钉的是 `toon-format 0.5.0`（`engine/Cargo.toml:17`）；我用 0.5.0 交叉验过同样两例（uniform 0.521、
 github 1.021），结论在两个版本上一致。
@@ -818,7 +820,7 @@ ch 76378→62729（-17.9%）、tok 18721→15269（**-18.4%**）；`ls.txt`（87
 
 #### 4.5.1 minify：不是字节无损，`arbitrary_precision` 也不够
 
-`serde_json` 解析再序列化。**必须知道的五类变化**（附录 A.4）：
+`serde_json` 解析再序列化。**必须知道的六类变化**（附录 A.4）：
 
 | 输入 | 默认 | `+arbitrary_precision +preserve_order` |
 |---|---|---|
@@ -828,6 +830,7 @@ ch 76378→62729（-17.9%）、tok 18721→15269（**-18.4%**）；`ls.txt`（87
 | `{"neg":-0}` | `-0.0` | `-0` ✅ |
 | `{"dup":1,"dup":2}` | `{"dup":2}` | `{"dup":2}`（仍塌） |
 | `{"u":"\u00e9"}` / `{"esc":"a\/b"}` | `é` / `a/b` | 同（仍变） |
+| `{"nan":1.0e400}`（溢出 f64） | 拒绝/报错 | `{"nan":1.0e+400}`（`arbitrary_precision` 接受任意精度十进制） |
 
 → `arbitrary_precision` **只保数值文本**；重复键、转义写法、空白、键序（需 `preserve_order`）另算。
 RTK 只开了 `preserve_order`（`engine/Cargo.toml:15`），所以它标 `lossy: true` 是准确的；
@@ -947,6 +950,8 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 **适用性实测（E6，轨迹语料）**：
 - 2128 次 `open` 里 534 次（25.1%）读的是"同一轨迹稍后会被 Edit 的文件"，
   这 534 次占全部 open observation token 的 **69.9%**（1,109,719 / 1,588,659）。
+  （注：`m15.py` 按"非空 observation"统计得出 2125 次、`m16.py` 按"开放调用"统计 2128 次，
+  差 3 次是空 observation 的 open；两个分母各自一致，不混用。）
 - 3067 次非空 `old_string` 编辑里 572 次（18.7%）的串逐字出现在该文件最后一次读的内容里，
   这些串的 token 量占 72265 中的 5790（8.0%）。
 
@@ -1020,10 +1025,12 @@ Anthropic 无公开 tokenizer → **标注为未知**，只能用相对比较或
   RTK `methods/truncate`（300 行 / 500 字符，**不在任何链里**，文件头自述 "Reserved");
   squeez `truncation`（头/尾 + `[... N lines truncated]`）；lm-resizer `live_zone` 的 head/tail 预览。
 - **理由（源码原文）**：`cap.rs` 文档 "tail-biased … Bash errors live at the END of output"。
-- **反例**：§0.1-3 的两组实测。补一条更具体的（附录 A.13）：2845 行合成构建日志里错误行在 index 1400 附近
-  （前后各 1400 行噪音），`head50/tail8` 会**同时丢掉 `error[E0432]` 与 `error[E0308]`**（只保住 `87 passed`）；
-  同一份输入上 `cap(50,200)` 两个错误都保住了（37613→3255 tok）。→ 窗口大小（而不是“有窗口与否”）就决定成败，
-  而且这个失败模式不依赖具体项目。
+- **反例**：§0.1-3 的两组实测。补两条更具体的（附录 A.13）：
+  (i) 360 行合成构建日志（错误在 index 300 之后）：`head50/tail8` **同时丢掉 `error[E0432]` 与 `error[E0308]`**
+  （只保住 `87 passed` 与失败用例名）；同一份输入上 `cap(50,200)` 因为 200 行尾巴盖住了错误、两个错误都保住了。
+  (ii) 2845 行日志（错误在 index **1400**，前后各 1400 行噪音）：`cap(50,200)` 同样**丢掉 `E0432`**
+  （37613→3255 tok）。→ 就连 200 行尾巴也只覆盖末 200 行，位置一旦离底部超过尾部预算就失效。
+  结论：窗口大小（而不是“有窗口与否”）就决定成败，而且这个失败模式不依赖具体项目。
 - **RTK 自己已经在别处否定了它**：`read_min_tokens() = usize::MAX` 的注释写着
   "A `Read` is the agent asking for exact file bytes, and head+tail elision removes the middle without
   giving it back. The agent then pages through the file to reconstruct the elided middle, each recovery
@@ -1457,9 +1464,10 @@ A.12 **幂等性与吞吐**：把 `/tmp/rendered/<stem>.rendered.txt` 再送一�
 分类/模板/分组/TOON 的 per-op 耗时取自 `/tmp/probe/src/bin/proto.rs`（`cargo run --release --bin proto`）。
 
 A.13 **JSON 骨架/投影与 cap 对照**：`/tmp/meas6.py`（40 项响应：pretty 3824 → minified 2253 → skeleton 28 tok；
-投影 3/5 字段 2253 → 1523 tok；另含一份 2845 行合成构建日志：错误行在 index 1400、总行数 2845，
-`cap(50,200)` 保住 `E0432` 与 `87 passed`，37613→3255 tok）、`/tmp/meas5.py`（360 行构建日志：
-`head50/tail8` 丢掉 `error[E0432]` 与 `error[E0308]`、保住 `87 passed`；`cap(50,200)` 两者都保住）。
+投影 3/5 字段 2253 → 1523 tok；另含一份 2845 行合成构建日志：错误在 index 1400，
+`cap(50,200)` **丢掉 `E0432`**、保住 `87 passed`，37613→3255 tok）、`/tmp/meas5.py`（360 行构建日志：
+`head50/tail8` 丢掉 `error[E0432]` 与 `error[E0308]`、保住 `87 passed` 与失败用例名；
+`cap(50,200)` 因 200 行尾巴盖住错误位置而两者都保住）。
 
 A.14 **Kneedle 预算选择器**：`/tmp/ask`（`#[path]` 直接编译 lm-resizer 的
 `crates/lm-resizer-core/src/transforms/adaptive_sizer.rs`，依赖 `flate2 1` + `md-5 0.10`）。
@@ -1468,7 +1476,8 @@ A.14 **Kneedle 预算选择器**：`/tmp/ask`（`#[path]` 直接编译 lm-resize
 error/fail/panic/assert/exception/warn 或 `file:line` 形态的空白分隔词）。
 
 A.15 **grep 分组收益 vs 路径长度/形态**：`/tmp/m34.py`（43 命中 × 同一正文，只换路径，
-实测 4/6/10/11/17/41/60 字符七档，对应 2/2/4/3/5/12/17 tok）
+实测 4/6/10/11/17/41/60 字符七档 → 2/2/4/3/5/12/17 tok；注意 10 字符的 `src/hay.rs` 比 11 字符的
+`haystack.rs` 贵一 token，因为 `/` 自己占 token）
 + `/tmp/m35.py`（真实 fixture 正文 × 11 字符 vs 41 字符路径，用来把“正文短”与“路径短”两个因素分开）。
 复刻 `grep_group.rs` 的 gate（`splitn(3,':')` + 第二段 `parse::<usize>()`）与输出格式。
 `C:/…` 与 `C:\…` 两种形态触发 gate 失败 → 原文放行。
