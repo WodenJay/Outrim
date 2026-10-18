@@ -344,6 +344,8 @@ grep.txt / find.txt / cargo_err_color.txt       0.0%（不折叠，符合形状�
 8.2% 出现符号相反——73 例假拒（最差真实 -8.8% 被丢）、38 例假通（最差真实 +18.3% 被放行）。
 原因是 `     1: x`（5 tok）比 `hay:1:x`（4 tok）字符更少但 token 更多：数字前的空格单独成 token。
 真正需要真实 tokenizer 的是**原始语料上的绝对预算**与**任何改变行布局的压缩**。
+RTK 的 CCR 路径已经是这么做的（`proxy/src/tokenizer.rs` 的 `o200k_base`，
+floor 判定与压缩后复检都走它），所以“闸门单位”这个问题只存在于 CLI + engine 链。
 
 **9. ANSI 剥离：在唯一可得的真实 agent 轨迹上收益为 0，在真实带色输出上是 32.8%–67.9% 的 token。**
 
@@ -512,8 +514,14 @@ Layer 5    pipeline     TOML 规则：hook.before_tool / hook.after_tool / proxy
   注释诚实说明它"只能拒绝变大和空操作，无法判断方法是否在缩小的同时破坏了内容"。
   `run_chain_caught` 用 `catch_unwind` 保证 fail-open。
 - **`text/src/lib.rs:83 estimate_tokens_from_len()`** = `(len / 4.0).ceil()`，`text/` 全 139 行。
-- **`proxy/src/tokenizer.rs`** 是另一套：`tiktoken_rs::o200k_base()` 真实 BPE，加载失败回退 `len/4`。
-  注释明写 "Anthropic's tokenizer is not public"。
+- **`proxy/src/tokenizer.rs`** 是另一套：`tiktoken_rs::o200k_base()` 真实 BPE（`Lazy<Option<CoreBPE>>`，
+  词表内嵌无网络），加载失败回退 `text.len().div_ceil(4)`；注释自述 “Anthropic's tokenizer is not public,
+  so this is an approximation”。**关键：proxy 的 CCR 路径用的是这一套，不是 `chars/4`**：
+  `ccr/mod.rs:584/604` 用 `tokenizer::count` 做 floor 判定与压缩后复检，`render` 的第四个参数
+  （`strategy::render(text, floor, crate::tokenizer::count)`，`ccr/mod.rs:598`）也传的它；
+  `engine_methods.rs:264-265` 与 `ingest_filter.rs` 同样用它计节省量。
+  所以 §0.1-8 里`chars/4` 判错方向的结论只适用于 **CLI + engine 链**（`text/src/lib.rs:83` 的 `len/4`），
+  不适用于 CCR。
 
 ### 3.3 内置管线实况
 
@@ -1060,7 +1068,7 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 ### 4.7 token 估算与阈值
 
 **现状**
-- RTK：`chars/4`（`text/src/lib.rs:83`），CLI 与 engine 共用；proxy 侧另有 `o200k_base` 真实 BPE
+- RTK：`chars/4`（`text/src/lib.rs:83`），CLI 与 engine 链共用；proxy 的 CCR 路径另有 `o200k_base` 真实 BPE
   （`proxy/src/tokenizer.rs`，`tiktoken-rs`，失败回退 `len/4`）。
 - squeez：两条路。`estimate()` = `ceil(alnum/3.8 + punct/2.0 + wide)`（blank 不计；`wide` 是非 ASCII **字符数**）；
   `estimate_classed()` = 按 64 KiB 头部样本分类后 Dense `/2.0`、Prose `/3.7`、Mixed 回退 `estimate`。
