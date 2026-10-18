@@ -321,10 +321,13 @@ grep.txt / find.txt / cargo_err_color.txt       0.0%（不折叠，符合形状�
 所以估算器的分母不是 4，同一阀值对应的真 token 也不同：
 按 classed 口径 24 单位只对应 grep.txt **11.7**、中文 **96.4**、`ls.txt` 22.4 个真 token。
 
-好消息：`chars/4` 用来给 **RTK 自己的 head/tail 输出**做闸门时误差极小（附录 A.2，
+**一半好消息**：`chars/4` 用来给 **RTK 自己的 head/tail/structural 输出**做闸门时误差极小（附录 A.2，
 8 份有输出的语料上 `bytes/4` 与真实 token 的削减率相差 ≤0.35 个百分点，最大是 `bench.py` 的 0.34pp），
-因为输出已经是"短行、结构均匀"的形状。
-真正需要真实 tokenizer 的是**原始语料**上的绝对预算。
+因为输出仍然是"短行、结构均匀"的形状。
+但它对**重排版型**输出会判错方向：扫 1480 个 grep 分组用例（附录 A.21），
+8.2% 出现符号相反——73 例假拒（最差真实 -8.8% 被丢）、38 例假通（最差真实 +18.3% 被放行）。
+原因是 `     1: x`（5 tok）比 `hay:1:x`（4 tok）字符更少但 token 更多：数字前的空格单独成 token。
+真正需要真实 tokenizer 的是**原始语料上的绝对预算**与**任何改变行布局的压缩**。
 
 **9. ANSI 剥离：在唯一可得的真实 agent 轨迹上收益为 0，在真实带色输出上是 32.8%–67.9% 的 token。**
 
@@ -389,7 +392,7 @@ git log --color=always                    55785 字符 / 16824 tok → 11310 tok
 | 源码签名骨架 | "读文件做定位"，不随后 Edit | 600 函数 -49.3% 字符，签名 600/600 | 轨迹里 25.1% 的 open（69.9% 的 open token）随后被 Edit | E6（部分）：是否引发额外重读待补 |
 | Kneedle 预算选择（`compute_optimal_k`） | **候选集已按重要性排序** | 重排后信号词元保留 100%；未重排时真实 cargo 错误只留 3% | 假设顺序即重要性；对"前缀重复"型内容给 99%（几乎不压） | E10（附录 A.14） |
 | 头尾窗口 | 仅"已确认无信号"时的兜底 | 见 §0.1-3 | 见 §0.1-3 | 不做默认 |
-| token 真实计数 | 只要绝对预算就必须 | 见 §0.1-8 | 词表 2–4 MB；Anthropic 无公开 tokenizer | 待补：估算器决策翻转率 |
+| token 真实计数 | 只要绝对预算、或压缩会改变行布局就必须 | 见 §0.1-8；闸门符号翻转率 8.2%（短正文上最高） | 词表 2–4 MB；Anthropic 无公开 tokenizer | 无（附录 A.21） |
 
 ### 0.3 分片边界
 
@@ -1014,8 +1017,17 @@ lm-resizer 额外保留 leading doc-comments，失败时降级为"只剥注释�
 
 **偏差表见 §0.1-8。** 四条操作结论：
 
-1. **相对闸门用 `chars/4` 是安全的**：`never_worse` 比较的是同一段内容的两次估算，
-   误差同向抵消；在 RTK 自己的 head/tail/structural 输出上实测削减率误差 ≤0.35 个百分点（附录 A.2）。
+1. **相对闸门用 `chars/4` 只在"输出形状与输入同族"时安全**：`never_worse` 比较同一段内容的两次估算，
+   缩减比例上误差同向抵消；在 RTK 自己的 head/tail/structural 输出上实测削减率误差 ≤0.35 个百分点（附录 A.2）。
+   但**一旦压缩改变了形状，闸门会判错方向**（附录 A.21，扫 1480 个 grep 分组用例）：
+   8.2% 的用例上 `bytes/4` 与真实 token 给出相反的结论——
+   73 例**假拒**（闸门判定变差、实际变小，最差 `a.rs` + `fn f_i() {}` ×120：`bytes/4` 606→613 判拒，
+   真实 1200→1094 = **-8.8%** 被丢掉），38 例**假通**（闸门判定变小、实际变大，最差
+   `hay:x` ×2000：`bytes/4` 5223→5010 放行，真实 11000→13015 = **+18.3%**）。
+   原因是分组输出把每行换成 `     1: x`（5 token）而原文是 `hay:1:x`（4 token）——
+   字符少了 4%，token 多了 18%，因为数字前导空格单独成 token。
+   → 对"重排版型"压缩（分组/列对齐/加标记），`chars/4` 闸门必须换成真实计数，或至少改成
+   `min(est, real_if_cheap)`。
 2. **绝对预算必须用真实 tokenizer**：squeez 的 `net_win_min_tokens = 24`（`config.rs:353`）是**估算** token 单位，
    换真 token 的公式是 `真 = 估算 × 4 / (chars/token)`（因为 `chars/4` 口径下 `估算 = chars/4`，
    而 `真 = chars / (chars/token)`）：中文 104、散文 21，差 5 倍；
@@ -1088,6 +1100,10 @@ RTK 的 `MethodInfo` 用 `lossy: bool` + `recovery: None|Recall|RetrieveTool|Poi
 ### 5.2 全局守卫（必做）
 
 - **never-worse**：`estimate_tokens(out) > estimate_tokens(in)` → 原文。代价小。
+  但**用 `bytes/4` 做这个比较会在重排版输出上判错方向**（附录 A.21）：1480 个 grep 分组用例里
+  8.2% 符号相反，最差一边真实 -8.8% 被拒、另一边真实 +18.3% 被放行。
+  所以闸门的单位必须与"是否会改行布局"匹配：只删整行的策略可以用 `chars/4`，
+  重排/对齐/加分组的策略要用真实计数或至少 `max(est, lines×α)`。
   注意它只保证"不变大"，不保证"没破坏"（RTK 源码注释自己承认）。
 - **fail-open**：panic/解析失败返回原文（RTK `run_chain_caught` + `catch_unwind`；
   squeez `stash_refused` 走"不压缩"分支）。
@@ -1570,14 +1586,31 @@ lean-ctx/.../json_crush.rs   587     6210 ->  5487  -11.6%   -18.3%   -17.4%
 `cat -n` 输出 `%6d	%s`，落在 Tab 档；`nl -ba` 默认也是 Tab。
 注意：这里**只测"剥掉后省多少"**，没有测"下游因为少了行号而多跑一轮"的代价。
 
+A.21 **`chars/4` 闸门的符号翻转率**：`/tmp/m51.py`，对 grep 分组做 10 种路径 × 4 种正文 ×
+33 种命中期数 = 1480 个用例，逐例比较 `bytes/4` 与 `cl100k` 的"是否变小"判定：
+
+```
+cases: 1480 | sign flips: 122 (8.2%)
+  false rejects (gate says worse, tokens better): 73
+  false accepts (gate says ok, tokens worse):     38
+  false-reject worst: a.rs + "fn f_i() {}" x120   bytes4 606->613   tok 1200->1094 (-8.8%)
+  false-accept worst: hay + "x"            x2000   bytes4 5223->5010 tok 11000->13015 (+18.3%)
+```
+
+`hay:1:x` 是 4 tok，分组后的 `     1: x` 是 5 tok——字符少 4%，token 多 18%。
+`a.rs:1:x` 行类似但方向相反（`a.rs:` 被切成 3 token，分组把 `a.rs` 提到表头只留 `     1: `）。
+`/tmp/m50.py` 另在 63 个"真实压缩输出对"上做了同样检查，只有 2 例符号翻转
+（`a.rs` + 长正文 ×10、`engine/src/hay.rs` ×3），说明这种翻转集中在**短正文**上：
+正文越长，路径占总 token 的比例越高，`chars/4` 与真实计数越一致。
+
 **复现注意**
 - `chars` 一律按 Unicode 字符数（Rust `chars().count()`），`bytes` 明写。
 - `tiktoken` 的 `cl100k_base` 与 Claude 实际 tokenizer 无关（§8-1）。
 - 所有 RTK 数值取自提交 `e542dca0`；`toon-format` 数值取自 `0.7.0`，与 RTK 钉的 `0.5.0` 交叉验证了两个关键用例。
 - 探针都不入库：仓库里只有本文。探针源码留在 `%TEMP%`（少数输出落在 `C:/tmp`，见 A.3/A.12），
-  节点（文件 + 函数 + 参数）在 A.1–A.20 里可定位；
+  节点（文件 + 函数 + 参数）在 A.1–A.21 里可定位；
   依赖版本见 §5.4 与本节环境行。
 - 本轮对每个引用过的脚本都重跑了一次以确认还能复现（`sc2/m1.py`、`m10.py`、`m14.py`、`m21.py`、`m31.py`、
-  `m34.py`、`m35.py`、`meas5.py`、`meas6.py`、`m46.py`、`m47.py`、`m48.py`），数字与正文一致。
+  `m34.py`、`m35.py`、`meas5.py`、`meas6.py`、`m46.py`、`m47.py`、`m48.py`、`m50.py`、`m51.py`），数字与正文一致。
 - 时间是本机单次测量（无重复试验、无 CI），只用于"数量级"判断；`drain_probe` 与 `renderprobe`
   的两次运行出现过 2 倍差异，凡此类都写成区间。
