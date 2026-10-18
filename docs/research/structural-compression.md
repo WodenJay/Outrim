@@ -749,9 +749,9 @@ grep/find/cargo_err   0.0%（形状门不命中）
 
 ```
 train with blanks FAILED: line too long: 0 bytes (max: 1024)
-train 1600 lines: 2.6 ms, templates=4
+train 1600 lines: 1.0–2.6 ms, templates=4
 match_line(blank) -> (0, [], false)
-matched 40k lines in 43.6 ms (916735 lines/s), ok=40000
+matched 40k lines in 22.9–43.6 ms (0.92–1.75M lines/s), ok=40000
 templates (count): 400 INFO <*> heartbeat ok / 400 WARN <*> queue depth <*> /
                    400 ERROR <*> failed job <*> code <*> / 400 at handler (src/worker.rs:42:5)
 ```
@@ -764,7 +764,7 @@ templates (count): 400 INFO <*> heartbeat ok / 400 WARN <*> queue depth <*> /
 所以"每条错误都不同"的日志里，Drain 可能把关键定位信息固化进模板。
 **坑 4**：`param_string` 默认 `<*>`，`max_clusters` 可封顶内存。
 
-吞吐在不同运行里 0.9–1.8M 行/秒（两次测量 916,735 与 1,766,745 lines/s，见附录 A.9），
+吞吐在不同运行里 0.92–1.75M 行/秒（四次测量 916,735 / 1,667,716 / 1,695,806 / 1,747,847 lines/s，见附录 A.9），
 数量级足够。**复杂度：中**（不要 `bon/snafu/string-interner` 的话，树 + simSeq 约 200 行可重写）。
 
 #### 4.3.5 失败行追回门（可直接借用的保护层）
