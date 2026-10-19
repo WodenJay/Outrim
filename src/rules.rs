@@ -6,6 +6,10 @@ fn line_chunks(text: &str) -> Vec<&str> {
     text.split_inclusive('\n').collect()
 }
 
+fn last_lines(lines: &[&str]) -> String {
+    lines[lines.len().saturating_sub(RETAINED_LINES)..].concat()
+}
+
 pub(crate) fn protected(tool: &Tool) -> bool {
     if matches!(tool.source, Source::SourceCode | Source::Configuration) {
         return true;
@@ -59,7 +63,7 @@ pub(crate) fn log_tail(tool: &Tool, text: &str) -> Option<String> {
         return None;
     }
     let lines = line_chunks(text);
-    Some(lines[lines.len().saturating_sub(RETAINED_LINES)..].concat())
+    Some(last_lines(&lines))
 }
 
 pub(crate) fn generic_line_fallback(text: &str) -> Option<String> {
@@ -70,6 +74,6 @@ pub(crate) fn generic_line_fallback(text: &str) -> Option<String> {
     Some(format!(
         "{}{}",
         lines[..RETAINED_LINES].concat(),
-        lines[lines.len() - RETAINED_LINES..].concat()
+        last_lines(&lines[RETAINED_LINES..])
     ))
 }

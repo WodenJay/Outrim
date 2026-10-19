@@ -40,7 +40,7 @@ fn source_and_configuration_are_protected_before_compression() {
         assert!(response.applied_rule.is_none());
         assert!(response.original_path.is_none());
     }
-    let mut input = request(&log(), Source::BuildLog);
+    let mut input = request(&long_text, Source::Unknown);
     input.tool.input = json!({"path": "src/main.rs"});
     let response = processor.process(input.clone());
     assert_eq!(response.disposition, Disposition::Protected);
@@ -110,7 +110,7 @@ fn final_hint_counts_and_unicode_codepoints_must_be_strictly_shorter() {
 }
 
 #[test]
-fn short_logs_and_short_unknown_content_pass_through() {
+fn short_logs_and_subthreshold_unknown_content_pass_through() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
     for text in ["", "one line", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"] {
@@ -292,7 +292,10 @@ fn originals_and_their_directories_grant_access_only_to_the_owner() {
 #[test]
 fn logs_keep_last_ten_lines_and_recover_exact_input() {
     let home = tempfile::tempdir().unwrap();
-    let text = log();
+    let numbered_lines = (1..=23)
+        .map(|line| format!("{line:02}\n"))
+        .collect::<String>();
+    let text = format!("{}\n{numbered_lines}", "old output ".repeat(200));
     let response = Processor::new(home.path()).process(request(&text, Source::TestLog));
     assert_eq!(response.disposition, Disposition::Compressed);
     assert_eq!(response.applied_rule.as_deref(), Some("log_tail"));
@@ -302,7 +305,7 @@ fn logs_keep_last_ten_lines_and_recover_exact_input() {
     assert_eq!(
         response.text,
         format!(
-            "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n[outrim]: The full output is available at {path}"
+            "14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n[outrim]: The full output is available at {path}"
         )
     );
 }
