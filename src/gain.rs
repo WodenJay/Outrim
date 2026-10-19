@@ -12,6 +12,9 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
+#[cfg(windows)]
+use std::{thread, time::Duration};
+
 const STATS_FILE: &str = "gain.json";
 const LOCK_FILE: &str = "gain.lock";
 const SAVINGS_BAR_WIDTH: usize = 24;
@@ -83,6 +86,9 @@ impl Store {
         serde_json::to_writer(file.as_file_mut(), stats).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
         file.as_file().sync_all()?;
+        #[cfg(windows)]
+        persist_tempfile_with_retry(file, &self.path)?;
+        #[cfg(not(windows))]
         file.persist(&self.path).map_err(|error| error.error)?;
         #[cfg(unix)]
         File::open(&self.directory)?.sync_all()?;
@@ -250,6 +256,25 @@ fn render_stats(stats: &Stats) -> String {
         writeln!(report, "  {label}: {}", format_number(count)).unwrap();
     }
     report
+}
+
+#[cfg(windows)]
+fn persist_tempfile_with_retry(mut file: NamedTempFile, path: &Path) -> io::Result<()> {
+    // Windows can deny replacement while a reader holds gain.json open; retry for 195ms.
+    const RETRY_DELAYS_MS: [u64; 7] = [5, 10, 20, 40, 40, 40, 40];
+
+    for delay_ms in RETRY_DELAYS_MS {
+        match file.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.error.kind() == io::ErrorKind::PermissionDenied => {
+                file = error.file;
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
+
+    file.persist(path).map(|_| ()).map_err(|error| error.error)
 }
 
 fn exists(path: &Path) -> io::Result<bool> {

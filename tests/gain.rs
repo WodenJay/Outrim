@@ -278,6 +278,45 @@ fn gain_aggregates_all_delivery_outcomes_across_writes() {
     assert!(log_rule.ends_with("████░░░░░░"), "{log_rule}");
 }
 
+#[cfg(windows)]
+#[test]
+fn gain_retries_when_a_reader_temporarily_blocks_replacement() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+    let home = tempfile::tempdir().unwrap();
+    let mut bridge = Bridge::start(home.path());
+    let first = bridge.exchange(&delivery_request("first", "no_match", None, 100, 100));
+    assert_eq!(first["acknowledged"], true);
+
+    let blocker = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(home.path().join(".outrim/gain.json"))
+        .unwrap();
+    let pending = std::thread::spawn(move || {
+        let acknowledgement =
+            bridge.exchange(&delivery_request("second", "no_match", None, 100, 100));
+        (bridge, acknowledgement)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    drop(blocker);
+
+    let (bridge, acknowledgement) = pending.join().unwrap();
+    assert!(bridge.stop().stderr.is_empty());
+    assert_eq!(acknowledgement["acknowledged"], true);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_outrim"))
+        .arg("gain")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(report.contains("Outputs: 2"), "{report}");
+}
+
 #[test]
 fn gain_aggregates_concurrent_bridge_processes() {
     let home = tempfile::tempdir().unwrap();
