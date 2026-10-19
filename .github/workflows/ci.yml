@@ -1,0 +1,138 @@
+name: Check and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            extension: .exe
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            extension: ''
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            extension: ''
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            extension: ''
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - name: Prepare Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustup target add '${{ matrix.target }}'
+      - name: Check TypeScript and committed bundles
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          git diff --exit-code -- assets
+          test -z "$(git ls-files --others --exclude-standard -- assets)"
+          bun check
+          bun run lint
+          bun run test
+      - name: Check scripts
+        run: |
+          bash -n scripts/install.sh scripts/check-source.sh
+          if [ '${{ runner.os }}' = Linux ]; then shellcheck scripts/*.sh; fi
+      - name: Parse PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/install.ps1", [ref]$tokens, [ref]$errors) > $null
+          if ($errors.Count) { $errors; exit 1 }
+      - name: Check Rust
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked
+      - name: Build release binary
+        run: |
+          cargo build --release --locked --target '${{ matrix.target }}'
+          mkdir -p dist
+          cp 'target/${{ matrix.target }}/release/outrim${{ matrix.extension }}' 'dist/outrim-${{ matrix.target }}${{ matrix.extension }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  source:
+    name: Independent Cargo source build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Package and test source without Bun
+        run: sh scripts/check-source.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    needs: [build, source]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish checked release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          RELEASE_NOTES: |
+            Core-only, user-level installation to `.outrim/bin`. No administrator privileges, JS runtime installation, or automatic Agent integration.
+
+            **macOS ARM64 / Linux x64 and ARM64**
+            ```sh
+            curl -fsSL https://github.com/WodenJay/Outrim/releases/latest/download/install.sh | sh
+            ```
+
+            **Windows x64 (PowerShell)**
+            ```powershell
+            irm https://github.com/WodenJay/Outrim/releases/latest/download/install.ps1 | iex
+            ```
+
+            Open a new terminal, then explicitly connect a host with `outrim install --agent pi` or `outrim install --agent opencode` and restart that host. `outrim gain` shows local cumulative savings.
+
+            Installers verify downloaded binaries against `SHA256SUMS`. Linux builds require GNU libc (Ubuntu 24.04 build environment); Alpine/musl and macOS Intel are not included. The source archive builds with Cargo alone.
+        run: |
+          version=$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)
+          test "$TAG" = "v$version"
+          cp scripts/install.sh scripts/install.ps1 dist/
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$TAG" dist/* --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
