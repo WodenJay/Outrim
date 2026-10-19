@@ -2,6 +2,7 @@
 //! not an independently configurable original-output directory.
 
 pub mod bridge;
+mod json;
 pub mod protocol;
 mod rules;
 mod storage;
@@ -37,34 +38,48 @@ impl Processor {
             response.disposition = Disposition::Protected;
             return response;
         }
-        let (rule, retained) = if let Some(tail) = rules::log_tail(&request.tool, &response.text) {
-            ("log_tail", tail)
+        let candidates = if let Some(tail) = rules::log_tail(&request.tool, &response.text) {
+            vec![("log_tail", tail)]
+        } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
+            json_candidates
         } else if let Some(retained) = rules::generic_line_fallback(&response.text) {
-            ("generic_line_fallback", retained)
+            vec![("generic_line_fallback", retained)]
         } else {
             return response;
         };
-        if retained.chars().count() >= response.text.chars().count() {
+        if candidates
+            .iter()
+            .all(|(_, text)| text.chars().count() >= response.text.chars().count())
+        {
             response.disposition = Disposition::NotShorter;
             return response;
         }
+        let original_length = response.text.chars().count();
         let result = (|| -> std::io::Result<_> {
             let file = self.originals.reserve(request.host, &request.session)?;
             let path = file
                 .path()
                 .to_str()
                 .ok_or_else(|| std::io::Error::other("non-Unicode original path"))?;
-            let separator = if retained.ends_with('\n') { "" } else { "\n" };
-            let candidate =
-                format!("{retained}{separator}[outrim]: The full output is available at {path}");
-            if candidate.chars().count() >= response.text.chars().count() {
+            let best = candidates
+                .into_iter()
+                .map(|(rule, candidate)| {
+                    let separator = if candidate.ends_with('\n') { "" } else { "\n" };
+                    let text = format!(
+                        "{candidate}{separator}[outrim]: The full output is available at {path}"
+                    );
+                    (rule, text)
+                })
+                .filter(|(_, text)| text.chars().count() < original_length)
+                .min_by_key(|(_, text)| text.chars().count());
+            let Some((rule, text)) = best else {
                 return Ok(None);
-            }
+            };
             let path = storage::commit(file, &response.text)?;
-            Ok(Some((candidate, path)))
+            Ok(Some((text, path, rule)))
         })();
         match result {
-            Ok(Some((text, path))) => {
+            Ok(Some((text, path, rule))) => {
                 response.text = text;
                 response.original_path = Some(path.to_string_lossy().into_owned());
                 response.applied_rule = Some(rule.into());

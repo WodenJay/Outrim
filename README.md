@@ -2,7 +2,8 @@
 
 Shared Rust core for tool-output ingress compression. The current slice protects
 source/configuration content, keeps tails for known build, test, and runtime logs,
-and applies a head/tail fallback to other eligible long text.
+selects lossless compact/TOON candidates for applicable unknown-source JSON, and
+applies a head/tail fallback to other eligible long text.
 
 ## Development
 
@@ -44,12 +45,12 @@ Example request (the text is deliberately short and therefore stays unchanged):
 
 A normal response contains `version`, `id`, `text`, `disposition`, `applied_rule`,
 and `original_path`. Only a compressed response has a non-null applied rule
-(`log_tail` or `generic_line_fallback`) and original path. Dispositions currently
-produced are:
+(`log_tail`, `json_compact`, `json_toon`, or `generic_line_fallback`) and original
+path. Dispositions currently produced are:
 
 | Disposition | Result |
 | --- | --- |
-| `compressed` | Log tail or generic head/tail plus original-output path replaces the input |
+| `compressed` | Selected log, JSON, or generic-text candidate plus original-output path replaces the input |
 | `protected` | Source/configuration is intentionally unchanged |
 | `not_shorter` | Candidate including its hint is not strictly shorter |
 | `no_match` | No eligible policy applies, including generic text with fewer than 20 lines |
@@ -69,12 +70,19 @@ normal `failed_open` response with unchanged text.
 ## Policy and originals
 
 Routing is ordered: explicit source/configuration and known source/configuration
-file paths are protected first. Known log sources retain the last ten lines,
-preserving their original line endings. After applicable content rules, all other
-non-protected tool outputs (including `search` and `unknown` sources) with at least
-20 lines retain their first and last ten lines; shorter text has no generic match.
-The final candidate, including the path hint, must still be strictly shorter. No
-content-wide JSON guessing can bypass source protection.
+file paths are protected first. Known log sources retain exactly the last ten
+lines, preserving their original line endings. Unknown-source JSON gets a
+whitespace-compacted candidate; TOON is considered only when there are no duplicate
+object keys and every number token is an integer in the exact range
+`[-9007199254740991, 9007199254740991]` other than `-0`. Decimal and exponent
+forms and other integer values use compact JSON when the parser accepts them. A
+parser-rejected JSON object or array stays unchanged rather than reaching the
+generic fallback. TOON must decode to the same JSON value. For other non-protected
+outputs (including search and unknown non-JSON text), inputs with at least 20 lines
+get a head/tail candidate; shorter text has no generic match. Content-specific
+rules precede generic fallback. The shortest candidate including the full hint is
+used only when it is strictly shorter than the original. No content-wide JSON
+guessing can bypass source protection.
 
 The candidate ends with the fixed hint:
 
@@ -82,9 +90,11 @@ The candidate ends with the fixed hint:
 [outrim]: The full output is available at <absolute path>
 ```
 
-The hint and any added newline count toward the final length. Replacement happens
-only if that final text has strictly fewer Unicode codepoints than the original;
-UTF-8 bytes and UTF-16 code units are not the comparison metric.
+The hint and any added newline count toward the final length. The hint is a
+separate trailing metadata line, not part of the JSON/TOON payload; consumers that
+parse the payload must strip the `\n[outrim]: ...` trailer first. Replacement
+happens only if that final text has strictly fewer Unicode codepoints than the
+original; UTF-8 bytes and UTF-16 code units are not the comparison metric.
 
 Before returning a replacement, the core writes the exact original bytes to a new,
 collision-resistant `.txt` file under the current user's
@@ -120,7 +130,8 @@ as placeholders for later tickets:
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
-| `src/rules.rs` | Source protection and pure in-memory text policies |
+| `src/rules.rs` | Source protection, known-log and generic text policies |
+| `src/json.rs` | Lossless JSON compaction and TOON candidate safety |
 | `src/storage.rs` | Host/session layout and non-overwriting original writes |
 | `src/storage/windows.rs` | Native Windows private-directory access control |
 | `tests/processing.rs` | Public single-output behavior and privacy checks |
