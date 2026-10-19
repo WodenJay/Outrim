@@ -37,10 +37,10 @@ impl Processor {
             response.disposition = Disposition::Protected;
             return response;
         }
-        let Some(tail) = rules::log_tail(&request.tool, &response.text) else {
+        let Some((rule, rewritten)) = rules::rewrite(&request.tool, &response.text) else {
             return response;
         };
-        if tail.chars().count() >= response.text.chars().count() {
+        if rewritten.chars().count() >= response.text.chars().count() {
             response.disposition = Disposition::NotShorter;
             return response;
         }
@@ -50,9 +50,9 @@ impl Processor {
                 .path()
                 .to_str()
                 .ok_or_else(|| std::io::Error::other("non-Unicode original path"))?;
-            let separator = if tail.ends_with('\n') { "" } else { "\n" };
+            let separator = if rewritten.ends_with('\n') { "" } else { "\n" };
             let candidate =
-                format!("{tail}{separator}[outrim]: The full output is available at {path}");
+                format!("{rewritten}{separator}[outrim]: The full output is available at {path}");
             if candidate.chars().count() >= response.text.chars().count() {
                 return Ok(None);
             }
@@ -63,7 +63,7 @@ impl Processor {
             Ok(Some((text, path))) => {
                 response.text = text;
                 response.original_path = Some(path.to_string_lossy().into_owned());
-                response.applied_rule = Some("log_tail".into());
+                response.applied_rule = Some(rule.into());
                 response.disposition = Disposition::Compressed;
             }
             Ok(None) => response.disposition = Disposition::NotShorter,

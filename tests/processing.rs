@@ -218,6 +218,36 @@ fn originals_and_their_directories_grant_access_only_to_the_owner() {
 }
 
 #[test]
+fn search_candidates_with_no_total_gain_return_the_original() {
+    let home = tempfile::tempdir().unwrap();
+    let path = "short.rs";
+    let text = format!("{path}:1:hit\n{path}:2:hit\n{path}:3:hit\n{path}:4:hit\n{path}:5:hit\n");
+    let compact = "short.rs:\n  1:hit\n  2:hit\n  3:hit\n  4:hit\n  5:hit\n";
+    assert!(compact.chars().count() < text.chars().count());
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
+fn search_output_with_context_records_is_left_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let path = "workspace/deeply/nested/source-file.rs";
+    let text =
+        format!("{path}:12:match\n{path}-13:context\n--\n{path}:14:match\n{path}:15:match\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
 fn logs_keep_last_ten_lines_and_recover_exact_input() {
     let home = tempfile::tempdir().unwrap();
     let text = log();
@@ -231,6 +261,35 @@ fn logs_keep_last_ten_lines_and_recover_exact_input() {
         response.text,
         format!(
             "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n[outrim]: The full output is available at {path}"
+        )
+    );
+}
+
+#[test]
+fn search_results_group_repeated_paths_without_losing_hits_or_positions() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let file = format!(
+        "workspace/{}/src/duplicate.rs",
+        "long-component-name/".repeat(6)
+    );
+    let other = "workspace/another/very/deep/module.rs";
+    let text = format!(
+        "{file}:12:same match\n{file}:47:same match\n{file}:81:same match\n{file}:96:same match\n{other}:9:same match\n"
+    );
+    let mut input = request(&text, Source::Search);
+    input.tool.input = json!({"path": "src/duplicate.rs", "pattern": "same match"});
+    let response = processor.process(input);
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("search_paths"));
+    assert!(response.text.chars().count() < text.chars().count());
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{file}:\n  12:same match\n  47:same match\n  81:same match\n  96:same match\n{other}:\n  9:same match\n[outrim]: The full output is available at {original_path}"
         )
     );
 }
