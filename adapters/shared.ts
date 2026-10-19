@@ -52,7 +52,11 @@ export function sourceFor(
     ["find", "grep", "ls"].includes(toolName) ||
     (host === "opencode" && ["glob", "list"].includes(toolName))
   ) return "search";
-  if (toolName !== "bash" && toolName !== "powershell") return "unknown";
+  if (
+    toolName !== "bash" &&
+    toolName !== "powershell" &&
+    !(host === "opencode" && toolName === "shell")
+  ) return "unknown";
   const command = input.command;
   if (typeof command !== "string") return "unknown";
   if (matchesAny(TEST_COMMANDS, command)) return "test_log";

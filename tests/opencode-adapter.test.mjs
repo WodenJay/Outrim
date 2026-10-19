@@ -113,7 +113,7 @@ describe("OpenCode result adapter", () => {
     };
     const event = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-1",
       id: "call-1",
       input: { command: "cargo test" },
@@ -127,7 +127,7 @@ describe("OpenCode result adapter", () => {
       host: "opencode",
       session: "session-1",
       tool: {
-        name: "bash",
+        name: "shell",
         input: { command: "cargo test" },
         source: "test_log",
         exit_code: 1,
@@ -153,7 +153,7 @@ describe("OpenCode result adapter", () => {
     const dispose = await cleanup;
     const first = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-a",
       id: "call-a",
       input: { command: "cargo test" },
@@ -161,7 +161,7 @@ describe("OpenCode result adapter", () => {
     };
     const second = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-b",
       id: "call-b",
       input: { command: "cargo test" },
@@ -192,7 +192,7 @@ describe("OpenCode result adapter", () => {
     const structuredOutput = { code: "used by caller" };
     const event = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-2",
       id: "call-2",
       input: { command: "cargo build" },
@@ -272,7 +272,7 @@ describe("OpenCode result adapter", () => {
     const output = "original textual output";
     const textEvent = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-5",
       id: "text-output",
       input: { command: "cargo test" },
@@ -299,7 +299,7 @@ describe("OpenCode result adapter", () => {
     const result = { content: [{ type: "text", text: "full original output" }] };
     const event = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-6",
       id: "call-6",
       input: { command: "cargo test" },
@@ -322,7 +322,7 @@ describe("OpenCode result adapter", () => {
     const result = { content: [{ type: "text", text: "full original output" }] };
     const event = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-7",
       id: "call-7",
       input: { command: "cargo test" },
@@ -348,7 +348,7 @@ describe("OpenCode result adapter", () => {
     const result = { content: [{ type: "text", text: "original output" }] };
     const event = {
       status: "completed",
-      tool: "bash",
+      tool: "shell",
       sessionID: "session-4",
       id: "call-4",
       input: { command: "cargo test" },

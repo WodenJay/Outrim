@@ -24,7 +24,7 @@ function matchesAny(patterns, command) {
 function sourceFor(host, toolName, input) {
   if (["find", "grep", "ls"].includes(toolName) || host === "opencode" && ["glob", "list"].includes(toolName))
     return "search";
-  if (toolName !== "bash" && toolName !== "powershell")
+  if (toolName !== "bash" && toolName !== "powershell" && !(host === "opencode" && toolName === "shell"))
     return "unknown";
   const command = input.command;
   if (typeof command !== "string")
