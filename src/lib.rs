@@ -2,6 +2,7 @@
 //! not an independently configurable original-output directory.
 
 pub mod bridge;
+pub mod install;
 pub mod protocol;
 mod rules;
 mod storage;

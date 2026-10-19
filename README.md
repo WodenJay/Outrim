@@ -1,8 +1,8 @@
 # Outrim
 
-Shared Rust core for tool-output ingress compression. The current slice handles
-known build, test, and runtime logs; host adapters and other compression policies
-are separate implementation tickets.
+Shared Rust core for tool-output ingress compression, with a native Pi adapter
+for build, test, and runtime logs. Other compression policies remain separate
+implementation tickets.
 
 ## Development
 
@@ -14,6 +14,39 @@ cargo test
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+The checked-in Pi bundle is built and tested with Bun during adapter development;
+these commands are not needed for a clean Cargo build or by Pi users:
+
+```sh
+bun build adapters/pi.ts --target=node --format=esm --outfile=assets/outrim-pi.js
+bun test tests/pi-adapter.test.mjs
+bun check
+```
+
+## Pi integration
+
+Install the currently running binary for the current user:
+
+```sh
+outrim install --agent pi
+```
+
+This writes the embedded extension to
+`${PI_CODING_AGENT_DIR:-~/.pi/agent}/extensions/outrim.js`; restart Pi to activate
+it. The extension lazily starts and reuses `outrim bridge` for eligible text tool
+results. It skips recovery reads whose input references `.outrim/outputs`, and
+leaves non-text, structured, and nested tool results untouched. Restore saved
+output with Pi's existing read, grep, or shell tools using the path in the hint.
+
+Remove only Outrim's Pi extension with:
+
+```sh
+outrim uninstall --agent pi
+```
+
+Restart Pi to unload it. Other extensions, settings, the binary, and saved
+originals are left in place.
 
 ## Core process
 
@@ -114,6 +147,10 @@ as placeholders for later tickets:
 | Path | Responsibility |
 | --- | --- |
 | `src/main.rs` | Thin CLI dispatch and current-user home resolution |
+| `src/install.rs` | User-level Pi extension install and uninstall |
+| `adapters/shared.ts` | Shared host bridge transport and recovery-input detection |
+| `adapters/pi.ts` | Pi result-hook mapping and source classification |
+| `assets/outrim-pi.js` | Single-file Pi bundle embedded by Cargo |
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
@@ -122,3 +159,5 @@ as placeholders for later tickets:
 | `src/storage/windows.rs` | Native Windows private-directory access control |
 | `tests/processing.rs` | Public single-output behavior and privacy checks |
 | `tests/bridge.rs` | Real-process recovery, restart, concurrency, and failure checks |
+| `tests/pi_install.rs` | Pi CLI install/uninstall and unrelated-file preservation |
+| `tests/pi-adapter.test.mjs` | Pi hook, bridge reuse, cancellation, and fail-open behavior |
