@@ -282,7 +282,12 @@ fn repeated_json_records_choose_the_smaller_lossless_toon_candidate() {
     let home = tempfile::tempdir().unwrap();
     // Repetition makes the table representation beat the fixed path hint.
     let records: Vec<_> = (0..80)
-        .map(|id| {
+        .map(|index| {
+            let id = if index % 2 == 0 {
+                9_007_199_254_740_991i64
+            } else {
+                -9_007_199_254_740_991i64
+            };
             json!({
                 "id": id,
                 "enabled": id % 2 == 0,
