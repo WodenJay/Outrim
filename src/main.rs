@@ -8,7 +8,13 @@ use std::{
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     if matches_command(&arguments, &["bridge"]) {
-        return run_bridge();
+        return run_bridge(None);
+    }
+    // Adapters pass their host-startup snapshot, also when restarting a bridge.
+    if matches_command(&arguments, &["bridge", "--recording", "on"])
+        || matches_command(&arguments, &["bridge", "--recording", "off"])
+    {
+        return run_bridge(Some(arguments[2] == "on"));
     }
     if matches_command(&arguments, &["gain"]) {
         return run_gain(&arguments[1..]);
@@ -184,12 +190,15 @@ fn run_gain(arguments: &[std::ffi::OsString]) -> ExitCode {
     }
 }
 
-fn run_bridge() -> ExitCode {
+fn run_bridge(recording: Option<bool>) -> ExitCode {
     let home = match user_home() {
         Ok(home) => home,
         Err(error) => return fail_with_error(error),
     };
-    let processor = outrim::Processor::new(&home);
+    let processor = match recording {
+        Some(enabled) => outrim::Processor::with_recording(&home, enabled),
+        None => outrim::Processor::new(&home),
+    };
     match outrim::bridge::run(
         &processor,
         io::stdin().lock(),

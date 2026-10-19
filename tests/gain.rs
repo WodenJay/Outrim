@@ -89,7 +89,7 @@ fn recording_is_explicit_persistent_and_detail_is_read_only() {
 
 fn tool_request(id: &str, text: &str) -> Value {
     json!({
-        "version": 1,
+        "version": 2,
         "id": id,
         "host": "pi",
         "session": "gain-test",
@@ -101,6 +101,186 @@ fn tool_request(id: &str, text: &str) -> Value {
         },
         "text": text
     })
+}
+
+#[test]
+fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
+    let home = tempfile::tempdir().unwrap();
+    let mut disabled = Bridge::start(home.path());
+    // Force startup before changing the saved setting.
+    disabled.exchange(&tool_request("ready", "small"));
+    assert!(
+        gain_command(home.path(), &["record", "on"])
+            .status
+            .success()
+    );
+    let mut active = Bridge::start(home.path());
+    let text = "🦀 日志\n".repeat(100);
+    let response = active.exchange(&tool_request("process", &text));
+    assert_eq!(response["disposition"], "compressed");
+    let observation = json!({
+        "type": "record_observation", "version": 2, "id": "observe",
+        "host": "pi", "session": "record-session", "tool_call_id": "host-call",
+        "tool": tool_request("unused", &text)["tool"],
+        "original_text": text, "final_text": response["text"],
+        "outcome": response["disposition"], "applied_rule": response["applied_rule"],
+        "original_path": response["original_path"], "candidates": response["candidates"],
+        "reason": response["reason"]
+    });
+    assert_eq!(disabled.exchange(&observation)["acknowledged"], true);
+    assert!(!home.path().join(".outrim/records").exists());
+    assert_eq!(active.exchange(&observation)["acknowledged"], true);
+    assert!(
+        gain_command(home.path(), &["record", "off"])
+            .status
+            .success()
+    );
+    assert_eq!(active.exchange(&observation)["acknowledged"], true);
+    disabled.stop();
+    active.stop();
+    let instance = fs::read_dir(home.path().join(".outrim/records"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let lines = fs::read_to_string(instance.join("events.jsonl")).unwrap();
+    let events: Vec<Value> = lines
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 2);
+    let event = &events[0];
+    assert_eq!(event["format_version"], 1);
+    assert_ne!(event["event_id"], events[1]["event_id"]);
+    assert_eq!(event["sequence"], 1);
+    assert_eq!(events[1]["sequence"], 2);
+    assert_eq!(event["tool_call_id"], "host-call");
+    assert_eq!(event["before_chars"], 500);
+    assert_eq!(
+        event["after_chars"],
+        count_codepoints(response["text"].as_str().unwrap())
+    );
+    assert_eq!(event["outrim_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(event["candidates"][0]["rule"], "log_tail");
+    assert_eq!(event["candidates"][0]["reason"], "selected");
+    let original = instance.join(event["content"]["original"].as_str().unwrap());
+    assert_eq!(fs::read_to_string(&original).unwrap(), text);
+    assert_eq!(
+        fs::read_to_string(instance.join(event["content"]["final"].as_str().unwrap())).unwrap(),
+        response["text"].as_str().unwrap()
+    );
+    let args: Value = serde_json::from_slice(
+        &fs::read(instance.join(event["content"]["arguments"].as_str().unwrap())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(args, json!({"command":"cargo test"}));
+    fs::remove_file(response["original_path"].as_str().unwrap()).unwrap();
+    assert_eq!(fs::read_to_string(original).unwrap(), text);
+    let detail = gain_command(home.path(), &["--detail", "--session", "record-session"]);
+    assert!(detail.status.success());
+    let report = String::from_utf8(detail.stdout).unwrap();
+    assert!(report.contains("compressed"));
+    assert!(report.contains("host-call"));
+    let mut restarted = Bridge::start(home.path());
+    restarted.exchange(&observation);
+    restarted.stop();
+    assert_eq!(
+        fs::read_dir(home.path().join(".outrim/records"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn recording_instances_remain_distinct_and_portable() {
+    let home = tempfile::tempdir().unwrap();
+    assert!(
+        gain_command(home.path(), &["record", "on"])
+            .status
+            .success()
+    );
+    std::thread::scope(|scope| {
+        for worker in 0..2 {
+            let home = home.path();
+            scope.spawn(move || {
+                let mut bridge = Bridge::start(home);
+                for sequence in 1..=2 {
+                    let text = format!("worker {worker} output {sequence} 🦀");
+                    let response = bridge.exchange(&tool_request("process", &text));
+                    let acknowledgement = bridge.exchange(&json!({
+                        "type": "record_observation", "version": 2, "id": "same-transport-id",
+                        "host": "pi", "session": "shared-session", "tool_call_id": null,
+                        "tool": tool_request("unused", &text)["tool"],
+                        "original_text": text, "final_text": response["text"],
+                        "outcome": response["disposition"], "applied_rule": response["applied_rule"],
+                        "original_path": response["original_path"], "candidates": response["candidates"],
+                        "reason": response["reason"]
+                    }));
+                    assert_eq!(acknowledgement["acknowledged"], true);
+                }
+                bridge.stop();
+            });
+        }
+    });
+    let copied = tempfile::tempdir().unwrap();
+    let mut ids = std::collections::BTreeSet::new();
+    let mut texts = std::collections::BTreeSet::new();
+    let mut instances = 0;
+    for instance in fs::read_dir(home.path().join(".outrim/records")).unwrap() {
+        let instance = instance.unwrap().path();
+        instances += 1;
+        let destination = copied.path().join(instance.file_name().unwrap());
+        fs::create_dir(&destination).unwrap();
+        for entry in fs::read_dir(&instance).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), destination.join(entry.file_name())).unwrap();
+        }
+        // Resolve all references from the copy, not the original directory.
+        let lines = fs::read_to_string(destination.join("events.jsonl")).unwrap();
+        for (index, line) in lines.lines().enumerate() {
+            let event: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(event["sequence"], index + 1);
+            assert!(ids.insert(event["event_id"].as_str().unwrap().to_owned()));
+            for field in ["arguments", "original", "final"] {
+                let relative = std::path::Path::new(event["content"][field].as_str().unwrap());
+                assert!(relative.is_relative());
+                let text = fs::read_to_string(destination.join(relative)).unwrap();
+                if field == "original" {
+                    texts.insert(text);
+                }
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&instance).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+                assert_eq!(
+                    fs::metadata(instance.join("events.jsonl"))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
+        }
+    }
+    assert_eq!(instances, 2);
+    assert_eq!(ids.len(), 4);
+    assert_eq!(texts.len(), 4);
+    let detail = gain_command(home.path(), &["--detail", "--session", "shared-session"]);
+    assert!(detail.status.success());
+    assert_eq!(
+        String::from_utf8(detail.stdout)
+            .unwrap()
+            .matches("Outcome:")
+            .count(),
+        4
+    );
 }
 
 fn count_codepoints(text: &str) -> usize {
@@ -116,7 +296,7 @@ fn delivery_request(
 ) -> Value {
     json!({
         "type": "record_delivery",
-        "version": 1,
+        "version": 2,
         "id": id,
         "disposition": disposition,
         "applied_rule": applied_rule,
@@ -139,7 +319,7 @@ fn gain_counts_an_acknowledged_delivery_and_attributes_its_rule() {
 
     let acknowledgement = bridge.exchange(&json!({
         "type": "record_delivery",
-        "version": 1,
+        "version": 2,
         "id": "delivery-1",
         "disposition": response["disposition"],
         "applied_rule": response["applied_rule"],

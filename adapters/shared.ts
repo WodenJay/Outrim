@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export type Host = "pi" | "opencode";
 export type Source =
   | "source_code"
@@ -16,7 +20,7 @@ export interface AbortSignalLike {
 
 export interface ToolInput {
   name: string;
-  input: Record<string, unknown>;
+  input: unknown;
   source: Source;
   exit_code: number | null;
 }
@@ -64,7 +68,7 @@ export function sourceFor(host: Host, toolName: string, input: Record<string, un
 }
 
 interface CoreRequest {
-  version: 1;
+  version: 2;
   id: string;
   host: Host;
   session: string;
@@ -80,18 +84,103 @@ type Disposition =
   | "no_match"
   | "failed_open";
 
+export type ObservationOutcome =
+  | Disposition
+  | "unsupported"
+  | "cancelled"
+  | "mixed";
+
+export interface Candidate {
+  rule: string;
+  body_chars: number;
+  final_chars: number | null;
+  reason: string;
+}
+
 interface CoreResponse {
   version: number;
   id: string;
   text?: string;
   disposition?: Disposition;
   applied_rule?: string | null;
+  original_path?: string | null;
+  candidates?: Candidate[];
+  reason?: string | null;
 }
 
 export interface ProcessedResult {
   text: string;
   disposition: Disposition;
   appliedRule: string | null;
+  originalPath: string | null;
+  candidates: Candidate[];
+  reason: string | null;
+}
+
+export interface ObservationContext {
+  session: string | null;
+  toolCallId: string | null;
+  tool: ToolInput;
+}
+
+export interface ObservationFacts {
+  outcome: ObservationOutcome;
+  appliedRule?: string | null;
+  originalPath?: string | null;
+  candidates?: Candidate[];
+  reason?: string | null;
+  parts?: ProcessingPart[];
+}
+
+export interface ProcessingPart {
+  outcome: Disposition;
+  applied_rule: string | null;
+  original_path: string | null;
+  candidates: Candidate[];
+  reason: string | null;
+}
+
+export interface ProcessingFacts {
+  parts: ProcessingPart[];
+  outcome: ObservationOutcome;
+  appliedRule: string | null;
+  originalPath: string | null;
+  candidates: Candidate[];
+  reason: string | null;
+}
+
+function distinct(values: Array<string | null>): string[] {
+  return [...new Set(values.flatMap((value) => (value === null ? [] : [value])))];
+}
+
+/** Collapses the per-text responses of one tool result into one observation. */
+export function processingFacts(
+  results: ReadonlyArray<ProcessedResult | undefined>,
+): ProcessingFacts {
+  const processed = results.filter((result): result is ProcessedResult => result !== undefined);
+  const dispositions = new Set(processed.map((result) => result.disposition));
+  const rules = distinct(processed.map((result) => result.appliedRule));
+  const paths = distinct(processed.map((result) => result.originalPath));
+  const reasons = distinct(processed.map((result) => result.reason));
+
+  if (processed.length !== results.length) dispositions.add("failed_open");
+  const outcome = dispositions.size > 1 ? "mixed"
+    : dispositions.values().next().value ?? "failed_open";
+
+  return {
+    parts: results.map((result) => ({
+      outcome: result?.disposition ?? "failed_open",
+      applied_rule: result?.appliedRule ?? null,
+      original_path: result?.originalPath ?? null,
+      candidates: result?.candidates ?? [],
+      reason: result?.reason ?? (result ? null : "bridge_unavailable"),
+    })),
+    outcome,
+    appliedRule: rules.length === 1 ? rules[0] ?? null : null,
+    originalPath: paths.length === 1 ? paths[0] ?? null : null,
+    candidates: processed.flatMap((result) => result.candidates),
+    reason: reasons.length === 0 ? null : reasons.join("; "),
+  };
 }
 
 export interface BridgeChild {
@@ -143,8 +232,21 @@ export function createBridge(
     outcome: ProcessedResult | "recovery_skipped" | undefined,
     signal?: AbortSignalLike,
   ): void;
+  recordObservation(
+    context: ObservationContext,
+    original: string | null,
+    final: string | null,
+    facts: ObservationFacts,
+  ): void;
   close(): void;
 } {
+  // Snapshot once when the host loads, including across bridge restarts.
+  let recording = false;
+  try {
+    recording = JSON.parse(readFileSync(join(homedir(), ".outrim", "recording.json"), "utf8")).recording === true;
+  } catch {
+    // Missing or unreadable settings fail closed for content retention.
+  }
   let child: BridgeChild | undefined;
   let nextId = 0;
   let buffer = "";
@@ -181,7 +283,7 @@ export function createBridge(
       }
       const response = parsed as CoreResponse;
       const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
-      if (response.version !== 1 || !request) {
+      if (response.version !== 2 || !request) {
         fail(failedChild);
         return;
       }
@@ -193,12 +295,12 @@ export function createBridge(
   function start(): BridgeChild | undefined {
     let started: BridgeChild;
     try {
-      started = spawnProcess(executable, ["bridge"], {
+      started = spawnProcess(executable, ["bridge", "--recording", recording ? "on" : "off"], {
         stdio: ["pipe", "pipe", "ignore"],
         windowsHide: true,
       });
     } catch {
-      return undefined;
+      return;
     }
     child = started;
     started.stdout.setEncoding("utf8");
@@ -220,7 +322,7 @@ export function createBridge(
     if (!currentChild) return Promise.resolve(undefined);
 
     const id = String(++nextId);
-    const request: CoreRequest = { version: 1, id, host, session, tool, text };
+    const request: CoreRequest = { version: 2, id, host, session, tool, text };
     let line: string;
     try {
       line = `${JSON.stringify(request)}\n`;
@@ -244,6 +346,9 @@ export function createBridge(
             text: response.text,
             disposition: response.disposition as Disposition,
             appliedRule: response.applied_rule,
+            originalPath: typeof response.original_path === "string" ? response.original_path : null,
+            candidates: Array.isArray(response.candidates) ? response.candidates : [],
+            reason: typeof response.reason === "string" ? response.reason : null,
           });
         } else {
           resolve(undefined);
@@ -284,13 +389,60 @@ export function createBridge(
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
-      version: 1,
+      version: 2,
       id,
       disposition:
         processed?.disposition ?? (outcome === "recovery_skipped" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
       before_chars: beforeChars,
       after_chars: processed ? Array.from(processed.text).length : beforeChars,
+    };
+    let line: string;
+    try {
+      line = `${JSON.stringify(request)}\n`;
+    } catch {
+      return;
+    }
+
+    pending.set(id, { finish: () => {} });
+    try {
+      currentChild.stdin.write(line, (error) => {
+        if (error) fail(currentChild);
+      });
+    } catch {
+      fail(currentChild);
+    }
+  }
+
+  // Observations record the result itself, so an aborted signal is only an
+  // outcome fact (cancelled), never a reason to drop the record.
+  function recordObservation(
+    context: ObservationContext,
+    original: string | null,
+    final: string | null,
+    facts: ObservationFacts,
+  ): void {
+    if (closed || !recording) return;
+    const currentChild = child ?? start();
+    if (!currentChild) return;
+
+    const id = String(++nextId);
+    const request = {
+      type: "record_observation",
+      version: 2,
+      id,
+      host,
+      session: context.session,
+      tool_call_id: context.toolCallId,
+      tool: context.tool,
+      original_text: original,
+      final_text: final,
+      outcome: facts.outcome,
+      applied_rule: facts.appliedRule ?? null,
+      original_path: facts.originalPath ?? null,
+      candidates: facts.candidates ?? [],
+      reason: facts.reason ?? null,
+      parts: facts.parts ?? [],
     };
     let line: string;
     try {
@@ -326,5 +478,5 @@ export function createBridge(
     }
   }
 
-  return { process, recordDelivery, close };
+  return { process, recordDelivery, recordObservation, close };
 }

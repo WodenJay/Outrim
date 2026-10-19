@@ -3,6 +3,9 @@
 import { spawn as nodeSpawn } from "child_process";
 
 // adapters/shared.ts
+import { readFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 var TEST_COMMANDS = [
   /^\s*cargo\s+test\b/i,
   /^\s*(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+(?:test|run\s+test))\b/i,
@@ -37,6 +40,33 @@ function sourceFor(host, toolName, input) {
     return "runtime_log";
   return "unknown";
 }
+function distinct(values) {
+  return [...new Set(values.flatMap((value) => value === null ? [] : [value]))];
+}
+function processingFacts(results) {
+  const processed = results.filter((result) => result !== undefined);
+  const dispositions = new Set(processed.map((result) => result.disposition));
+  const rules = distinct(processed.map((result) => result.appliedRule));
+  const paths = distinct(processed.map((result) => result.originalPath));
+  const reasons = distinct(processed.map((result) => result.reason));
+  if (processed.length !== results.length)
+    dispositions.add("failed_open");
+  const outcome = dispositions.size > 1 ? "mixed" : dispositions.values().next().value ?? "failed_open";
+  return {
+    parts: results.map((result) => ({
+      outcome: result?.disposition ?? "failed_open",
+      applied_rule: result?.appliedRule ?? null,
+      original_path: result?.originalPath ?? null,
+      candidates: result?.candidates ?? [],
+      reason: result?.reason ?? (result ? null : "bridge_unavailable")
+    })),
+    outcome,
+    appliedRule: rules.length === 1 ? rules[0] ?? null : null,
+    originalPath: paths.length === 1 ? paths[0] ?? null : null,
+    candidates: processed.flatMap((result) => result.candidates),
+    reason: reasons.length === 0 ? null : reasons.join("; ")
+  };
+}
 function inputReferencesOriginals(value) {
   if (typeof value === "string") {
     const normalized = value.replaceAll("\\", "/");
@@ -50,6 +80,10 @@ function inputReferencesOriginals(value) {
   return false;
 }
 function createBridge(host, executable, spawnProcess) {
+  let recording = false;
+  try {
+    recording = JSON.parse(readFileSync(join(homedir(), ".outrim", "recording.json"), "utf8")).recording === true;
+  } catch {}
   let child;
   let nextId = 0;
   let buffer = "";
@@ -89,7 +123,7 @@ function createBridge(host, executable, spawnProcess) {
       }
       const response = parsed;
       const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
-      if (response.version !== 1 || !request) {
+      if (response.version !== 2 || !request) {
         fail(failedChild);
         return;
       }
@@ -100,7 +134,7 @@ function createBridge(host, executable, spawnProcess) {
   function start() {
     let started;
     try {
-      started = spawnProcess(executable, ["bridge"], {
+      started = spawnProcess(executable, ["bridge", "--recording", recording ? "on" : "off"], {
         stdio: ["pipe", "pipe", "ignore"],
         windowsHide: true
       });
@@ -122,7 +156,7 @@ function createBridge(host, executable, spawnProcess) {
     if (!currentChild)
       return Promise.resolve(undefined);
     const id = String(++nextId);
-    const request = { version: 1, id, host, session, tool, text };
+    const request = { version: 2, id, host, session, tool, text };
     let line;
     try {
       line = `${JSON.stringify(request)}
@@ -141,7 +175,10 @@ function createBridge(host, executable, spawnProcess) {
           resolve({
             text: response.text,
             disposition: response.disposition,
-            appliedRule: response.applied_rule
+            appliedRule: response.applied_rule,
+            originalPath: typeof response.original_path === "string" ? response.original_path : null,
+            candidates: Array.isArray(response.candidates) ? response.candidates : [],
+            reason: typeof response.reason === "string" ? response.reason : null
           });
         } else {
           resolve(undefined);
@@ -177,12 +214,53 @@ function createBridge(host, executable, spawnProcess) {
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
-      version: 1,
+      version: 2,
       id,
       disposition: processed?.disposition ?? (outcome === "recovery_skipped" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
       before_chars: beforeChars,
       after_chars: processed ? Array.from(processed.text).length : beforeChars
+    };
+    let line;
+    try {
+      line = `${JSON.stringify(request)}
+`;
+    } catch {
+      return;
+    }
+    pending.set(id, { finish: () => {} });
+    try {
+      currentChild.stdin.write(line, (error) => {
+        if (error)
+          fail(currentChild);
+      });
+    } catch {
+      fail(currentChild);
+    }
+  }
+  function recordObservation(context, original, final, facts) {
+    if (closed || !recording)
+      return;
+    const currentChild = child ?? start();
+    if (!currentChild)
+      return;
+    const id = String(++nextId);
+    const request = {
+      type: "record_observation",
+      version: 2,
+      id,
+      host,
+      session: context.session,
+      tool_call_id: context.toolCallId,
+      tool: context.tool,
+      original_text: original,
+      final_text: final,
+      outcome: facts.outcome,
+      applied_rule: facts.appliedRule ?? null,
+      original_path: facts.originalPath ?? null,
+      candidates: facts.candidates ?? [],
+      reason: facts.reason ?? null,
+      parts: facts.parts ?? []
     };
     let line;
     try {
@@ -219,7 +297,7 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { process, recordDelivery, close };
+  return { process, recordDelivery, recordObservation, close };
 }
 
 // adapters/opencode.ts
@@ -298,16 +376,36 @@ async function registerOpenCodePlugin(context, options = {}) {
         codeModeSessionCalls.set(event.id, codeModeDepth - 1);
       }
     }
-    if (closed || event.status !== "completed" || isCodeModeCall && (event.tool !== "execute" || codeModeDepth > 1))
+    if (closed)
       return;
     const input = record(event.input);
     const result = event.result;
-    if (!input || !result)
+    const selection = result ? textSelection(result) : undefined;
+    const observation = {
+      session: event.sessionID ?? null,
+      toolCallId: event.id ?? null,
+      tool: {
+        name: event.tool,
+        input: event.input ?? null,
+        source: sourceFor("opencode", event.tool, input ?? {}),
+        exit_code: exitCodeFrom(result?.metadata)
+      }
+    };
+    const originalText = selection ? selection.texts.join(`
+`) : null;
+    const unsupportedReason = event.status !== "completed" ? `host_status:${event.status}` : isCodeModeCall && (event.tool !== "execute" || codeModeDepth > 1) ? "code_mode_nested" : !input ? "unsupported_arguments" : !result ? "missing_result" : !selection ? "unsupported_content_shape" : null;
+    if (unsupportedReason || !input || !result || !selection) {
+      bridge.recordObservation(observation, originalText, originalText, {
+        outcome: event.status === "cancelled" ? "cancelled" : "unsupported",
+        reason: unsupportedReason
+      });
       return;
-    const selection = textSelection(result);
-    if (!selection)
-      return;
+    }
     if (inputReferencesOriginals(input)) {
+      bridge.recordObservation(observation, originalText, originalText, {
+        outcome: "recovery_skipped",
+        reason: "original_directory_in_arguments"
+      });
       bridge.recordDelivery(selection.texts, "recovery_skipped");
       return;
     }
@@ -325,12 +423,20 @@ async function registerOpenCodePlugin(context, options = {}) {
         source: sourceFor("opencode", event.tool, input),
         exit_code: exitCodeFrom(result.metadata)
       }, text, controller.signal)));
-      if (closed || controller.signal.aborted)
+      if (closed || controller.signal.aborted) {
+        bridge.recordObservation(observation, originalText, originalText, {
+          ...processingFacts(processedResults),
+          outcome: "cancelled",
+          reason: "host_signal_aborted"
+        });
         return;
+      }
       selection.texts.forEach((original, index) => {
         bridge.recordDelivery(original, processedResults[index], controller.signal);
       });
       const replacements = processedResults.map((processed) => processed?.text);
+      bridge.recordObservation(observation, originalText, selection.texts.map((text, index) => replacements[index] ?? text).join(`
+`), processingFacts(processedResults));
       if (replacements.some((text, index) => text !== undefined && text !== selection.texts[index])) {
         event.result = { ...result, content: selection.apply(replacements) };
       }

@@ -23,7 +23,7 @@ class FakeChild extends EventEmitter {
       const request = JSON.parse(line);
       callback?.();
       if (request.type === "record_delivery" && this.autoAcknowledgeDeliveries) {
-        this.stdout.emit("data", `${JSON.stringify({ version: 1, id: request.id })}\n`);
+        this.stdout.emit("data", `${JSON.stringify({ version: 2, id: request.id })}\n`);
       }
       return true;
     };
@@ -49,7 +49,7 @@ class FakeChild extends EventEmitter {
     this.stdout.emit(
       "data",
       `${JSON.stringify({
-        version: 1,
+        version: 2,
         id: request.id,
         text,
         disposition: "compressed",
@@ -181,7 +181,7 @@ describe("OpenCode result adapter", () => {
     const pending = handlers.get("execute.after")(event);
     const [request] = child.requests();
     expect(request).toMatchObject({
-      version: 1,
+      version: 2,
       host: "opencode",
       session: "session-1",
       tool: {

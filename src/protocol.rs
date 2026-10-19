@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -43,6 +43,8 @@ pub enum Source {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response {
+    pub candidates: Vec<Candidate>,
+    pub reason: Option<String>,
     pub version: u32,
     pub id: String,
     pub text: String,
@@ -95,6 +97,67 @@ pub struct RecordDeliveryRequest {
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryMessageType {
     RecordDelivery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Candidate {
+    pub rule: String,
+    pub body_chars: u64,
+    pub final_chars: Option<u64>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordObservationRequest {
+    #[serde(rename = "type")]
+    pub message_type: ObservationMessageType,
+    pub version: u32,
+    pub id: String,
+    pub host: Host,
+    pub session: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub tool: Tool,
+    pub original_text: Option<String>,
+    pub final_text: Option<String>,
+    pub outcome: ObservationOutcome,
+    pub applied_rule: Option<String>,
+    pub original_path: Option<String>,
+    pub candidates: Vec<Candidate>,
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub parts: Vec<ProcessingPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessingPart {
+    pub outcome: Disposition,
+    pub applied_rule: Option<String>,
+    pub original_path: Option<String>,
+    pub candidates: Vec<Candidate>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationMessageType {
+    RecordObservation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationOutcome {
+    Compressed,
+    Protected,
+    RecoverySkipped,
+    NotShorter,
+    NoMatch,
+    FailedOpen,
+    Unsupported,
+    Cancelled,
+    Mixed,
 }
 
 #[derive(Debug, Serialize)]

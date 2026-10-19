@@ -4,6 +4,7 @@ import {
   type BridgeChild,
   createBridge,
   inputReferencesOriginals,
+  processingFacts,
   type SpawnProcess,
   sourceFor,
 } from "./shared";
@@ -167,19 +168,37 @@ export async function registerOpenCodePlugin(
         codeModeSessionCalls.set(event.id, codeModeDepth - 1);
       }
     }
-    if (
-      closed ||
-      event.status !== "completed" ||
-      (isCodeModeCall && (event.tool !== "execute" || codeModeDepth > 1))
-    )
-      return;
+    if (closed) return;
     const input = record(event.input);
     const result = event.result;
-    if (!input || !result) return;
-
-    const selection = textSelection(result);
-    if (!selection) return;
+    const selection = result ? textSelection(result) : undefined;
+    const observation = {
+      session: event.sessionID ?? null,
+      toolCallId: event.id ?? null,
+      tool: {
+        name: event.tool,
+        input: event.input ?? null,
+        source: sourceFor("opencode", event.tool, input ?? {}),
+        exit_code: exitCodeFrom(result?.metadata),
+      },
+    };
+    const originalText = selection ? selection.texts.join("\n") : null;
+    const unsupportedReason = event.status !== "completed" ? `host_status:${event.status}`
+      : isCodeModeCall && (event.tool !== "execute" || codeModeDepth > 1) ? "code_mode_nested"
+      : !input ? "unsupported_arguments"
+      : !result ? "missing_result"
+      : !selection ? "unsupported_content_shape" : null;
+    if (unsupportedReason || !input || !result || !selection) {
+      bridge.recordObservation(observation, originalText, originalText, {
+        outcome: event.status === "cancelled" ? "cancelled" : "unsupported",
+        reason: unsupportedReason,
+      });
+      return;
+    }
     if (inputReferencesOriginals(input)) {
+      bridge.recordObservation(observation, originalText, originalText, {
+        outcome: "recovery_skipped", reason: "original_directory_in_arguments",
+      });
       bridge.recordDelivery(selection.texts, "recovery_skipped");
       return;
     }
@@ -207,11 +226,19 @@ export async function registerOpenCodePlugin(
           ),
         ),
       );
-      if (closed || controller.signal.aborted) return;
+      if (closed || controller.signal.aborted) {
+        bridge.recordObservation(observation, originalText, originalText, {
+          ...processingFacts(processedResults), outcome: "cancelled", reason: "host_signal_aborted",
+        });
+        return;
+      }
       selection.texts.forEach((original, index) => {
         bridge.recordDelivery(original, processedResults[index], controller.signal);
       });
       const replacements = processedResults.map((processed) => processed?.text);
+      bridge.recordObservation(observation, originalText,
+        selection.texts.map((text, index) => replacements[index] ?? text).join("\n"),
+        processingFacts(processedResults));
       if (
         replacements.some((text, index) => text !== undefined && text !== selection.texts[index])
       ) {

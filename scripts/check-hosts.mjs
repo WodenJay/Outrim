@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,6 +16,8 @@ async function checkHost(host) {
   const handlers = new Map();
   let handle;
   let close;
+  let unsupported;
+  let multipart;
   if (host === "pi") {
     const { default: setup } = await import(
       pathToFileURL(join(process.env.PI_CODING_AGENT_DIR, "extensions/outrim.js")).href
@@ -35,6 +37,10 @@ async function checkHost(host) {
       });
       return (result ?? event).content[0].text;
     };
+    unsupported = () => handlers.get("tool_result")({
+      toolName: "bash", toolCallId: "unsupported", input: { command: "echo hello" },
+      content: [{ type: "text", text: "visible 🦀" }, { type: "image", data: "not retained" }],
+    }, { sessionManager: { getSessionId: () => "roundtrip" } });
     close = () => handlers.get("session_shutdown")();
   } else {
     const { default: plugin } = await import(
@@ -47,6 +53,21 @@ async function checkHost(host) {
           return { dispose() {} };
         },
       },
+    });
+    multipart = async () => {
+      const event = {
+        status: "completed", tool: "shell", sessionID: "roundtrip", id: "parts",
+        input: { command: "cargo test" },
+        result: { content: [original, "small", original].map((text) => ({ type: "text", text })) },
+      };
+      await handlers.get("execute.after")(event);
+      const path = event.result.content[0].text.split("[outrim]: The full output is available at ")[1];
+      assert.ok(path);
+      await handle("reference result", { path });
+    };
+    unsupported = () => handlers.get("execute.after")({
+      status: "error", tool: "shell", sessionID: "roundtrip", id: "unsupported",
+      input: { command: "echo hello" }, result: { content: [{ type: "text", text: "visible 🦀" }] },
     });
     handle = async (text, input) => {
       const image = { type: "image", data: "retained" };
@@ -67,12 +88,22 @@ async function checkHost(host) {
   }
 
   try {
+    // A changed setting must not affect this already-loaded host, even before
+    // its first bridge starts. Child bridges use the host's startup snapshot.
+    if (process.env.OUTRIM_CHECK_RECORDING === "on") {
+      execFileSync(process.env.OUTRIM_BINARY, ["gain", "record", "off"]);
+    }
     const compressed = await handle(original, { command: "cargo test" });
     assert.ok(chars(compressed) < chars(original));
     const path = compressed.split("[outrim]: The full output is available at ")[1];
     assert.ok(path, "compressed output must expose its saved original");
     assert.equal(readFileSync(path, "utf8"), original);
     assert.equal(await handle(original, { path }), original, "recovery must bypass compression");
+    if (process.env.OUTRIM_CHECK_RECORDING === "on") {
+      assert.equal(await handle("unchanged 🦀", { command: "echo hello" }), "unchanged 🦀");
+      await unsupported();
+      await multipart?.();
+    }
     return compressed;
   } finally {
     await close();
@@ -107,13 +138,13 @@ if (process.argv[2] === "--host") {
     };
     try {
       execFileSync(artifact.executable, ["install", "--agent", host], { env });
-      const compressed = JSON.parse(
+      const runHost = () => JSON.parse(
         execFileSync(process.execPath, [import.meta.filename, "--host", host], {
-          env,
-          encoding: "utf8",
-          timeout: 30_000,
+          env, encoding: "utf8", timeout: 30_000,
         }),
       );
+      const compressed = runHost();
+      assert.throws(() => readdirSync(join(home, ".outrim/records")), { code: "ENOENT" });
       const stats = JSON.parse(readFileSync(join(home, ".outrim/gain.json"), "utf8"));
       assert.equal(stats.outputs, 2);
       assert.equal(stats.outcomes.compressed, 1);
@@ -125,7 +156,56 @@ if (process.argv[2] === "--host") {
       });
       const gain = execFileSync(artifact.executable, ["gain"], { env, encoding: "utf8" });
       assert.match(gain, /Outputs: 2\b/);
-      console.log(`${host}: installed bundle → Rust → original/recovery/gain passed`);
+      execFileSync(artifact.executable, ["gain", "record", "on"], { env });
+      env.OUTRIM_CHECK_RECORDING = "on";
+      env.OUTRIM_BINARY = artifact.executable;
+      const recordedFinal = runHost();
+      const records = join(home, ".outrim/records");
+      const events = readdirSync(records).flatMap((instance) => {
+        const directory = join(records, instance);
+        return readFileSync(join(directory, "events.jsonl"), "utf8").trim().split("\n")
+          .map((line) => ({ ...JSON.parse(line), directory }));
+      });
+      assert.equal(events.length, host === "pi" ? 4 : 6);
+      const [compressedEvent, recovery] = events;
+      assert.equal(compressedEvent.host, host);
+      assert.equal(compressedEvent.session, "roundtrip");
+      assert.equal(compressedEvent.tool_call_id, "call");
+      assert.equal(compressedEvent.outcome, "compressed");
+      assert.equal(compressedEvent.applied_rule, "log_tail");
+      assert.ok(compressedEvent.candidates.some((candidate) => candidate.rule === "log_tail"));
+      assert.deepEqual(JSON.parse(readFileSync(join(compressedEvent.directory, compressedEvent.content.arguments), "utf8")), { command: "cargo test" });
+      assert.equal(readFileSync(join(compressedEvent.directory, compressedEvent.content.original), "utf8"), original);
+      assert.equal(readFileSync(join(compressedEvent.directory, compressedEvent.content.final), "utf8"), recordedFinal);
+      assert.equal(compressedEvent.before_chars, chars(original));
+      assert.equal(compressedEvent.after_chars, chars(recordedFinal));
+      assert.equal(recovery.outcome, "recovery_skipped");
+      assert.deepEqual(recovery.original_references, [{
+        original_path: compressedEvent.original_path, record_id: compressedEvent.event_id,
+      }]);
+      assert.equal(readFileSync(join(recovery.directory, recovery.content.final), "utf8"), original);
+      const [, , unchanged, skipped] = events;
+      assert.equal(unchanged.outcome, "no_match");
+      assert.equal(readFileSync(join(unchanged.directory, unchanged.content.original), "utf8"), "unchanged 🦀");
+      assert.equal(unchanged.content.original, unchanged.content.final);
+      assert.equal(skipped.outcome, "unsupported");
+      assert.ok(skipped.reason);
+      assert.equal(skipped.tool_call_id, "unsupported");
+      assert.equal(readFileSync(join(skipped.directory, skipped.content.original), "utf8"), "visible 🦀");
+      if (host === "opencode") {
+        const [parts, reference] = events.slice(4);
+        assert.equal(parts.outcome, "mixed");
+        assert.equal(parts.original_path, null);
+        assert.deepEqual(parts.parts.map((part) => part.outcome), ["compressed", "not_shorter", "compressed"]);
+        assert.equal(reference.original_references[0].original_path, parts.parts[0].original_path);
+        assert.equal(reference.original_references[0].record_id, parts.event_id);
+      }
+      // The running host kept recording after off; a new host must not append.
+      delete env.OUTRIM_CHECK_RECORDING;
+      runHost();
+      assert.equal(readdirSync(records).length, 1);
+      assert.equal(readFileSync(join(compressedEvent.directory, "events.jsonl"), "utf8").trim().split("\n").length, events.length);
+      console.log(`${host}: installed bundle → Rust → original/recovery/gain/recording passed`);
     } finally {
       rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }

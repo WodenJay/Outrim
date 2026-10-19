@@ -4,6 +4,7 @@ import {
   type BridgeChild,
   createBridge,
   inputReferencesOriginals,
+  processingFacts,
   type SpawnProcess,
   sourceFor,
 } from "./shared";
@@ -81,6 +82,16 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   );
 
   pi.on("tool_result", async (event, context) => {
+    const observation = {
+      session: context.sessionManager.getSessionId(),
+      toolCallId: event.toolCallId ?? null,
+      tool: {
+        name: event.toolName,
+        input: event.input,
+        source: sourceFor("pi", event.toolName, event.input),
+        exit_code: exitCodeFrom(event.structuredContent),
+      },
+    };
     const [content] = event.content;
     if (
       event.parentToolCallId ||
@@ -88,27 +99,36 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       content?.type !== "text" ||
       typeof content.text !== "string"
     ) {
+      const texts = event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []);
+      const text = texts.length ? texts.join("\n") : null;
+      bridge.recordObservation(observation, text, text, {
+        outcome: "unsupported",
+        reason: event.parentToolCallId ? "nested_tool_call" : "unsupported_content_shape",
+      });
       return undefined;
     }
 
     const original = content as TextContent;
     const text = original.text;
     if (inputReferencesOriginals(event.input)) {
+      bridge.recordObservation(observation, text, text, {
+        outcome: context.signal?.aborted ? "cancelled" : "recovery_skipped",
+        reason: "original_directory_in_arguments",
+      });
       bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return undefined;
     }
 
     const processed = await bridge.process(
-      context.sessionManager.getSessionId(),
-      {
-        name: event.toolName,
-        input: event.input,
-        source: sourceFor("pi", event.toolName, event.input),
-        exit_code: exitCodeFrom(event.structuredContent),
-      },
+      observation.session,
+      observation.tool,
       text,
       context.signal,
     );
+    bridge.recordObservation(observation, text, context.signal?.aborted ? text : processed?.text ?? text, {
+      ...processingFacts([processed]),
+      ...(context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}),
+    });
     if (processed === undefined) {
       bridge.recordDelivery(text, undefined, context.signal);
       return undefined;

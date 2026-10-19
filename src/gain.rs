@@ -204,16 +204,95 @@ pub(crate) fn recording_enabled(home: &Path) -> io::Result<bool> {
     }
 }
 
-pub fn render_detail(home: &Path, _session: Option<&str>) -> io::Result<String> {
-    Ok(format!(
-        "Outrim Gain · Local records\nSaved recording setting: {}\nRestart hosts to apply; running instances keep their startup setting.\nData directory: {}\nNo recorded sessions.\n",
+pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
+    let mut report = format!(
+        "Outrim Gain · Local records\nSaved recording setting: {}\nRestart hosts to apply; running instances keep their startup setting.\nData directory: {}\nOrder is per instance, not global causal order. Final text is the adapter's returned representation, not proof of model consumption.\n",
         if recording_enabled(home)? {
             "on"
         } else {
             "off"
         },
         home.join(".outrim/records").display()
-    ))
+    );
+    let events = crate::recording::events(home)?;
+    if let Some(session) = session {
+        writeln!(report, "\nSession: {session}").unwrap();
+        let mut found = false;
+        for (directory, event) in events
+            .iter()
+            .filter(|(_, event)| event.session.as_deref() == Some(session))
+        {
+            found = true;
+            writeln!(
+                report,
+                "\n{} #{} · {} · call {}",
+                event.instance_id,
+                event.sequence,
+                event.tool_name,
+                event.tool_call_id.as_deref().unwrap_or("(unknown)")
+            )
+            .unwrap();
+            writeln!(
+                report,
+                "  Outcome: {} · rule {} · chars {:?} → {:?}",
+                serde_json::to_value(&event.outcome)?,
+                event.applied_rule.as_deref().unwrap_or("none"),
+                event.before_chars,
+                event.after_chars
+            )
+            .unwrap();
+            if let Some(reason) = &event.reason {
+                writeln!(report, "  Reason: {reason}").unwrap();
+            }
+            for reference in &event.original_references {
+                writeln!(
+                    report,
+                    "  Original reference: {} · record {} (direct argument reference only)",
+                    reference.original_path,
+                    reference.record_id.as_deref().unwrap_or("unavailable")
+                )
+                .unwrap();
+            }
+            writeln!(
+                report,
+                "  Events: {}",
+                directory.join("events.jsonl").display()
+            )
+            .unwrap();
+            writeln!(
+                report,
+                "  Arguments: {}",
+                directory.join(&event.content.arguments).display()
+            )
+            .unwrap();
+            if let Some(path) = &event.content.original {
+                writeln!(report, "  Original: {}", directory.join(path).display()).unwrap();
+            }
+            if let Some(path) = &event.content.r#final {
+                writeln!(report, "  Final: {}", directory.join(path).display()).unwrap();
+            }
+        }
+        if !found {
+            writeln!(report, "No records for this session.").unwrap();
+        }
+    } else {
+        let mut sessions = BTreeMap::new();
+        for (_, event) in &events {
+            *sessions.entry(event.session.as_deref()).or_insert(0_u64) += 1;
+        }
+        if sessions.is_empty() {
+            writeln!(report, "No recorded sessions.").unwrap();
+        }
+        for (session, count) in sessions {
+            writeln!(
+                report,
+                "Session: {} · {count} records",
+                session.unwrap_or("(unknown)")
+            )
+            .unwrap();
+        }
+    }
+    Ok(report)
 }
 
 pub fn render(home: &Path) -> io::Result<String> {

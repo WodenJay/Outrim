@@ -17,7 +17,7 @@ class FakeChild extends EventEmitter {
       callback?.();
       const request = JSON.parse(line);
       if (request.type === "record_delivery" && this.autoAcknowledgeDeliveries) {
-        this.stdout.emit("data", `${JSON.stringify({ version: 1, id: request.id })}\n`);
+        this.stdout.emit("data", `${JSON.stringify({ version: 2, id: request.id })}\n`);
       }
       return true;
     };
@@ -35,7 +35,7 @@ class FakeChild extends EventEmitter {
     this.stdout.emit(
       "data",
       `${JSON.stringify({
-        version: 1,
+        version: 2,
         id: request.id,
         text,
         disposition: "compressed",
@@ -117,7 +117,7 @@ describe("Pi result adapter", () => {
     const requests = children[0].requests();
     expect(requests).toHaveLength(3);
     expect(requests[0]).toMatchObject({
-      version: 1,
+      version: 2,
       host: "pi",
       session: "session-1",
       tool: {

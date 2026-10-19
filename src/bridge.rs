@@ -4,8 +4,8 @@
 use crate::{
     Processor,
     protocol::{
-        DeliveryAcknowledgement, ErrorResponse, ProtocolError, RecordDeliveryRequest, Request,
-        VERSION,
+        DeliveryAcknowledgement, ErrorResponse, ProtocolError, RecordDeliveryRequest,
+        RecordObservationRequest, Request, VERSION,
     },
 };
 use serde_json::Value;
@@ -38,6 +38,14 @@ pub fn run(
                 let response = processor.process(request);
                 write_response(&mut output, &response)?;
             }
+            Message::RecordObservation(observation) => {
+                let response = DeliveryAcknowledgement {
+                    version: VERSION,
+                    id: observation.id.clone(),
+                    acknowledged: processor.record_observation(observation),
+                };
+                write_response(&mut output, &response)?;
+            }
             Message::RecordDelivery(delivery) => {
                 let response = DeliveryAcknowledgement {
                     version: VERSION,
@@ -60,6 +68,7 @@ fn write_response(output: &mut impl Write, response: &impl serde::Serialize) -> 
 enum Message {
     Process(Request),
     RecordDelivery(RecordDeliveryRequest),
+    RecordObservation(RecordObservationRequest),
 }
 
 struct ParseFailure {
@@ -79,6 +88,13 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
     match value.get("type") {
         None => serde_json::from_value(value)
             .map(Message::Process)
+            .map_err(|error| ParseFailure {
+                id,
+                error: ProtocolError::InvalidRequest,
+                details: error.to_string(),
+            }),
+        Some(Value::String(kind)) if kind == "record_observation" => serde_json::from_value(value)
+            .map(Message::RecordObservation)
             .map_err(|error| ParseFailure {
                 id,
                 error: ProtocolError::InvalidRequest,
