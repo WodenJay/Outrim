@@ -124,6 +124,6 @@ jobs:
           version=$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)
           test "$TAG" = "v$version"
           cp scripts/install.sh scripts/install.ps1 dist/
-          (cd dist && sha256sum * > SHA256SUMS)
+          (cd dist && sha256sum -- * > SHA256SUMS)
           printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/release-notes.md"
           gh release create "$TAG" dist/* --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

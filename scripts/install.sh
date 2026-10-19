@@ -1,4 +1,6 @@
 #!/bin/sh
+# Keep PATH/HOME literal in generated startup entries and shell instructions.
+# shellcheck disable=SC2016
 # Install the core only. Agent integration is an explicit `outrim install --agent ...`.
 set -eu
 
