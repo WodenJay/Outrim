@@ -63,14 +63,14 @@ impl Processor {
             if let Some(grouped) = search_candidate {
                 search_candidates.push(("search_hit_groups", grouped));
             }
-            if let Some(retained) = rules::generic_line_fallback(&response.text) {
+            if let Some(retained) = rules::generic_line_fallback(&request.tool, &response.text) {
                 search_candidates.push(("generic_line_fallback", retained));
             }
             if search_candidates.is_empty() {
                 return response;
             }
             search_candidates
-        } else if let Some(retained) = rules::generic_line_fallback(&response.text) {
+        } else if let Some(retained) = rules::generic_line_fallback(&request.tool, &response.text) {
             vec![("generic_line_fallback", retained)]
         } else {
             return response;

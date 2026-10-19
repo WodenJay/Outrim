@@ -179,6 +179,52 @@ fn generic_fallback_keeps_head_and_tail_and_restores_original() {
 }
 
 #[test]
+fn read_output_is_exempt_from_generic_fallback() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let text = (1..=40)
+        .map(|line| format!("paragraph {line}: {}\n", "document content ".repeat(20)))
+        .collect::<String>();
+
+    for host in [Host::Pi, Host::Opencode] {
+        for source in [Source::Unknown, Source::Search] {
+            let mut input = request(&text, source);
+            input.host = host;
+            input.tool.name = "read".into();
+            input.tool.input = json!({"path": "notes.md", "offset": 100, "limit": 40});
+            let response = processor.process(input);
+            assert_eq!(response.disposition, Disposition::NoMatch);
+            assert_eq!(response.text, text);
+            assert!(response.applied_rule.is_none());
+            assert!(response.original_path.is_none());
+        }
+    }
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn read_output_remains_eligible_for_json_compression() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let mut items: Vec<Value> = (0..80).map(|id| json!({"id": id})).collect();
+    items.push(json!([true, null, {"nested": "value"}]));
+    let value = json!({"items": items});
+    let text = serde_json::to_string_pretty(&value).unwrap();
+
+    for host in [Host::Pi, Host::Opencode] {
+        let mut input = request(&text, Source::Unknown);
+        input.host = host;
+        input.tool.name = "read".into();
+        input.tool.input = json!({"path": "response.txt"});
+        let response = processor.process(input);
+        assert_eq!(response.disposition, Disposition::Compressed);
+        assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+        let (encoded, _) = response.text.split_once("\n[outrim]:").unwrap();
+        assert_eq!(serde_json::from_str::<Value>(encoded).unwrap(), value);
+    }
+}
+
+#[test]
 fn generic_fallback_obeys_line_threshold_and_final_hint_length() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
