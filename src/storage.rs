@@ -2,6 +2,7 @@ use crate::protocol::Host;
 #[cfg(unix)]
 use std::fs;
 use std::{
+    hash::{DefaultHasher, Hash, Hasher},
     io::{self, Write},
     path::{Path, PathBuf},
 };
@@ -26,15 +27,13 @@ impl Originals {
             Host::Pi => "pi",
             Host::Opencode => "opencode",
         };
-        let session = if session.is_empty() {
-            "empty".into()
-        } else {
-            session
-                .as_bytes()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        };
+        // Session IDs are opaque and unbounded; never use their bytes as a path
+        // component. This fingerprint only groups files, not their identity:
+        // random file names prevent overwrites even if two fingerprints collide.
+        // Readers retain exact paths, so no hash algorithm is a recovery contract.
+        let mut hasher = DefaultHasher::new();
+        session.hash(&mut hasher);
+        let session = format!("s-{:016x}", hasher.finish());
         let root = std::path::absolute(&self.root)?;
         let base = root
             .parent()

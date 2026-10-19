@@ -46,6 +46,29 @@ fn source_and_configuration_are_protected_before_log_routing() {
 }
 
 #[test]
+fn opaque_sessions_have_bounded_safe_directories() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let sessions = [String::new(), "长🦀/../".repeat(1000), "normal".into()];
+    let mut directories = std::collections::HashSet::new();
+    for session in sessions {
+        let mut input = request(&log(), Source::TestLog);
+        input.session = session;
+        let first = processor.process(input.clone()).original_path.unwrap();
+        let second = processor.process(input).original_path.unwrap();
+        let directory = Path::new(&first).parent().unwrap();
+        assert_eq!(directory, Path::new(&second).parent().unwrap());
+        assert!(directory.file_name().unwrap().len() <= 64);
+        assert!(directory.starts_with(home.path().join(".outrim/outputs/pi")));
+        assert_eq!(fs::read_to_string(&first).unwrap(), log());
+        assert_eq!(fs::read_to_string(&second).unwrap(), log());
+        assert_ne!(first, second);
+        directories.insert(directory.to_path_buf());
+    }
+    assert_eq!(directories.len(), 3);
+}
+
+#[test]
 fn unsupported_protocol_version_fails_open() {
     let home = tempfile::tempdir().unwrap();
     let mut input = request(&log(), Source::TestLog);

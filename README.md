@@ -57,7 +57,8 @@ and `original_path`. Only a compressed response has a non-null applied rule
 `recovery_skipped` is reserved for host recovery-input detection. These fields
 describe this result only; this slice does not persist gain accounting.
 
-Invalid JSON/schema requests receive an error response instead of processed text:
+Invalid JSON/schema requests (including non-UTF-8 lines) receive an error response
+instead of processed text:
 `{"version":1,"id":null,"error":"invalid_json"}` or `invalid_request`. A schema
 error echoes a string `id` when available. The stream remains usable. Adapters
 must retain the original result so transport/schema errors or process exit can
@@ -84,7 +85,10 @@ UTF-8 bytes and UTF-16 code units are not the comparison metric.
 
 Before returning a replacement, the core writes the exact original bytes to a new,
 collision-resistant `.txt` file under the current user's
-`~/.outrim/outputs/<host>/<hex-encoded-session>/` (empty session: `empty`). The binary
+`~/.outrim/outputs/<host>/<session-fingerprint>/`. Session directory names are
+bounded fingerprints rather than raw IDs, so even long or path-like IDs are safe.
+Fingerprints only group files: collision-safe filenames remain the identity and
+readers keep exact paths rather than reconstructing them from session IDs. The binary
 uses `HOME` on Unix and `USERPROFILE` on Windows. There is no output-directory
 flag or policy configuration. Library callers pass the current user's home to
 `Processor::new`; tests use isolated temporary homes.
