@@ -186,7 +186,7 @@ function record(value) {
 }
 function exitCodeFrom(metadata) {
   const value = record(metadata);
-  const code = value?.exit_code ?? value?.exitCode ?? value?.exit;
+  const code = value?.exit;
   return typeof code === "number" && Number.isInteger(code) && code >= -2147483648 && code <= 2147483647 ? code : null;
 }
 function textSelection(result) {
@@ -232,11 +232,11 @@ function sessionIdFrom(event) {
 }
 async function registerOpenCodePlugin(context, options = {}) {
   const bridge = createBridge("opencode", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
-  const pending = new Map;
+  const activeCallsBySession = new Map;
   const eventController = new AbortController;
   let closed = false;
   function abortSession(session) {
-    for (const controller of pending.get(session) ?? [])
+    for (const controller of activeCallsBySession.get(session) ?? [])
       controller.abort();
   }
   async function handleResult(event) {
@@ -250,12 +250,12 @@ async function registerOpenCodePlugin(context, options = {}) {
     if (!selection)
       return;
     const controller = new AbortController;
-    let requests = pending.get(event.sessionID);
-    if (!requests) {
-      requests = new Set;
-      pending.set(event.sessionID, requests);
+    let sessionCalls = activeCallsBySession.get(event.sessionID);
+    if (!sessionCalls) {
+      sessionCalls = new Set;
+      activeCallsBySession.set(event.sessionID, sessionCalls);
     }
-    requests.add(controller);
+    sessionCalls.add(controller);
     try {
       const replacements = await Promise.all(selection.texts.map((text) => bridge.process(event.sessionID, {
         name: event.tool,
@@ -269,9 +269,9 @@ async function registerOpenCodePlugin(context, options = {}) {
         event.result = { ...result, content: selection.apply(replacements) };
       }
     } finally {
-      requests.delete(controller);
-      if (requests.size === 0)
-        pending.delete(event.sessionID);
+      sessionCalls.delete(controller);
+      if (sessionCalls.size === 0)
+        activeCallsBySession.delete(event.sessionID);
     }
   }
   const registration = await context.tool.hook("execute.after", handleResult);
@@ -295,8 +295,8 @@ async function registerOpenCodePlugin(context, options = {}) {
       return;
     closed = true;
     eventController.abort();
-    for (const requests of pending.values()) {
-      for (const controller of requests)
+    for (const sessionCalls of activeCallsBySession.values()) {
+      for (const controller of sessionCalls)
         controller.abort();
     }
     bridge.close();

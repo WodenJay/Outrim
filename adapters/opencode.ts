@@ -3,6 +3,7 @@ import {
   createBridge,
   inputReferencesOriginals,
   sourceFor,
+  type AbortSignalLike,
   type BridgeChild,
   type SpawnProcess,
 } from "./shared";
@@ -48,7 +49,7 @@ export interface OpenCodePluginContext {
     ): Promise<ToolHookRegistration>;
   };
   event?: {
-    subscribe(options?: { signal?: AbortSignal }): AsyncIterable<OpenCodeEvent>;
+    subscribe(options?: { signal?: AbortSignalLike }): AsyncIterable<OpenCodeEvent>;
   };
 }
 
@@ -73,7 +74,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function exitCodeFrom(metadata: unknown): number | null {
   const value = record(metadata);
-  const code = value?.exit_code ?? value?.exitCode ?? value?.exit;
+  const code = value?.exit;
   return typeof code === "number" && Number.isInteger(code) &&
       code >= -2_147_483_648 && code <= 2_147_483_647
     ? code
@@ -131,12 +132,12 @@ export async function registerOpenCodePlugin(
     options.executable ?? BRIDGE_EXECUTABLE,
     options.spawnProcess ?? defaultSpawn,
   );
-  const pending = new Map<string, Set<AbortController>>();
+  const activeCallsBySession = new Map<string, Set<AbortController>>();
   const eventController = new AbortController();
   let closed = false;
 
   function abortSession(session: string): void {
-    for (const controller of pending.get(session) ?? []) controller.abort();
+    for (const controller of activeCallsBySession.get(session) ?? []) controller.abort();
   }
 
   async function handleResult(event: ToolHookEvent): Promise<void> {
@@ -149,12 +150,12 @@ export async function registerOpenCodePlugin(
     if (!selection) return;
 
     const controller = new AbortController();
-    let requests = pending.get(event.sessionID);
-    if (!requests) {
-      requests = new Set();
-      pending.set(event.sessionID, requests);
+    let sessionCalls = activeCallsBySession.get(event.sessionID);
+    if (!sessionCalls) {
+      sessionCalls = new Set();
+      activeCallsBySession.set(event.sessionID, sessionCalls);
     }
-    requests.add(controller);
+    sessionCalls.add(controller);
     try {
       const replacements = await Promise.all(
         selection.texts.map((text) =>
@@ -178,8 +179,8 @@ export async function registerOpenCodePlugin(
         event.result = { ...result, content: selection.apply(replacements) };
       }
     } finally {
-      requests.delete(controller);
-      if (requests.size === 0) pending.delete(event.sessionID);
+      sessionCalls.delete(controller);
+      if (sessionCalls.size === 0) activeCallsBySession.delete(event.sessionID);
     }
   }
 
@@ -205,8 +206,8 @@ export async function registerOpenCodePlugin(
     if (closed) return;
     closed = true;
     eventController.abort();
-    for (const requests of pending.values()) {
-      for (const controller of requests) controller.abort();
+    for (const sessionCalls of activeCallsBySession.values()) {
+      for (const controller of sessionCalls) controller.abort();
     }
     bridge.close();
     await registration.dispose();

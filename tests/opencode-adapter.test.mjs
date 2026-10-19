@@ -199,7 +199,7 @@ describe("OpenCode result adapter", () => {
       result: {
         content: [{ type: "text", text: "log output" }, file],
         output: structuredOutput,
-        metadata: { exit_code: 0 },
+        metadata: { exit: 0 },
       },
     };
 
