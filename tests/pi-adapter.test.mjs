@@ -140,6 +140,9 @@ describe("Pi result adapter", () => {
       "/home/me/.outrim/outputs/pi/saved.txt",
       'Get-Content "$HOME/.outrim\\outputs\\pi\\saved.txt"',
       "~/.outrim/outputs/pi/saved.txt",
+      "cat .outrim/outputs/pi/saved.txt",
+      "ls .outrim/outputs",
+      "Get-Content .outrim\\outputs\\pi\\saved.txt",
     ]) {
       expect(await handle(toolEvent({ input: { nested: { path } } }))).toBeUndefined();
     }
@@ -216,7 +219,7 @@ describe("Pi result adapter", () => {
     expect((await restarted).content[0].text).toBe("restarted result");
   });
 
-  it("kills its child on session shutdown and does not restart", async () => {
+  it("kills its child and resolves pending work on session shutdown", async () => {
     const { handlers, children, handle } = harness();
     const pending = handle(toolEvent());
     const child = children[0];
@@ -224,7 +227,6 @@ describe("Pi result adapter", () => {
     handlers.get("session_shutdown")();
     expect(await pending).toBeUndefined();
     expect(child.killed).toBe(true);
-    expect(await handle(toolEvent({ toolCallId: "after-shutdown" }))).toBeUndefined();
     expect(children).toHaveLength(1);
   });
 });

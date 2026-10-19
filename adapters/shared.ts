@@ -60,7 +60,7 @@ export type SpawnProcess = (
 export function inputReferencesOriginals(value: unknown): boolean {
   if (typeof value === "string") {
     const normalized = value.replaceAll("\\", "/");
-    return /(?:^|[/'"])(?:[^/]*\/)?\.outrim\/outputs(?:\/|[/'"\s]|$)/i.test(normalized);
+    return /(?:^|[/'"`\s=:([{])\.outrim\/outputs(?:\/|$|[/'"`\s),\]}])/i.test(normalized);
   }
   if (Array.isArray(value)) return value.some(inputReferencesOriginals);
   if (value !== null && typeof value === "object") {
