@@ -1,5 +1,5 @@
 use outrim::{Processor, protocol::*};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{fs, path::Path};
 
 fn request(text: &str, source: Source) -> Request {
@@ -26,7 +26,7 @@ fn log() -> String {
 }
 
 #[test]
-fn source_and_configuration_are_protected_before_log_routing() {
+fn source_and_configuration_are_protected_before_content_routing() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
     for source in [Source::SourceCode, Source::Configuration] {
@@ -37,6 +37,23 @@ fn source_and_configuration_are_protected_before_log_routing() {
         assert!(response.applied_rule.is_none());
         assert!(response.original_path.is_none());
     }
+    let records: Vec<_> = (0..80)
+        .map(|id| json!({"id": id, "kind": "event", "state": "complete"}))
+        .collect();
+    let json_text = serde_json::to_string_pretty(&json!({"records": records})).unwrap();
+    for source in [Source::SourceCode, Source::Configuration] {
+        let input = request(&json_text, source);
+        let response = processor.process(input.clone());
+        assert_eq!(response.disposition, Disposition::Protected);
+        assert_eq!(response.text, input.text);
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    let mut input = request(&json_text, Source::Unknown);
+    input.tool.input = json!({"path": "config/settings.json"});
+    let response = processor.process(input.clone());
+    assert_eq!(response.disposition, Disposition::Protected);
+    assert_eq!(response.text, input.text);
     let mut input = request(&log(), Source::BuildLog);
     input.tool.input = json!({"path": "src/main.rs"});
     let response = processor.process(input.clone());
@@ -233,4 +250,127 @@ fn logs_keep_last_ten_lines_and_recover_exact_input() {
             "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n[outrim]: The full output is available at {path}"
         )
     );
+}
+
+#[test]
+fn mixed_json_uses_a_lossless_compact_candidate_when_final_text_is_shorter() {
+    let home = tempfile::tempdir().unwrap();
+    let mut items: Vec<Value> = (0..80)
+        .map(|index| json!({"name": format!("item,{index}\nwith\\\"quotes"), "id": index}))
+        .collect();
+    items.extend([json!([true, null, {"nested": "value"}]), json!("tail")]);
+    let value = json!({"items": items});
+    let text = serde_json::to_string_pretty(&value).unwrap();
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Unknown));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+    let path = response.original_path.unwrap();
+    assert!(Path::new(&path).is_absolute());
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let (encoded, hint) = response
+        .text
+        .split_once("\n[outrim]: The full output is available at ")
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(encoded).unwrap(), value);
+    assert_eq!(hint, path);
+}
+
+#[test]
+fn repeated_json_records_choose_the_smaller_lossless_toon_candidate() {
+    let home = tempfile::tempdir().unwrap();
+    let records: Vec<_> = (0..80)
+        .map(|id| {
+            json!({
+                "id": id,
+                "enabled": id % 2 == 0,
+                "kind": "event",
+                "nullable": null,
+                "source": "worker",
+                "state": "complete",
+                "special": if id % 2 == 0 { "true" } else { "line,\nbreak" }
+            })
+        })
+        .collect();
+    let value = json!({"records": records});
+    let text = serde_json::to_string_pretty(&value).unwrap();
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Unknown));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("json_toon"));
+    let path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let (encoded, hint) = response
+        .text
+        .split_once("\n[outrim]: The full output is available at ")
+        .unwrap();
+    assert_eq!(
+        toon_format::decode_default::<Value>(encoded).unwrap(),
+        value
+    );
+    assert_eq!(hint, path);
+}
+
+#[test]
+fn numeric_and_escaped_string_boundaries_fall_back_to_exact_compact_json() {
+    let home = tempfile::tempdir().unwrap();
+    let row = r#"{ "lower": 9007199254740991, "upper": 9007199254740992, "overflow": 18446744073709551616, "decimal": 0.1000000000000000055511151231257827, "negative_zero": -0, "escaped": "line\\n\\t\\\"quoted\\\"\\\\path/🦀" }"#;
+    let compact_row = r#"{"lower":9007199254740991,"upper":9007199254740992,"overflow":18446744073709551616,"decimal":0.1000000000000000055511151231257827,"negative_zero":-0,"escaped":"line\\n\\t\\\"quoted\\\"\\\\path/🦀"}"#;
+    let rows = vec![row; 40].join(",\n    ");
+    let text = format!("{{\n  \"records\": [\n    {rows}\n  ]\n}}");
+    let expected = format!("{{\"records\":[{}]}}", vec![compact_row; 40].join(","));
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Unknown));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+    let (encoded, _) = response
+        .text
+        .split_once("\n[outrim]: The full output is available at ")
+        .unwrap();
+    assert_eq!(encoded, expected);
+}
+
+#[test]
+fn duplicate_json_keys_are_preserved_by_compact_fallback() {
+    let home = tempfile::tempdir().unwrap();
+    let row = r#"{ "id": 1, "id": 2, "kind": "same" }"#;
+    let rows = vec![row; 80].join(",\n    ");
+    let text = format!("{{\n  \"records\": [\n    {rows}\n  ]\n}}");
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Unknown));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+    let (encoded, _) = response
+        .text
+        .split_once("\n[outrim]: The full output is available at ")
+        .unwrap();
+    assert_eq!(
+        encoded,
+        format!(
+            "{{\"records\":[{}]}}",
+            vec![r#"{"id":1,"id":2,"kind":"same"}"#; 80].join(",")
+        )
+    );
+}
+
+#[test]
+fn json_with_no_final_savings_and_unrepresentable_numbers_passes_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let text = " { \"state\": \"🦀\" } ";
+    let response = processor.process(request(text, Source::Unknown));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+
+    let out_of_range = "{ \"number\": 1e400 }";
+    let response = processor.process(request(out_of_range, Source::Unknown));
+    assert_eq!(response.text, out_of_range);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
 }
