@@ -59,7 +59,7 @@ function createBridge(host, executable, spawnProcess) {
       }
       const request = pending.get(response.id);
       pending.delete(response.id);
-      request.finish(typeof response.text === "string" ? response.text : undefined);
+      request.finish(response);
     }
   }
   function start() {
@@ -97,12 +97,20 @@ function createBridge(host, executable, spawnProcess) {
     }
     return new Promise((resolve) => {
       let settled = false;
-      const finish = (result) => {
+      const finish = (response) => {
         if (settled)
           return;
         settled = true;
         signal?.removeEventListener("abort", abort);
-        resolve(result);
+        if (response && typeof response.text === "string" && typeof response.disposition === "string" && (response.applied_rule === null || typeof response.applied_rule === "string")) {
+          resolve({
+            text: response.text,
+            disposition: response.disposition,
+            appliedRule: response.applied_rule
+          });
+        } else {
+          resolve(undefined);
+        }
       };
       const abort = () => finish(undefined);
       pending.set(id, { finish });
@@ -122,6 +130,39 @@ function createBridge(host, executable, spawnProcess) {
       }
     });
   }
+  function recordDelivery(delivery, signal) {
+    if (closed || signal?.aborted)
+      return;
+    const currentChild = child ?? start();
+    if (!currentChild)
+      return;
+    const id = String(++nextId);
+    const request = {
+      type: "record_delivery",
+      version: 1,
+      id,
+      disposition: delivery.disposition,
+      applied_rule: delivery.appliedRule,
+      before_chars: delivery.beforeChars,
+      after_chars: delivery.afterChars
+    };
+    let line;
+    try {
+      line = `${JSON.stringify(request)}
+`;
+    } catch {
+      return;
+    }
+    pending.set(id, { finish: () => {} });
+    try {
+      currentChild.stdin.write(line, (error) => {
+        if (error)
+          fail(currentChild);
+      });
+    } catch {
+      fail(currentChild);
+    }
+  }
   function close() {
     if (closed)
       return;
@@ -135,12 +176,12 @@ function createBridge(host, executable, spawnProcess) {
     if (closingChild) {
       try {
         closingChild.stdin.end();
-      } finally {
+      } catch {
         closingChild.kill();
       }
     }
   }
-  return { process, close };
+  return { process, recordDelivery, close };
 }
 
 // adapters/pi.ts
@@ -190,21 +231,48 @@ var defaultSpawn = (executable, args, options) => nodeSpawn(executable, args, op
 function registerPiExtension(pi, options = {}) {
   const bridge = createBridge("pi", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   pi.on("tool_result", async (event, context) => {
-    if (event.parentToolCallId || event.content.length !== 1 || event.content[0].type !== "text" || typeof event.content[0].text !== "string" || inputReferencesOriginals(event.input)) {
+    if (event.parentToolCallId || event.content.length !== 1 || event.content[0].type !== "text" || typeof event.content[0].text !== "string") {
       return;
     }
     const original = event.content[0];
     const text = original.text;
+    const beforeChars = Array.from(text).length;
+    if (inputReferencesOriginals(event.input)) {
+      bridge.recordDelivery({
+        disposition: "recovery_skipped",
+        appliedRule: null,
+        beforeChars,
+        afterChars: beforeChars
+      }, context.signal);
+      return;
+    }
     const processed = await bridge.process(context.sessionManager.getSessionId(), {
       name: event.toolName,
       input: event.input,
       source: sourceFor(event.toolName, event.input),
       exit_code: exitCodeFrom(event.structuredContent)
     }, text, context.signal);
-    if (processed === undefined || processed === text)
+    if (processed === undefined) {
+      bridge.recordDelivery({
+        disposition: "failed_open",
+        appliedRule: null,
+        beforeChars,
+        afterChars: beforeChars
+      }, context.signal);
+      return;
+    }
+    if (context.signal?.aborted)
+      return;
+    bridge.recordDelivery({
+      disposition: processed.disposition,
+      appliedRule: processed.appliedRule,
+      beforeChars,
+      afterChars: Array.from(processed.text).length
+    }, context.signal);
+    if (processed.text === text)
       return;
     return {
-      content: [{ ...original, text: processed }],
+      content: [{ ...original, text: processed.text }],
       details: event.details,
       structuredContent: event.structuredContent,
       isError: event.isError,

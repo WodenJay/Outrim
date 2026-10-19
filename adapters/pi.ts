@@ -116,14 +116,27 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       event.parentToolCallId ||
       event.content.length !== 1 ||
       event.content[0].type !== "text" ||
-      typeof event.content[0].text !== "string" ||
-      inputReferencesOriginals(event.input)
+      typeof event.content[0].text !== "string"
     ) {
       return undefined;
     }
 
     const original = event.content[0] as TextContent;
     const text = original.text;
+    const beforeChars = Array.from(text).length;
+    if (inputReferencesOriginals(event.input)) {
+      bridge.recordDelivery(
+        {
+          disposition: "recovery_skipped",
+          appliedRule: null,
+          beforeChars,
+          afterChars: beforeChars,
+        },
+        context.signal,
+      );
+      return undefined;
+    }
+
     const processed = await bridge.process(
       context.sessionManager.getSessionId(),
       {
@@ -135,10 +148,33 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       text,
       context.signal,
     );
-    if (processed === undefined || processed === text) return undefined;
+    if (processed === undefined) {
+      bridge.recordDelivery(
+        {
+          disposition: "failed_open",
+          appliedRule: null,
+          beforeChars,
+          afterChars: beforeChars,
+        },
+        context.signal,
+      );
+      return undefined;
+    }
+    if (context.signal?.aborted) return undefined;
+
+    bridge.recordDelivery(
+      {
+        disposition: processed.disposition,
+        appliedRule: processed.appliedRule,
+        beforeChars,
+        afterChars: Array.from(processed.text).length,
+      },
+      context.signal,
+    );
+    if (processed.text === text) return undefined;
 
     return {
-      content: [{ ...original, text: processed }],
+      content: [{ ...original, text: processed.text }],
       details: event.details,
       structuredContent: event.structuredContent,
       isError: event.isError,

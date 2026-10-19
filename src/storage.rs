@@ -67,10 +67,10 @@ pub(crate) fn commit(mut file: NamedTempFile, text: &str) -> io::Result<PathBuf>
 }
 
 #[cfg(windows)]
-use windows::private_directory;
+pub(crate) use windows::private_directory;
 
 #[cfg(unix)]
-fn private_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     let mut builder = fs::DirBuilder::new();
     builder.mode(0o700);

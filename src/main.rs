@@ -10,6 +10,9 @@ fn main() -> ExitCode {
     if matches_command(&arguments, &["bridge"]) {
         return run_bridge();
     }
+    if matches_command(&arguments, &["gain"]) {
+        return run_gain();
+    }
     if matches_command(&arguments, &["install", "--agent", "pi"]) {
         return install_pi();
     }
@@ -17,7 +20,7 @@ fn main() -> ExitCode {
         return uninstall_pi();
     }
     eprintln!(
-        "Usage:\n  outrim bridge\n  outrim install --agent pi\n  outrim uninstall --agent pi"
+        "Usage:\n  outrim bridge\n  outrim gain\n  outrim install --agent pi\n  outrim uninstall --agent pi"
     );
     ExitCode::from(2)
 }
@@ -84,6 +87,20 @@ fn uninstall_pi() -> ExitCode {
         }
         Ok(None) => {
             println!("Pi integration is not installed.");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail_with_error(error),
+    }
+}
+
+fn run_gain() -> ExitCode {
+    let home = match user_home() {
+        Ok(home) => home,
+        Err(error) => return fail_with_error(error),
+    };
+    match outrim::gain::render(&home) {
+        Ok(report) => {
+            print!("{report}");
             ExitCode::SUCCESS
         }
         Err(error) => fail_with_error(error),

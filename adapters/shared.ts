@@ -30,10 +30,33 @@ interface CoreRequest {
   text: string;
 }
 
+type Disposition =
+  | "compressed"
+  | "protected"
+  | "recovery_skipped"
+  | "not_shorter"
+  | "no_match"
+  | "failed_open";
+
 interface CoreResponse {
   version: number;
   id: string;
   text?: string;
+  disposition?: Disposition;
+  applied_rule?: string | null;
+}
+
+export interface ProcessedResult {
+  text: string;
+  disposition: Disposition;
+  appliedRule: string | null;
+}
+
+export interface DeliveryRecord {
+  disposition: Disposition;
+  appliedRule: string | null;
+  beforeChars: number;
+  afterChars: number;
 }
 
 export interface BridgeChild {
@@ -74,14 +97,15 @@ export function createBridge(
   executable: string,
   spawnProcess: SpawnProcess,
 ): {
-  process(session: string, tool: ToolInput, text: string, signal?: AbortSignalLike): Promise<string | undefined>;
+  process(session: string, tool: ToolInput, text: string, signal?: AbortSignalLike): Promise<ProcessedResult | undefined>;
+  recordDelivery(delivery: DeliveryRecord, signal?: AbortSignalLike): void;
   close(): void;
 } {
   let child: BridgeChild | undefined;
   let nextId = 0;
   let buffer = "";
   let closed = false;
-  const pending = new Map<string, { finish(text: string | undefined): void }>();
+  const pending = new Map<string, { finish(response: CoreResponse | undefined): void }>();
 
   function fail(failedChild: BridgeChild): void {
     if (child !== failedChild) return;
@@ -122,7 +146,7 @@ export function createBridge(
       }
       const request = pending.get(response.id)!;
       pending.delete(response.id);
-      request.finish(typeof response.text === "string" ? response.text : undefined);
+      request.finish(response);
     }
   }
 
@@ -150,7 +174,7 @@ export function createBridge(
     tool: ToolInput,
     text: string,
     signal?: AbortSignalLike,
-  ): Promise<string | undefined> {
+  ): Promise<ProcessedResult | undefined> {
     if (closed || signal?.aborted) return Promise.resolve(undefined);
     const currentChild = child ?? start();
     if (!currentChild) return Promise.resolve(undefined);
@@ -166,11 +190,24 @@ export function createBridge(
 
     return new Promise((resolve) => {
       let settled = false;
-      const finish = (result: string | undefined) => {
+      const finish = (response: CoreResponse | undefined) => {
         if (settled) return;
         settled = true;
         signal?.removeEventListener("abort", abort);
-        resolve(result);
+        if (
+          response &&
+          typeof response.text === "string" &&
+          typeof response.disposition === "string" &&
+          (response.applied_rule === null || typeof response.applied_rule === "string")
+        ) {
+          resolve({
+            text: response.text,
+            disposition: response.disposition as Disposition,
+            appliedRule: response.applied_rule,
+          });
+        } else {
+          resolve(undefined);
+        }
       };
       const abort = () => finish(undefined);
       pending.set(id, { finish });
@@ -190,6 +227,38 @@ export function createBridge(
     });
   }
 
+  function recordDelivery(delivery: DeliveryRecord, signal?: AbortSignalLike): void {
+    if (closed || signal?.aborted) return;
+    const currentChild = child ?? start();
+    if (!currentChild) return;
+
+    const id = String(++nextId);
+    const request = {
+      type: "record_delivery",
+      version: 1,
+      id,
+      disposition: delivery.disposition,
+      applied_rule: delivery.appliedRule,
+      before_chars: delivery.beforeChars,
+      after_chars: delivery.afterChars,
+    };
+    let line: string;
+    try {
+      line = `${JSON.stringify(request)}\n`;
+    } catch {
+      return;
+    }
+
+    pending.set(id, { finish: () => {} });
+    try {
+      currentChild.stdin.write(line, (error) => {
+        if (error) fail(currentChild);
+      });
+    } catch {
+      fail(currentChild);
+    }
+  }
+
   function close(): void {
     if (closed) return;
     closed = true;
@@ -201,11 +270,11 @@ export function createBridge(
     if (closingChild) {
       try {
         closingChild.stdin.end();
-      } finally {
+      } catch {
         closingChild.kill();
       }
     }
   }
 
-  return { process, close };
+  return { process, recordDelivery, close };
 }

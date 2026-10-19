@@ -5,6 +5,8 @@ import { registerPiExtension } from "../assets/outrim-pi.js";
 class FakeChild extends EventEmitter {
   writes = [];
   killed = false;
+  ended = false;
+  autoAcknowledgeDeliveries = true;
   stdin = new EventEmitter();
   stdout = new EventEmitter();
 
@@ -13,9 +15,15 @@ class FakeChild extends EventEmitter {
     this.stdin.write = (line, callback) => {
       this.writes.push(line);
       callback?.();
+      const request = JSON.parse(line);
+      if (request.type === "record_delivery" && this.autoAcknowledgeDeliveries) {
+        this.stdout.emit("data", `${JSON.stringify({ version: 1, id: request.id })}\n`);
+      }
       return true;
+    }
+    this.stdin.end = () => {
+      this.ended = true;
     };
-    this.stdin.end = () => {};
     this.stdout.setEncoding = () => {};
   }
 
@@ -23,10 +31,17 @@ class FakeChild extends EventEmitter {
     return this.writes.map((line) => JSON.parse(line));
   }
 
-  respond(request, text) {
+  respond(request, text, metadata = {}) {
     this.stdout.emit(
       "data",
-      `${JSON.stringify({ version: 1, id: request.id, text, disposition: "compressed" })}\n`,
+      `${JSON.stringify({
+        version: 1,
+        id: request.id,
+        text,
+        disposition: "compressed",
+        applied_rule: "log_tail",
+        ...metadata,
+      })}\n`,
     );
   }
 
@@ -138,6 +153,14 @@ describe("Pi result adapter", () => {
       }),
     );
     expect(recovery).toBeUndefined();
+    const recoveryRecord = children[0].requests()[0];
+    expect(recoveryRecord).toMatchObject({
+      type: "record_delivery",
+      disposition: "recovery_skipped",
+      applied_rule: null,
+      before_chars: "original output".length,
+      after_chars: "original output".length,
+    });
     for (const path of [
       "/home/me/.outrim/outputs/pi/saved.txt",
       'Get-Content "$HOME/.outrim\\outputs\\pi\\saved.txt"',
@@ -148,7 +171,8 @@ describe("Pi result adapter", () => {
     ]) {
       expect(await handle(toolEvent({ input: { nested: { path } } }))).toBeUndefined();
     }
-    expect(children).toHaveLength(0);
+    expect(children).toHaveLength(1);
+    expect(children[0].requests().filter((request) => request.type === "record_delivery")).toHaveLength(7);
 
     const outputMentionsDirectory = handle(
       toolEvent({
@@ -156,7 +180,7 @@ describe("Pi result adapter", () => {
         content: [{ type: "text", text: "output mentions ~/.outrim/outputs/saved.txt" }],
       }),
     );
-    const request = children[0].requests()[0];
+    const request = children[0].requests().find((request) => !request.type);
     children[0].respond(request, "compressed output");
     expect((await outputMentionsDirectory).content[0].text).toBe("compressed output");
     expect(children).toHaveLength(1);
@@ -205,30 +229,95 @@ describe("Pi result adapter", () => {
     child.respond(nextRequest, "next result");
 
     expect((await next).content[0].text).toBe("next result");
+    expect(children[0].requests().filter((request) => request.type === "record_delivery")).toHaveLength(1);
     expect(children).toHaveLength(1);
   });
 
-  it("fails open on child exit and lazily restarts on the next result", async () => {
+  it("records an adopted compressed result once with Unicode codepoint lengths", async () => {
+    const { children, handle } = harness();
+    const original = "🦀🙂\n".repeat(12);
+    const pending = handle(toolEvent({ content: [{ type: "text", text: original }] }));
+    const processRequest = children[0].requests()[0];
+    children[0].respond(processRequest, "short 🦀", {
+      disposition: "compressed",
+      applied_rule: "log_tail",
+    });
+
+    const result = await pending;
+    expect(result.content[0].text).toBe("short 🦀");
+    expect(children[0].requests()).toHaveLength(2);
+    expect(children[0].requests()[1]).toMatchObject({
+      type: "record_delivery",
+      disposition: "compressed",
+      applied_rule: "log_tail",
+      before_chars: Array.from(original).length,
+      after_chars: Array.from("short 🦀").length,
+    });
+  });
+
+  it("records unchanged outcomes without changing the host result", async () => {
+    const { children, handle } = harness();
+    const original = "kept as-is";
+    const pending = handle(toolEvent({ content: [{ type: "text", text: original }] }));
+    const request = children[0].requests()[0];
+    children[0].respond(request, original, {
+      disposition: "protected",
+      applied_rule: null,
+    });
+
+    expect(await pending).toBeUndefined();
+    expect(children[0].requests()[1]).toMatchObject({
+      type: "record_delivery",
+      disposition: "protected",
+      applied_rule: null,
+      before_chars: original.length,
+      after_chars: original.length,
+    });
+  });
+
+  it("records fail-open after child exit and reuses the restarted child", async () => {
     const { children, handle } = harness();
     const pending = handle(toolEvent());
     children[0].exit();
     expect(await pending).toBeUndefined();
+    expect(children).toHaveLength(2);
+    expect(children[1].requests()[0]).toMatchObject({
+      type: "record_delivery",
+      disposition: "failed_open",
+    });
 
     const restarted = handle(toolEvent({ toolCallId: "call-after-exit" }));
     expect(children).toHaveLength(2);
-    const [request] = children[1].requests();
+    const request = children[1].requests().find((request) => !request.type);
     children[1].respond(request, "restarted result");
     expect((await restarted).content[0].text).toBe("restarted result");
   });
 
-  it("kills its child and resolves pending work on session shutdown", async () => {
+  it("drains a queued delivery when closing the session", async () => {
+    const { handlers, children, handle } = harness();
+    const pending = handle(toolEvent());
+    const child = children[0];
+    child.autoAcknowledgeDeliveries = false;
+    const processRequest = child.requests()[0];
+    child.respond(processRequest, "compressed output");
+
+    expect((await pending).content[0].text).toBe("compressed output");
+    expect(child.requests()[1].type).toBe("record_delivery");
+
+    handlers.get("session_shutdown")();
+    expect(child.ended).toBe(true);
+    expect(child.killed).toBe(false);
+  });
+
+  it("closes its child input and resolves pending work on session shutdown", async () => {
     const { handlers, children, handle } = harness();
     const pending = handle(toolEvent());
     const child = children[0];
 
     handlers.get("session_shutdown")();
     expect(await pending).toBeUndefined();
-    expect(child.killed).toBe(true);
+    expect(child.ended).toBe(true);
+    expect(child.killed).toBe(false);
     expect(children).toHaveLength(1);
   });
 });

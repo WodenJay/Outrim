@@ -2,6 +2,7 @@
 //! not an independently configurable original-output directory.
 
 pub mod bridge;
+pub mod gain;
 pub mod install;
 mod json;
 mod protection;
@@ -15,13 +16,19 @@ use std::path::Path;
 
 pub struct Processor {
     originals: storage::Originals,
+    gain: gain::Store,
 }
 
 impl Processor {
     pub fn new(user_home: &Path) -> Self {
         Self {
             originals: storage::Originals::new(user_home),
+            gain: gain::Store::new(user_home),
         }
+    }
+
+    pub(crate) fn record_delivery(&self, delivery: protocol::RecordDeliveryRequest) -> bool {
+        self.gain.record(delivery).is_ok()
     }
 
     pub fn process(&self, request: Request) -> Response {

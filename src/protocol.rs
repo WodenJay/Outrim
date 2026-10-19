@@ -67,7 +67,7 @@ pub enum ProtocolError {
     InvalidRequest,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
     Compressed,
@@ -76,4 +76,30 @@ pub enum Disposition {
     NotShorter,
     NoMatch,
     FailedOpen,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordDeliveryRequest {
+    #[serde(rename = "type")]
+    pub message_type: DeliveryMessageType,
+    pub version: u32,
+    pub id: String,
+    pub disposition: Disposition,
+    pub applied_rule: Option<String>,
+    pub before_chars: u64,
+    pub after_chars: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryMessageType {
+    RecordDelivery,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeliveryAcknowledgement {
+    pub version: u32,
+    pub id: String,
+    pub acknowledged: bool,
 }

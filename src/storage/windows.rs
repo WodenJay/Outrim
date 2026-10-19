@@ -34,7 +34,7 @@ impl Drop for Descriptor {
     }
 }
 
-pub(super) fn private_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     let path_wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     if path_wide[..path_wide.len() - 1].contains(&0) {
         return Err(io::Error::new(
