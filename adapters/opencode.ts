@@ -252,7 +252,6 @@ export async function registerOpenCodePlugin(
       for (const controller of sessionCalls) controller.abort();
     }
     bridge.close();
-    activeCodeModeCalls.clear();
     await registration.dispose();
     await beforeRegistration.dispose();
     await eventLoop;

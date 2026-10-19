@@ -330,7 +330,6 @@ async function registerOpenCodePlugin(context, options = {}) {
         controller.abort();
     }
     bridge.close();
-    activeCodeModeCalls.clear();
     await registration.dispose();
     await beforeRegistration.dispose();
     await eventLoop;

@@ -496,6 +496,64 @@ describe("OpenCode result adapter", () => {
     expect(event.result).toBe(result);
   });
 
+  it("clears only the interrupted session's Code Mode state", async () => {
+    const child = new FakeChild();
+    const { handlers, cleanup, emitEvent } = harness({
+      executable: "outrim-test",
+      spawnProcess: () => child,
+    }, true);
+    const dispose = await cleanup;
+    const codeModeID = "shared-code-mode-call";
+    await handlers.get("execute.before")({
+      tool: "execute",
+      sessionID: "session-a",
+      id: codeModeID,
+    });
+    await handlers.get("execute.before")({
+      tool: "execute",
+      sessionID: "session-b",
+      id: codeModeID,
+    });
+
+    const activeEvent = {
+      status: "completed",
+      tool: "shell",
+      sessionID: "session-a",
+      id: "active-shell-a",
+      input: { command: "cargo test" },
+      result: { content: [{ type: "text", text: "interrupted output" }] },
+    };
+    const activePending = handlers.get("execute.after")(activeEvent);
+    expect(child.requests()).toHaveLength(1);
+    emitEvent({
+      type: "session.execution.interrupted",
+      properties: { sessionID: "session-a" },
+    });
+    await activePending;
+
+    const nestedResult = {
+      content: [{ type: "text", text: "raw session B result" }],
+      output: { rows: ["data still used by session B"] },
+    };
+    const nestedEvent = {
+      status: "completed",
+      tool: "read",
+      sessionID: "session-b",
+      id: codeModeID,
+      input: { filePath: "src/main.rs" },
+      result: nestedResult,
+    };
+    const nestedPending = handlers.get("execute.after")(nestedEvent);
+    const requestsAfterNested = child.requests();
+    for (const request of requestsAfterNested.slice(1)) {
+      child.respond(request, "unexpected compression");
+    }
+    await nestedPending;
+    expect(requestsAfterNested).toHaveLength(1);
+    expect(nestedEvent.result).toBe(nestedResult);
+    await dispose();
+  });
+
   it("passes through on session interruption", async () => {
     const child = new FakeChild();
     const { handlers, cleanup, emitEvent } = harness({
