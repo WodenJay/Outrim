@@ -23,6 +23,12 @@ interface ToolResult {
   [key: string]: unknown;
 }
 
+interface ToolHookBeforeEvent {
+  tool: string;
+  sessionID: string;
+  id: string;
+}
+
 export interface ToolHookEvent {
   status: string;
   tool: string;
@@ -44,8 +50,12 @@ interface OpenCodeEvent {
 export interface OpenCodePluginContext {
   tool: {
     hook(
+      name: "execute.before",
+      handler: (event: ToolHookBeforeEvent) => Promise<void> | void,
+    ): Promise<ToolHookRegistration>;
+    hook(
       name: "execute.after",
-      handler: (event: ToolHookEvent) => Promise<void>,
+      handler: (event: ToolHookEvent) => Promise<void> | void,
     ): Promise<ToolHookRegistration>;
   };
   event?: {
@@ -133,6 +143,8 @@ export async function registerOpenCodePlugin(
     options.spawnProcess ?? defaultSpawn,
   );
   const activeCallsBySession = new Map<string, Set<AbortController>>();
+  // OpenCode v2 Code Mode forwards the wrapper call ID to nested tool hooks.
+  const activeCodeModeCalls = new Map<string, string>();
   const eventController = new AbortController();
   let closed = false;
 
@@ -141,7 +153,12 @@ export async function registerOpenCodePlugin(
   }
 
   async function handleResult(event: ToolHookEvent): Promise<void> {
-    if (closed || event.status !== "completed") return;
+    const isCodeModeCall = activeCodeModeCalls.get(event.id) === event.sessionID;
+    if (event.tool === "execute") activeCodeModeCalls.delete(event.id);
+    if (
+      closed || event.status !== "completed" ||
+      (isCodeModeCall && event.tool !== "execute")
+    ) return;
     const input = record(event.input);
     const result = event.result;
     if (!input || !result || inputReferencesOriginals(input)) return;
@@ -184,7 +201,16 @@ export async function registerOpenCodePlugin(
     }
   }
 
-  const registration = await context.tool.hook("execute.after", handleResult);
+  const beforeRegistration = await context.tool.hook("execute.before", (event) => {
+    if (event.tool === "execute") activeCodeModeCalls.set(event.id, event.sessionID);
+  });
+  let registration: ToolHookRegistration;
+  try {
+    registration = await context.tool.hook("execute.after", handleResult);
+  } catch (error) {
+    await beforeRegistration.dispose();
+    throw error;
+  }
   let eventLoop: Promise<void> | undefined;
   if (context.event) {
     eventLoop = (async () => {
@@ -210,7 +236,9 @@ export async function registerOpenCodePlugin(
       for (const controller of sessionCalls) controller.abort();
     }
     bridge.close();
+    activeCodeModeCalls.clear();
     await registration.dispose();
+    await beforeRegistration.dispose();
     await eventLoop;
   };
 }

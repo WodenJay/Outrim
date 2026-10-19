@@ -144,6 +144,63 @@ describe("OpenCode result adapter", () => {
     await dispose();
   });
 
+  it("preserves Code Mode inputs and rewrites only the final model-facing result", async () => {
+    const child = new FakeChild();
+    const { handlers, cleanup } = harness({
+      executable: "outrim-test",
+      spawnProcess: () => child,
+    });
+    const dispose = await cleanup;
+    const id = "code-mode-call";
+    const sessionID = "session-code-mode";
+    await handlers.get("execute.before")({
+      tool: "execute",
+      sessionID,
+      id,
+    });
+
+    const nestedOutput = { rows: ["raw data for the program"] };
+    const nestedResult = {
+      content: [{ type: "text", text: "raw nested result" }],
+      output: nestedOutput,
+    };
+    const nestedEvent = {
+      status: "completed",
+      tool: "read",
+      sessionID,
+      id,
+      input: { filePath: "src/main.rs" },
+      result: nestedResult,
+    };
+    await handlers.get("execute.after")(nestedEvent);
+    expect(child.requests()).toHaveLength(0);
+    expect(nestedEvent.result).toBe(nestedResult);
+
+    const executeOutput = { output: "program summary", toolCalls: [] };
+    const executeEvent = {
+      status: "completed",
+      tool: "execute",
+      sessionID,
+      id,
+      input: { code: "return await tools.read({ filePath: 'src/main.rs' })" },
+      result: {
+        content: [{ type: "text", text: "program summary" }],
+        output: executeOutput,
+      },
+    };
+    const pending = handlers.get("execute.after")(executeEvent);
+    const [request] = child.requests();
+    expect(request.text).toBe("program summary");
+    child.respond(request, "compressed summary");
+    await pending;
+
+    expect(executeEvent.result.content).toEqual([
+      { type: "text", text: "compressed summary" },
+    ]);
+    expect(executeEvent.result.output).toBe(executeOutput);
+    await dispose();
+  });
+
   it("correlates concurrent tool results by bridge request ID", async () => {
     const child = new FakeChild();
     const { handlers, cleanup } = harness({

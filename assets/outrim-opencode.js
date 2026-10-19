@@ -233,6 +233,7 @@ function sessionIdFrom(event) {
 async function registerOpenCodePlugin(context, options = {}) {
   const bridge = createBridge("opencode", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   const activeCallsBySession = new Map;
+  const activeCodeModeCalls = new Map;
   const eventController = new AbortController;
   let closed = false;
   function abortSession(session) {
@@ -240,7 +241,10 @@ async function registerOpenCodePlugin(context, options = {}) {
       controller.abort();
   }
   async function handleResult(event) {
-    if (closed || event.status !== "completed")
+    const isCodeModeCall = activeCodeModeCalls.get(event.id) === event.sessionID;
+    if (event.tool === "execute")
+      activeCodeModeCalls.delete(event.id);
+    if (closed || event.status !== "completed" || isCodeModeCall && event.tool !== "execute")
       return;
     const input = record(event.input);
     const result = event.result;
@@ -274,7 +278,17 @@ async function registerOpenCodePlugin(context, options = {}) {
         activeCallsBySession.delete(event.sessionID);
     }
   }
-  const registration = await context.tool.hook("execute.after", handleResult);
+  const beforeRegistration = await context.tool.hook("execute.before", (event) => {
+    if (event.tool === "execute")
+      activeCodeModeCalls.set(event.id, event.sessionID);
+  });
+  let registration;
+  try {
+    registration = await context.tool.hook("execute.after", handleResult);
+  } catch (error) {
+    await beforeRegistration.dispose();
+    throw error;
+  }
   let eventLoop;
   if (context.event) {
     eventLoop = (async () => {
@@ -300,7 +314,9 @@ async function registerOpenCodePlugin(context, options = {}) {
         controller.abort();
     }
     bridge.close();
+    activeCodeModeCalls.clear();
     await registration.dispose();
+    await beforeRegistration.dispose();
     await eventLoop;
   };
 }
