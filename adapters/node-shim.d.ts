@@ -1,3 +1,8 @@
+declare class AbortController {
+  readonly signal: import("./shared").AbortSignalLike;
+  abort(): void;
+}
+
 declare module "node:child_process" {
   export function spawn(
     executable: string,
