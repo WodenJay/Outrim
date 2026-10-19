@@ -2,6 +2,7 @@
 //! not an independently configurable original-output directory.
 
 pub mod bridge;
+mod json;
 pub mod protocol;
 mod rules;
 mod storage;
@@ -39,8 +40,7 @@ impl Processor {
         }
         let candidates = if let Some(tail) = rules::log_tail(&request.tool, &response.text) {
             vec![("log_tail", tail)]
-        } else if let Some(json_candidates) = rules::json_candidates(&request.tool, &response.text)
-        {
+        } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
             json_candidates
         } else {
             return response;
