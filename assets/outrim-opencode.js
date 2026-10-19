@@ -233,20 +233,28 @@ function sessionIdFrom(event) {
 async function registerOpenCodePlugin(context, options = {}) {
   const bridge = createBridge("opencode", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   const activeCallsBySession = new Map;
-  const activeCodeModeCalls = new Set;
-  const codeModeCallKey = (sessionID, id) => JSON.stringify([sessionID, id]);
+  const activeCodeModeCalls = new Map;
   const eventController = new AbortController;
   let closed = false;
   function abortSession(session) {
     for (const controller of activeCallsBySession.get(session) ?? [])
       controller.abort();
+    activeCodeModeCalls.delete(session);
   }
   async function handleResult(event) {
-    const callKey = codeModeCallKey(event.sessionID, event.id);
-    const isCodeModeCall = activeCodeModeCalls.has(callKey);
-    if (event.tool === "execute")
-      activeCodeModeCalls.delete(callKey);
-    if (closed || event.status !== "completed" || isCodeModeCall && event.tool !== "execute")
+    const codeModeSessionCalls = activeCodeModeCalls.get(event.sessionID);
+    const codeModeDepth = codeModeSessionCalls?.get(event.id) ?? 0;
+    const isCodeModeCall = codeModeDepth > 0;
+    if (event.tool === "execute" && codeModeSessionCalls && isCodeModeCall) {
+      if (codeModeDepth === 1) {
+        codeModeSessionCalls.delete(event.id);
+        if (codeModeSessionCalls.size === 0)
+          activeCodeModeCalls.delete(event.sessionID);
+      } else {
+        codeModeSessionCalls.set(event.id, codeModeDepth - 1);
+      }
+    }
+    if (closed || event.status !== "completed" || isCodeModeCall && (event.tool !== "execute" || codeModeDepth > 1))
       return;
     const input = record(event.input);
     const result = event.result;
@@ -256,12 +264,12 @@ async function registerOpenCodePlugin(context, options = {}) {
     if (!selection)
       return;
     const controller = new AbortController;
-    let sessionCalls = activeCallsBySession.get(event.sessionID);
-    if (!sessionCalls) {
-      sessionCalls = new Set;
-      activeCallsBySession.set(event.sessionID, sessionCalls);
+    let bridgeSessionCalls = activeCallsBySession.get(event.sessionID);
+    if (!bridgeSessionCalls) {
+      bridgeSessionCalls = new Set;
+      activeCallsBySession.set(event.sessionID, bridgeSessionCalls);
     }
-    sessionCalls.add(controller);
+    bridgeSessionCalls.add(controller);
     try {
       const replacements = await Promise.all(selection.texts.map((text) => bridge.process(event.sessionID, {
         name: event.tool,
@@ -275,15 +283,20 @@ async function registerOpenCodePlugin(context, options = {}) {
         event.result = { ...result, content: selection.apply(replacements) };
       }
     } finally {
-      sessionCalls.delete(controller);
-      if (sessionCalls.size === 0)
+      bridgeSessionCalls.delete(controller);
+      if (bridgeSessionCalls.size === 0)
         activeCallsBySession.delete(event.sessionID);
     }
   }
   const beforeRegistration = await context.tool.hook("execute.before", (event) => {
-    if (event.tool === "execute") {
-      activeCodeModeCalls.add(codeModeCallKey(event.sessionID, event.id));
+    if (event.tool !== "execute")
+      return;
+    let sessionCalls = activeCodeModeCalls.get(event.sessionID);
+    if (!sessionCalls) {
+      sessionCalls = new Map;
+      activeCodeModeCalls.set(event.sessionID, sessionCalls);
     }
+    sessionCalls.set(event.id, (sessionCalls.get(event.id) ?? 0) + 1);
   });
   let registration;
   try {

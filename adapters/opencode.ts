@@ -144,24 +144,30 @@ export async function registerOpenCodePlugin(
   );
   const activeCallsBySession = new Map<string, Set<AbortController>>();
   // OpenCode v2 Code Mode forwards the wrapper call ID to nested tool hooks.
-  // Key by session too because call IDs need not be unique across sessions.
-  const activeCodeModeCalls = new Set<string>();
-  const codeModeCallKey = (sessionID: string, id: string) =>
-    JSON.stringify([sessionID, id]);
+  const activeCodeModeCalls = new Map<string, Map<string, number>>();
   const eventController = new AbortController();
   let closed = false;
 
   function abortSession(session: string): void {
     for (const controller of activeCallsBySession.get(session) ?? []) controller.abort();
+    activeCodeModeCalls.delete(session);
   }
 
   async function handleResult(event: ToolHookEvent): Promise<void> {
-    const callKey = codeModeCallKey(event.sessionID, event.id);
-    const isCodeModeCall = activeCodeModeCalls.has(callKey);
-    if (event.tool === "execute") activeCodeModeCalls.delete(callKey);
+    const codeModeSessionCalls = activeCodeModeCalls.get(event.sessionID);
+    const codeModeDepth = codeModeSessionCalls?.get(event.id) ?? 0;
+    const isCodeModeCall = codeModeDepth > 0;
+    if (event.tool === "execute" && codeModeSessionCalls && isCodeModeCall) {
+      if (codeModeDepth === 1) {
+        codeModeSessionCalls.delete(event.id);
+        if (codeModeSessionCalls.size === 0) activeCodeModeCalls.delete(event.sessionID);
+      } else {
+        codeModeSessionCalls.set(event.id, codeModeDepth - 1);
+      }
+    }
     if (
       closed || event.status !== "completed" ||
-      (isCodeModeCall && event.tool !== "execute")
+      (isCodeModeCall && (event.tool !== "execute" || codeModeDepth > 1))
     ) return;
     const input = record(event.input);
     const result = event.result;
@@ -171,12 +177,12 @@ export async function registerOpenCodePlugin(
     if (!selection) return;
 
     const controller = new AbortController();
-    let sessionCalls = activeCallsBySession.get(event.sessionID);
-    if (!sessionCalls) {
-      sessionCalls = new Set();
-      activeCallsBySession.set(event.sessionID, sessionCalls);
+    let bridgeSessionCalls = activeCallsBySession.get(event.sessionID);
+    if (!bridgeSessionCalls) {
+      bridgeSessionCalls = new Set();
+      activeCallsBySession.set(event.sessionID, bridgeSessionCalls);
     }
-    sessionCalls.add(controller);
+    bridgeSessionCalls.add(controller);
     try {
       const replacements = await Promise.all(
         selection.texts.map((text) =>
@@ -200,15 +206,19 @@ export async function registerOpenCodePlugin(
         event.result = { ...result, content: selection.apply(replacements) };
       }
     } finally {
-      sessionCalls.delete(controller);
-      if (sessionCalls.size === 0) activeCallsBySession.delete(event.sessionID);
+      bridgeSessionCalls.delete(controller);
+      if (bridgeSessionCalls.size === 0) activeCallsBySession.delete(event.sessionID);
     }
   }
 
   const beforeRegistration = await context.tool.hook("execute.before", (event) => {
-    if (event.tool === "execute") {
-      activeCodeModeCalls.add(codeModeCallKey(event.sessionID, event.id));
+    if (event.tool !== "execute") return;
+    let sessionCalls = activeCodeModeCalls.get(event.sessionID);
+    if (!sessionCalls) {
+      sessionCalls = new Map();
+      activeCodeModeCalls.set(event.sessionID, sessionCalls);
     }
+    sessionCalls.set(event.id, (sessionCalls.get(event.id) ?? 0) + 1);
   });
   let registration: ToolHookRegistration;
   try {

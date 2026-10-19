@@ -1,4 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
 import opencodePlugin from "../assets/outrim-opencode.js";
 import { registerOpenCodePlugin } from "../adapters/opencode.ts";
@@ -92,6 +97,32 @@ function harness(options, subscribe = false) {
 }
 
 describe("OpenCode result adapter", () => {
+  it("keeps the embedded plugin asset in sync with its sources", () => {
+    const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+    const tempDir = mkdtempSync(join(tmpdir(), "outrim-opencode-"));
+    const generatedAsset = join(tempDir, "outrim-opencode.js");
+    try {
+      execFileSync(
+        process.execPath,
+        [
+          "build",
+          "adapters/opencode-plugin.ts",
+          "--target=bun",
+          `--outfile=${generatedAsset}`,
+        ],
+        { cwd: projectRoot, stdio: "ignore" },
+      );
+      const normalizeLineEndings = (text) => text.replace(/\r\n/g, "\n");
+      expect(normalizeLineEndings(readFileSync(generatedAsset, "utf8"))).toBe(
+        normalizeLineEndings(
+          readFileSync(join(projectRoot, "assets/outrim-opencode.js"), "utf8"),
+        ),
+      );
+    } finally {
+      rmSync(tempDir, { force: true, recursive: true });
+    }
+  });
+
   it("exports the v2 plugin loader shape from the embedded asset", () => {
     expect(opencodePlugin.id).toBe("outrim");
     expect(typeof opencodePlugin.setup).toBe("function");
@@ -144,7 +175,7 @@ describe("OpenCode result adapter", () => {
     await dispose();
   });
 
-  it("preserves Code Mode inputs and rewrites final results across sessions", async () => {
+  it("preserves Code Mode inputs across colliding sessions and nested calls", async () => {
     const child = new FakeChild();
     const { handlers, cleanup } = harness({
       executable: "outrim-test",
@@ -152,69 +183,122 @@ describe("OpenCode result adapter", () => {
     });
     const dispose = await cleanup;
     const id = "code-mode-call";
-    const sessionIDs = ["session-code-mode-a", "session-code-mode-b"];
-    for (const sessionID of sessionIDs) {
-      await handlers.get("execute.before")({
-        tool: "execute",
-        sessionID,
-        id,
-      });
+    const sessionA = "session-code-mode-a";
+    const sessionB = "session-code-mode-b";
+    for (const sessionID of [sessionA, sessionB]) {
+      await handlers.get("execute.before")({ tool: "execute", sessionID, id });
     }
 
-    const nestedEvents = sessionIDs.map((sessionID) => {
-      const nestedResult = {
-        content: [{ type: "text", text: "raw nested result" }],
-        output: { rows: ["raw data for the program"] },
-      };
-      return {
-        status: "completed",
-        tool: "read",
-        sessionID,
-        id,
-        input: { filePath: "src/main.rs" },
-        result: nestedResult,
-      };
-    });
-    const nestedPending = nestedEvents.map((event) => handlers.get("execute.after")(event));
-    const nestedRequests = child.requests();
-    for (const request of nestedRequests) child.respond(request, "unexpected compression");
-    await Promise.all(nestedPending);
-    expect(nestedRequests).toHaveLength(0);
-    expect(nestedEvents.map((event) => event.result.content[0].text)).toEqual([
-      "raw nested result",
-      "raw nested result",
-    ]);
-
-    const executeEvents = sessionIDs.map((sessionID) => ({
+    const executeEventB = {
       status: "completed",
       tool: "execute",
-      sessionID,
+      sessionID: sessionB,
       id,
       input: { code: "return await tools.read({ filePath: 'src/main.rs' })" },
       result: {
-        content: [{ type: "text", text: "program summary" }],
-        output: { output: "program summary", toolCalls: [] },
+        content: [{ type: "text", text: "program summary B" }],
+        output: { output: "program summary B", toolCalls: [] },
       },
-    }));
-    const executeOutputs = executeEvents.map((event) => event.result.output);
-    const pending = executeEvents.map((event) => handlers.get("execute.after")(event));
-    const requests = child.requests();
-    expect(requests).toHaveLength(2);
-    expect(requests.map((request) => request.text)).toEqual([
-      "program summary",
-      "program summary",
-    ]);
-    child.respond(requests[1], "compressed summary 2");
-    child.respond(requests[0], "compressed summary 1");
-    await Promise.all(pending);
+    };
+    const outputB = executeEventB.result.output;
+    const pendingB = handlers.get("execute.after")(executeEventB);
+    const [requestB] = child.requests();
+    expect(requestB.text).toBe("program summary B");
+    child.respond(requestB, "compressed summary B");
+    await pendingB;
 
-    expect(executeEvents.map((event) => event.result.content[0].text)).toEqual([
-      "compressed summary 1",
-      "compressed summary 2",
+    const nestedReadResultBeforeExecute = {
+      content: [{ type: "text", text: "raw nested read result" }],
+      output: { rows: ["raw data for the program"] },
+    };
+    const nestedReadBeforeExecute = {
+      status: "completed",
+      tool: "read",
+      sessionID: sessionA,
+      id,
+      input: { filePath: "src/main.rs" },
+      result: nestedReadResultBeforeExecute,
+    };
+    const pendingNestedReadBeforeExecute = handlers.get("execute.after")(
+      nestedReadBeforeExecute,
+    );
+    const afterNestedReadBeforeExecute = child.requests();
+    for (const request of afterNestedReadBeforeExecute.slice(1)) {
+      child.respond(request, "unexpected compression");
+    }
+    await pendingNestedReadBeforeExecute;
+    expect(afterNestedReadBeforeExecute).toHaveLength(1);
+    expect(nestedReadBeforeExecute.result).toBe(nestedReadResultBeforeExecute);
+
+    await handlers.get("execute.before")({ tool: "execute", sessionID: sessionA, id });
+    const nestedExecuteResult = {
+      content: [{ type: "text", text: "raw nested execute result" }],
+      output: { rows: ["raw data for the program"] },
+    };
+    const nestedExecuteEvent = {
+      status: "completed",
+      tool: "execute",
+      sessionID: sessionA,
+      id,
+      input: { code: "return await tools.read({ filePath: 'src/main.rs' })" },
+      result: nestedExecuteResult,
+    };
+    const nestedExecutePending = handlers.get("execute.after")(nestedExecuteEvent);
+    const afterNestedExecute = child.requests();
+    for (const request of afterNestedExecute.slice(1)) {
+      child.respond(request, "unexpected compression");
+    }
+    await nestedExecutePending;
+    expect(afterNestedExecute).toHaveLength(1);
+    expect(nestedExecuteEvent.result).toBe(nestedExecuteResult);
+
+    const nestedReadResult = {
+      content: [{ type: "text", text: "raw nested read result" }],
+      output: { rows: ["raw data for the program"] },
+    };
+    const nestedReadEvent = {
+      status: "completed",
+      tool: "read",
+      sessionID: sessionA,
+      id,
+      input: { filePath: "src/main.rs" },
+      result: nestedReadResult,
+    };
+    const nestedReadPending = handlers.get("execute.after")(nestedReadEvent);
+    const afterNestedRead = child.requests();
+    for (const request of afterNestedRead.slice(1)) {
+      child.respond(request, "unexpected compression");
+    }
+    await nestedReadPending;
+    expect(afterNestedRead).toHaveLength(1);
+    expect(nestedReadEvent.result).toBe(nestedReadResult);
+
+    const executeEventA = {
+      status: "completed",
+      tool: "execute",
+      sessionID: sessionA,
+      id,
+      input: { code: "return await tools.read({ filePath: 'src/main.rs' })" },
+      result: {
+        content: [{ type: "text", text: "program summary A" }],
+        output: { output: "program summary A", toolCalls: [] },
+      },
+    };
+    const outputA = executeEventA.result.output;
+    const pendingA = handlers.get("execute.after")(executeEventA);
+    const [, requestA] = child.requests();
+    expect(requestA.text).toBe("program summary A");
+    child.respond(requestA, "compressed summary A");
+    await pendingA;
+
+    expect(executeEventA.result.content).toEqual([
+      { type: "text", text: "compressed summary A" },
     ]);
-    executeEvents.forEach((event, index) => {
-      expect(event.result.output).toBe(executeOutputs[index]);
-    });
+    expect(executeEventA.result.output).toBe(outputA);
+    expect(executeEventB.result.content).toEqual([
+      { type: "text", text: "compressed summary B" },
+    ]);
+    expect(executeEventB.result.output).toBe(outputB);
     await dispose();
   });
 
@@ -419,6 +503,11 @@ describe("OpenCode result adapter", () => {
       spawnProcess: () => child,
     }, true);
     const dispose = await cleanup;
+    await handlers.get("execute.before")({
+      tool: "execute",
+      sessionID: "session-4",
+      id: "call-code-mode-4",
+    });
     const result = { content: [{ type: "text", text: "original output" }] };
     const event = {
       status: "completed",
@@ -439,6 +528,22 @@ describe("OpenCode result adapter", () => {
 
     expect(event.result).toBe(result);
     expect(child.killed).toBe(false);
+
+    const afterInterruption = {
+      status: "completed",
+      tool: "shell",
+      sessionID: "session-4",
+      id: "call-code-mode-4",
+      input: { command: "cargo test" },
+      result: { content: [{ type: "text", text: "new session output" }] },
+    };
+    const afterInterruptionPending = handlers.get("execute.after")(afterInterruption);
+    const [, newRequest] = child.requests();
+    child.respond(newRequest, "compressed new-session output");
+    await afterInterruptionPending;
+    expect(afterInterruption.result.content).toEqual([
+      { type: "text", text: "compressed new-session output" },
+    ]);
     await dispose();
   });
 });
