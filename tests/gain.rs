@@ -299,7 +299,28 @@ fn gain_retries_when_a_reader_temporarily_blocks_replacement() {
             bridge.exchange(&delivery_request("second", "no_match", None, 100, 100));
         (bridge, acknowledgement)
     });
-    std::thread::sleep(std::time::Duration::from_millis(60));
+    let lock_path = home.path().join(".outrim/gain.lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let probe = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        match probe.try_lock() {
+            Ok(()) => probe.unlock().unwrap(),
+            Err(std::fs::TryLockError::WouldBlock) => break,
+            Err(std::fs::TryLockError::Error(error)) => {
+                panic!("failed to probe gain lock: {error}")
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "bridge never acquired gain lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(130));
     drop(blocker);
 
     let (bridge, acknowledgement) = pending.join().unwrap();
