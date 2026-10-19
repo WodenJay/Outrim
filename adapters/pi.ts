@@ -99,7 +99,9 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       content?.type !== "text" ||
       typeof content.text !== "string"
     ) {
-      const texts = event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []);
+      const texts = event.content.flatMap((part) =>
+        part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+      );
       const text = texts.length ? texts.join("\n") : null;
       bridge.recordObservation(observation, text, text, {
         outcome: "unsupported",
@@ -125,10 +127,15 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       text,
       context.signal,
     );
-    bridge.recordObservation(observation, text, context.signal?.aborted ? text : processed?.text ?? text, {
-      ...processingFacts([processed]),
-      ...(context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}),
-    });
+    bridge.recordObservation(
+      observation,
+      text,
+      context.signal?.aborted ? text : (processed?.text ?? text),
+      {
+        ...processingFacts([processed]),
+        ...(context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}),
+      },
+    );
     if (processed === undefined) {
       bridge.recordDelivery(text, undefined, context.signal);
       return undefined;

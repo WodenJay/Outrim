@@ -84,11 +84,7 @@ type Disposition =
   | "no_match"
   | "failed_open";
 
-export type ObservationOutcome =
-  | Disposition
-  | "unsupported"
-  | "cancelled"
-  | "mixed";
+export type ObservationOutcome = Disposition | "unsupported" | "cancelled" | "mixed";
 
 export interface Candidate {
   rule: string;
@@ -164,8 +160,8 @@ export function processingFacts(
   const reasons = distinct(processed.map((result) => result.reason));
 
   if (processed.length !== results.length) dispositions.add("failed_open");
-  const outcome = dispositions.size > 1 ? "mixed"
-    : dispositions.values().next().value ?? "failed_open";
+  const outcome =
+    dispositions.size > 1 ? "mixed" : (dispositions.values().next().value ?? "failed_open");
 
   return {
     parts: results.map((result) => ({
@@ -176,8 +172,8 @@ export function processingFacts(
       reason: result?.reason ?? (result ? null : "bridge_unavailable"),
     })),
     outcome,
-    appliedRule: rules.length === 1 ? rules[0] ?? null : null,
-    originalPath: paths.length === 1 ? paths[0] ?? null : null,
+    appliedRule: rules.length === 1 ? (rules[0] ?? null) : null,
+    originalPath: paths.length === 1 ? (paths[0] ?? null) : null,
     candidates: processed.flatMap((result) => result.candidates),
     reason: reasons.length === 0 ? null : reasons.join("; "),
   };
@@ -243,7 +239,9 @@ export function createBridge(
   // Snapshot once when the host loads, including across bridge restarts.
   let recording = false;
   try {
-    recording = JSON.parse(readFileSync(join(homedir(), ".outrim", "recording.json"), "utf8")).recording === true;
+    recording =
+      JSON.parse(readFileSync(join(homedir(), ".outrim", "recording.json"), "utf8")).recording ===
+      true;
   } catch {
     // Missing or unreadable settings fail closed for content retention.
   }
@@ -346,7 +344,8 @@ export function createBridge(
             text: response.text,
             disposition: response.disposition as Disposition,
             appliedRule: response.applied_rule,
-            originalPath: typeof response.original_path === "string" ? response.original_path : null,
+            originalPath:
+              typeof response.original_path === "string" ? response.original_path : null,
             candidates: Array.isArray(response.candidates) ? response.candidates : [],
             reason: typeof response.reason === "string" ? response.reason : null,
           });
