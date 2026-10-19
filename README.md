@@ -73,9 +73,10 @@ file paths are protected first. Known log sources retain exactly the last ten
 lines, preserving their original line endings. Unknown-source valid JSON gets a
 whitespace-compacted JSON candidate; TOON is also considered only when there are
 no duplicate object keys and every number token is an integer in the exact range
-`[-9007199254740991, 9007199254740991]` other than `-0`. Decimals, exponents,
-and other integer values use compact JSON only. TOON must decode to the same JSON
-value. Search results and unknown non-JSON text remain unchanged. No content-wide
+`[-9007199254740991, 9007199254740991]` other than `-0`. Decimal and exponent
+forms and other integer values use compact JSON when the JSON parser accepts them;
+otherwise the input remains unchanged. TOON must decode to the same JSON value.
+Search results and unknown non-JSON text remain unchanged. No content-wide
 JSON guessing can bypass source protection. The shortest candidate including the
 full hint is used only when it is strictly shorter than the original.
 
