@@ -40,11 +40,17 @@ fn source_and_configuration_are_protected_before_compression() {
         assert!(response.applied_rule.is_none());
         assert!(response.original_path.is_none());
     }
-    let mut input = request(&long_text, Source::Unknown);
-    input.tool.input = json!({"path": "src/main.rs"});
-    let response = processor.process(input.clone());
-    assert_eq!(response.disposition, Disposition::Protected);
-    assert_eq!(response.text, input.text);
+    let build_log = log();
+    for (text, source) in [
+        (&long_text, Source::Unknown),
+        (&build_log, Source::BuildLog),
+    ] {
+        let mut input = request(text, source);
+        input.tool.input = json!({"path": "src/main.rs"});
+        let response = processor.process(input.clone());
+        assert_eq!(response.disposition, Disposition::Protected);
+        assert_eq!(response.text, input.text);
+    }
     assert!(!home.path().join(".outrim").exists());
 }
 
@@ -192,6 +198,8 @@ fn generic_fallback_obeys_line_threshold_and_final_hint_length() {
     let response = processor.process(request(&twenty_one, Source::Unknown));
     assert_eq!(response.disposition, Disposition::NotShorter);
     assert_eq!(response.text, twenty_one);
+    assert!(response.original_path.is_none());
+    assert!(response.applied_rule.is_none());
     assert!(response.original_path.is_none());
 }
 
