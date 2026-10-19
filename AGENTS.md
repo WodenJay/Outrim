@@ -7,6 +7,7 @@
 - Never write complex and meaningless test.
 - Keep code clean and intentional with /codebase-design skill; prefer clarity over compatibility. Give each module one reason to change, with a small public interface over a private implementation.
 - Before completing a Rust task, run `cargo fmt --all` and `cargo clippy --all-targets --all-features -- -D warnings`. No warnings should be emitted.
+- Before completing a TypeScript task, run the project's formatter, linter and type-check (`bun check --no-script`) commands. Fix all errors and warnings.
 
 ## Agent skills
 
