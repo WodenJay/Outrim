@@ -49,7 +49,7 @@ currently produced are:
 
 | Disposition | Result |
 | --- | --- |
-| `compressed` | Log tail plus original-output path replaces the input |
+| `compressed` | Selected log/JSON candidate plus original-output path replaces the input |
 | `protected` | Source/configuration is intentionally unchanged |
 | `not_shorter` | Candidate including its hint is not strictly shorter |
 | `no_match` | No currently implemented policy applies |
@@ -72,11 +72,12 @@ Routing is ordered: explicit source/configuration and known source/configuration
 file paths are protected first. Known log sources retain exactly the last ten
 lines, preserving their original line endings. Unknown-source valid JSON gets a
 whitespace-compacted JSON candidate; TOON is also considered only when there are
-no duplicate object keys and every number is an integer in the exact range
-`[-9007199254740991, 9007199254740991]`. TOON must decode to the same JSON value.
-Search results and unknown non-JSON text remain unchanged. No content-wide JSON
-guessing can bypass source protection. The shortest candidate including the full
-hint is used only when it is strictly shorter than the original.
+no duplicate object keys and every number token is an integer in the exact range
+`[-9007199254740991, 9007199254740991]` other than `-0`. Decimals, exponents,
+and other integer values use compact JSON only. TOON must decode to the same JSON
+value. Search results and unknown non-JSON text remain unchanged. No content-wide
+JSON guessing can bypass source protection. The shortest candidate including the
+full hint is used only when it is strictly shorter than the original.
 
 The candidate ends with the fixed hint:
 
@@ -84,9 +85,11 @@ The candidate ends with the fixed hint:
 [outrim]: The full output is available at <absolute path>
 ```
 
-The hint and any added newline count toward the final length. Replacement happens
-only if that final text has strictly fewer Unicode codepoints than the original;
-UTF-8 bytes and UTF-16 code units are not the comparison metric.
+The hint and any added newline count toward the final length. The hint is a
+separate trailing metadata line, not part of the JSON/TOON payload; consumers that
+parse the payload must strip the `\n[outrim]: ...` trailer first. Replacement
+happens only if that final text has strictly fewer Unicode codepoints than the
+original; UTF-8 bytes and UTF-16 code units are not the comparison metric.
 
 Before returning a replacement, the core writes the exact original bytes to a new,
 collision-resistant `.txt` file under the current user's
@@ -122,7 +125,8 @@ as placeholders for later tickets:
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
-| `src/rules.rs` | Source protection and in-memory log/JSON candidates |
+| `src/rules.rs` | Source protection and known-log policy |
+| `src/json.rs` | Lossless JSON compaction and TOON candidate safety |
 | `src/storage.rs` | Host/session layout and non-overwriting original writes |
 | `src/storage/windows.rs` | Native Windows private-directory access control |
 | `tests/processing.rs` | Public single-output behavior and privacy checks |
