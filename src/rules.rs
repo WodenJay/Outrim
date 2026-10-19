@@ -1,5 +1,15 @@
 use crate::protocol::{Source, Tool};
 
+const RETAINED_LINES: usize = 10;
+
+fn line_chunks(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
+}
+
+fn last_lines(lines: &[&str]) -> String {
+    lines[lines.len().saturating_sub(RETAINED_LINES)..].concat()
+}
+
 pub(crate) fn protected(tool: &Tool) -> bool {
     if matches!(tool.source, Source::SourceCode | Source::Configuration) {
         return true;
@@ -52,6 +62,18 @@ pub(crate) fn log_tail(tool: &Tool, text: &str) -> Option<String> {
     ) {
         return None;
     }
-    let lines: Vec<_> = text.split_inclusive('\n').collect();
-    Some(lines[lines.len().saturating_sub(10)..].concat())
+    let lines = line_chunks(text);
+    Some(last_lines(&lines))
+}
+
+pub(crate) fn generic_line_fallback(text: &str) -> Option<String> {
+    let lines = line_chunks(text);
+    if lines.len() < RETAINED_LINES * 2 {
+        return None;
+    }
+    Some(format!(
+        "{}{}",
+        lines[..RETAINED_LINES].concat(),
+        last_lines(&lines[RETAINED_LINES..])
+    ))
 }

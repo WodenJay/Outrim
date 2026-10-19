@@ -1,8 +1,8 @@
 # Outrim
 
-Shared Rust core for tool-output ingress compression. The current slice handles
-known build, test, and runtime logs; host adapters and other compression policies
-are separate implementation tickets.
+Shared Rust core for tool-output ingress compression. The current slice protects
+source/configuration content, keeps tails for known build, test, and runtime logs,
+and applies a head/tail fallback to other eligible long text.
 
 ## Development
 
@@ -44,14 +44,15 @@ Example request (the text is deliberately short and therefore stays unchanged):
 
 A normal response contains `version`, `id`, `text`, `disposition`, `applied_rule`,
 and `original_path`. Only a compressed response has a non-null applied rule
-(`log_tail`) and original path. Dispositions currently produced are:
+(`log_tail` or `generic_line_fallback`) and original path. Dispositions currently
+produced are:
 
 | Disposition | Result |
 | --- | --- |
-| `compressed` | Log tail plus original-output path replaces the input |
+| `compressed` | Log tail or generic head/tail plus original-output path replaces the input |
 | `protected` | Source/configuration is intentionally unchanged |
 | `not_shorter` | Candidate including its hint is not strictly shorter |
-| `no_match` | No currently implemented policy applies |
+| `no_match` | No eligible policy applies, including generic text with fewer than 20 lines |
 | `failed_open` | Unsupported protocol version or necessary storage failure; original text returned |
 
 `recovery_skipped` is reserved for host recovery-input detection. These fields
@@ -68,10 +69,12 @@ normal `failed_open` response with unchanged text.
 ## Policy and originals
 
 Routing is ordered: explicit source/configuration and known source/configuration
-file paths are protected first. Known log sources retain exactly the last ten
-lines, preserving their original line endings. Search and unknown content remain
-unchanged until their policies are implemented. No content-wide JSON guessing
-can bypass source protection.
+file paths are protected first. Known log sources retain the last ten lines,
+preserving their original line endings. After applicable content rules, all other
+non-protected tool outputs (including `search` and `unknown` sources) with at least
+20 lines retain their first and last ten lines; shorter text has no generic match.
+The final candidate, including the path hint, must still be strictly shorter. No
+content-wide JSON guessing can bypass source protection.
 
 The candidate ends with the fixed hint:
 
@@ -117,7 +120,7 @@ as placeholders for later tickets:
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
-| `src/rules.rs` | Source protection and pure in-memory log policy |
+| `src/rules.rs` | Source protection and pure in-memory text policies |
 | `src/storage.rs` | Host/session layout and non-overwriting original writes |
 | `src/storage/windows.rs` | Native Windows private-directory access control |
 | `tests/processing.rs` | Public single-output behavior and privacy checks |

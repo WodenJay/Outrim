@@ -26,22 +26,31 @@ fn log() -> String {
 }
 
 #[test]
-fn source_and_configuration_are_protected_before_log_routing() {
+fn source_and_configuration_are_protected_before_compression() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
+    let long_text = (1..=24)
+        .map(|line| format!("content {line}: {}\n", "🦀".repeat(30)))
+        .collect::<String>();
     for source in [Source::SourceCode, Source::Configuration] {
-        let input = request(&log(), source);
+        let input = request(&long_text, source);
         let response = processor.process(input.clone());
         assert_eq!(response.disposition, Disposition::Protected);
         assert_eq!(response.text, input.text);
         assert!(response.applied_rule.is_none());
         assert!(response.original_path.is_none());
     }
-    let mut input = request(&log(), Source::BuildLog);
-    input.tool.input = json!({"path": "src/main.rs"});
-    let response = processor.process(input.clone());
-    assert_eq!(response.disposition, Disposition::Protected);
-    assert_eq!(response.text, input.text);
+    let build_log = log();
+    for (text, source) in [
+        (&long_text, Source::Unknown),
+        (&build_log, Source::BuildLog),
+    ] {
+        let mut input = request(text, source);
+        input.tool.input = json!({"path": "src/main.rs"});
+        let response = processor.process(input.clone());
+        assert_eq!(response.disposition, Disposition::Protected);
+        assert_eq!(response.text, input.text);
+    }
     assert!(!home.path().join(".outrim").exists());
 }
 
@@ -107,7 +116,7 @@ fn final_hint_counts_and_unicode_codepoints_must_be_strictly_shorter() {
 }
 
 #[test]
-fn short_logs_and_unimplemented_sources_pass_through() {
+fn short_logs_and_subthreshold_unknown_content_pass_through() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
     for text in ["", "one line", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"] {
@@ -121,6 +130,77 @@ fn short_logs_and_unimplemented_sources_pass_through() {
         assert_eq!(response.text, log());
     }
     assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn generic_fallback_keeps_head_and_tail_and_restores_original() {
+    let home = tempfile::tempdir().unwrap();
+    let lines: Vec<_> = (1..=24)
+        .map(|line| {
+            let content = match line % 4 {
+                0 => "warning: retrying build",
+                1 => "status=ready",
+                2 => "{\"kind\":\"event\"}",
+                _ => "ordinary mixed text",
+            };
+            let ending = if line == 24 { "" } else { "\n" };
+            format!("row {line}: {content} {} 🦀{ending}", "日志".repeat(30))
+        })
+        .collect();
+    let text = lines.concat();
+    let retained = format!("{}{}", lines[..10].concat(), lines[14..].concat());
+    let separator = if retained.ends_with('\n') { "" } else { "\n" };
+    let processor = Processor::new(home.path());
+
+    for source in [Source::Unknown, Source::Search] {
+        let response = processor.process(request(&text, source));
+        assert_eq!(response.disposition, Disposition::Compressed);
+        assert_eq!(
+            response.applied_rule.as_deref(),
+            Some("generic_line_fallback")
+        );
+        let path = response.original_path.unwrap();
+        assert!(Path::new(&path).is_absolute());
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(
+            response.text,
+            format!("{retained}{separator}[outrim]: The full output is available at {path}")
+        );
+    }
+}
+
+#[test]
+fn generic_fallback_obeys_line_threshold_and_final_hint_length() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+
+    let nineteen = (1..=19)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let response = processor.process(request(&nineteen, Source::Unknown));
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, nineteen);
+
+    let twenty = (1..=20)
+        .map(|line| format!("line {line}: {}", "🦀".repeat(40)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let response = processor.process(request(&twenty, Source::Unknown));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, twenty);
+    assert!(response.original_path.is_none());
+
+    let twenty_one = (1..=21)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let response = processor.process(request(&twenty_one, Source::Unknown));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, twenty_one);
+    assert!(response.original_path.is_none());
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
 }
 
 #[test]
@@ -220,7 +300,10 @@ fn originals_and_their_directories_grant_access_only_to_the_owner() {
 #[test]
 fn logs_keep_last_ten_lines_and_recover_exact_input() {
     let home = tempfile::tempdir().unwrap();
-    let text = log();
+    let numbered_lines = (1..=23)
+        .map(|line| format!("{line:02}\n"))
+        .collect::<String>();
+    let text = format!("{}\n{numbered_lines}", "old output ".repeat(200));
     let response = Processor::new(home.path()).process(request(&text, Source::TestLog));
     assert_eq!(response.disposition, Disposition::Compressed);
     assert_eq!(response.applied_rule.as_deref(), Some("log_tail"));
@@ -230,7 +313,7 @@ fn logs_keep_last_ten_lines_and_recover_exact_input() {
     assert_eq!(
         response.text,
         format!(
-            "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n[outrim]: The full output is available at {path}"
+            "14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n[outrim]: The full output is available at {path}"
         )
     );
 }
