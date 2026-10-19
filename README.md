@@ -1,8 +1,8 @@
 # Outrim
 
 Shared Rust core for tool-output ingress compression. The current slice handles
-known build, test, and runtime logs, plus valid JSON from unknown sources; host
-adapters and other compression policies are separate implementation tickets.
+known build, test, and runtime logs, plus applicable JSON from unknown sources;
+host adapters and other compression policies are separate implementation tickets.
 
 ## Development
 
