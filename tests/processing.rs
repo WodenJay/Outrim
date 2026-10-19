@@ -218,12 +218,27 @@ fn originals_and_their_directories_grant_access_only_to_the_owner() {
 }
 
 #[test]
-fn search_candidates_with_no_total_gain_return_the_original() {
+fn search_candidate_losing_gain_to_hint_returns_original() {
     let home = tempfile::tempdir().unwrap();
     let path = "short.rs";
     let text = format!("{path}:1:hit\n{path}:2:hit\n{path}:3:hit\n{path}:4:hit\n{path}:5:hit\n");
     let compact = "short.rs:\n  1:hit\n  2:hit\n  3:hit\n  4:hit\n  5:hit\n";
     assert!(compact.chars().count() < text.chars().count());
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
+fn search_candidates_with_no_formatting_savings_return_original() {
+    let home = tempfile::tempdir().unwrap();
+    let content = "x".repeat(64);
+    let text = format!("a.rs:1:{content}\na.rs:2:{content}\n");
+    let candidate = format!("a.rs:\n  1:{content}\n  2:{content}\n");
+    assert_eq!(candidate.chars().count(), text.chars().count());
 
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
     assert_eq!(response.disposition, Disposition::NotShorter);
@@ -248,6 +263,18 @@ fn search_output_with_context_records_is_left_unchanged() {
 }
 
 #[test]
+fn search_records_with_ambiguous_numeric_colons_are_not_grouped() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "C:12345678901234567890:5:hit\nC:12345678901234567890:6:hit\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
 fn logs_keep_last_ten_lines_and_recover_exact_input() {
     let home = tempfile::tempdir().unwrap();
     let text = log();
@@ -261,6 +288,30 @@ fn logs_keep_last_ten_lines_and_recover_exact_input() {
         response.text,
         format!(
             "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n[outrim]: The full output is available at {path}"
+        )
+    );
+}
+
+#[test]
+fn location_lists_group_repeated_paths_without_losing_line_numbers() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!(
+        "workspace/{}/src/module.rs",
+        "long-location-component/".repeat(6)
+    );
+    let text = format!("{file}:8\n{file}:21\n{file}:34\n{file}:55\n");
+    let mut input = request(&text, Source::Search);
+    input.tool.input = json!({"path": "src/module.rs"});
+    let response = Processor::new(home.path()).process(input);
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("search_paths"));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{file}:\n  8:\n  21:\n  34:\n  55:\n[outrim]: The full output is available at {original_path}"
         )
     );
 }

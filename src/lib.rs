@@ -37,7 +37,8 @@ impl Processor {
             response.disposition = Disposition::Protected;
             return response;
         }
-        let Some((rule, rewritten)) = rules::rewrite(&request.tool, &response.text) else {
+        let Some((rule, rewritten)) = rules::compress_candidate(&request.tool, &response.text)
+        else {
             return response;
         };
         if rewritten.chars().count() >= response.text.chars().count() {

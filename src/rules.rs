@@ -1,5 +1,4 @@
 use crate::protocol::{Source, Tool};
-use std::collections::HashSet;
 
 pub(crate) fn protected(tool: &Tool) -> bool {
     if matches!(tool.source, Source::SourceCode | Source::Configuration) {
@@ -50,60 +49,55 @@ pub(crate) fn protected(tool: &Tool) -> bool {
     })
 }
 
-pub(crate) fn rewrite(tool: &Tool, text: &str) -> Option<(&'static str, String)> {
+pub(crate) fn compress_candidate(tool: &Tool, text: &str) -> Option<(&'static str, String)> {
     match tool.source {
         Source::BuildLog | Source::TestLog | Source::RuntimeLog => {
             let lines: Vec<_> = text.split_inclusive('\n').collect();
             Some(("log_tail", lines[lines.len().saturating_sub(10)..].concat()))
         }
-        Source::Search => search_paths(text).map(|text| ("search_paths", text)),
+        Source::Search => group_search_results(text).map(|text| ("search_paths", text)),
         _ => None,
     }
 }
 
 struct SearchHit<'a> {
     path: &'a str,
-    line: &'a str,
+    line_number: &'a str,
     content: &'a str,
     terminated: bool,
 }
 
-fn search_paths(text: &str) -> Option<String> {
+fn group_search_results(text: &str) -> Option<String> {
     let hits: Vec<_> = text
         .split_inclusive('\n')
         .map(parse_search_hit)
         .collect::<Option<_>>()?;
-    if hits.len() < 2 {
+    if !hits.windows(2).any(|pair| pair[0].path == pair[1].path) {
         return None;
     }
 
-    let mut seen = HashSet::new();
-    if !hits.iter().any(|hit| !seen.insert(hit.path)) {
-        return None;
-    }
-
-    let mut compact = String::with_capacity(text.len());
+    let mut grouped = String::with_capacity(text.len());
     let mut previous_path = None;
     for hit in hits {
         if previous_path != Some(hit.path) {
-            compact.push_str(hit.path);
-            compact.push_str(":\n");
+            grouped.push_str(hit.path);
+            grouped.push_str(":\n");
             previous_path = Some(hit.path);
         }
-        compact.push_str("  ");
-        compact.push_str(hit.line);
-        compact.push(':');
-        compact.push_str(hit.content);
+        grouped.push_str("  ");
+        grouped.push_str(hit.line_number);
+        grouped.push(':');
+        grouped.push_str(hit.content);
         if hit.terminated {
-            compact.push('\n');
+            grouped.push('\n');
         }
     }
-    Some(compact)
+    Some(grouped)
 }
 
 fn parse_search_hit(record: &str) -> Option<SearchHit<'_>> {
     let (record, terminated) = match record.strip_suffix('\n') {
-        Some(record) => (record, true),
+        Some(record) => (record.strip_suffix('\r').unwrap_or(record), true),
         None => (record, false),
     };
 
@@ -112,30 +106,45 @@ fn parse_search_hit(record: &str) -> Option<SearchHit<'_>> {
             continue;
         }
         let number_start = separator + 1;
-        let number_end = record[number_start..]
-            .find(|character: char| !character.is_ascii_digit())
-            .map_or(record.len(), |offset| number_start + offset);
-        if number_end == number_start || record.as_bytes().get(number_end) != Some(&b':') {
+        let Some(number_end) = digit_run_end(record, number_start) else {
+            continue;
+        };
+        let has_content = record.as_bytes().get(number_end) == Some(&b':');
+        if number_end != record.len() && !has_content {
             continue;
         }
 
         let path = &record[..separator];
-        let line = &record[number_start..number_end];
-        let content = &record[number_end + 1..];
+        let line_number = &record[number_start..number_end];
+        let content = if has_content {
+            &record[number_end + 1..]
+        } else {
+            ""
+        };
         if !valid_search_path(path)
-            || line.parse::<u64>().ok().is_none_or(|line| line == 0)
-            || contains_location_separator(content)
+            || line_number
+                .parse::<u64>()
+                .ok()
+                .is_none_or(|line_number| line_number == 0)
+            || (has_content && contains_location_separator(&record[number_end..]))
         {
             return None;
         }
         return Some(SearchHit {
             path,
-            line,
+            line_number,
             content,
             terminated,
         });
     }
     None
+}
+
+fn digit_run_end(text: &str, start: usize) -> Option<usize> {
+    let end = text[start..]
+        .find(|character: char| !character.is_ascii_digit())
+        .map_or(text.len(), |offset| start + offset);
+    (end > start).then_some(end)
 }
 
 fn valid_search_path(path: &str) -> bool {
@@ -151,13 +160,8 @@ fn valid_search_path(path: &str) -> bool {
 
 fn contains_location_separator(text: &str) -> bool {
     text.char_indices().any(|(separator, character)| {
-        if character != ':' {
-            return false;
-        }
-        let number_start = separator + 1;
-        let number_end = text[number_start..]
-            .find(|character: char| !character.is_ascii_digit())
-            .map_or(text.len(), |offset| number_start + offset);
-        number_end > number_start && text.as_bytes().get(number_end) == Some(&b':')
+        character == ':'
+            && digit_run_end(text, separator + 1)
+                .is_some_and(|number_end| text.as_bytes().get(number_end) == Some(&b':'))
     })
 }

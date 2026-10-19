@@ -1,8 +1,8 @@
 # Outrim
 
 Shared Rust core for tool-output ingress compression. The current slice handles
-known build, test, and runtime logs; host adapters and other compression policies
-are separate implementation tickets.
+known build, test, and runtime logs plus path/line search results; host adapters
+and remaining compression policies are separate implementation tickets.
 
 ## Development
 
@@ -44,11 +44,11 @@ Example request (the text is deliberately short and therefore stays unchanged):
 
 A normal response contains `version`, `id`, `text`, `disposition`, `applied_rule`,
 and `original_path`. Only a compressed response has a non-null applied rule
-(`log_tail`) and original path. Dispositions currently produced are:
+(`log_tail` or `search_paths`) and original path. Dispositions currently produced are:
 
 | Disposition | Result |
 | --- | --- |
-| `compressed` | Log tail plus original-output path replaces the input |
+| `compressed` | Log tail or grouped search paths plus original-output path replaces the input |
 | `protected` | Source/configuration is intentionally unchanged |
 | `not_shorter` | Candidate including its hint is not strictly shorter |
 | `no_match` | No currently implemented policy applies |
@@ -68,9 +68,12 @@ normal `failed_open` response with unchanged text.
 ## Policy and originals
 
 Routing is ordered: explicit source/configuration and known source/configuration
-file paths are protected first. Known log sources retain exactly the last ten
-lines, preserving their original line endings. Search and unknown content remain
-unchanged until their policies are implemented. No content-wide JSON guessing
+file outputs are protected first. Known log sources retain exactly the last ten
+lines, preserving their original line endings. Search results in `path:line:content`
+or `path:line` form are grouped by consecutive path while retaining every hit and
+line number. Search input paths describe the query scope, not returned source-file
+contents. Context, heading, mixed, or otherwise unrecognized search output remains
+unchanged. Unknown content also remains unchanged. No content-wide JSON guessing
 can bypass source protection.
 
 The candidate ends with the fixed hint:
@@ -117,7 +120,7 @@ as placeholders for later tickets:
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
-| `src/rules.rs` | Source protection and pure in-memory log policy |
+| `src/rules.rs` | Source protection and pure in-memory content policies |
 | `src/storage.rs` | Host/session layout and non-overwriting original writes |
 | `src/storage/windows.rs` | Native Windows private-directory access control |
 | `tests/processing.rs` | Public single-output behavior and privacy checks |
