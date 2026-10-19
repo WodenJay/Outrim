@@ -55,3 +55,15 @@ pub(crate) fn log_tail(tool: &Tool, text: &str) -> Option<String> {
     let lines: Vec<_> = text.split_inclusive('\n').collect();
     Some(lines[lines.len().saturating_sub(10)..].concat())
 }
+
+pub(crate) fn generic_line_fallback(text: &str) -> Option<String> {
+    let lines: Vec<_> = text.split_inclusive('\n').collect();
+    if lines.len() < 20 {
+        return None;
+    }
+    Some(format!(
+        "{}{}",
+        lines[..10].concat(),
+        lines[lines.len() - 10..].concat()
+    ))
+}
