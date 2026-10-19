@@ -2,6 +2,7 @@
 //! not an independently configurable original-output directory.
 
 pub mod bridge;
+mod protection;
 pub mod protocol;
 mod rules;
 mod search;
@@ -34,7 +35,7 @@ impl Processor {
             response.disposition = Disposition::FailedOpen;
             return response;
         }
-        if rules::protected(&request.tool) {
+        if protection::protected(&request.tool) {
             response.disposition = Disposition::Protected;
             return response;
         }

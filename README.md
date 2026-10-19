@@ -124,7 +124,8 @@ as placeholders for later tickets:
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
-| `src/rules.rs` | Source protection and policy selection |
+| `src/protection.rs` | Source content protection |
+| `src/rules.rs` | Content policy selection and applied-rule mapping |
 | `src/search.rs` | Search-hit parsing and path grouping |
 | `src/storage.rs` | Host/session layout and non-overwriting original writes |
 | `src/storage/windows.rs` | Native Windows private-directory access control |
