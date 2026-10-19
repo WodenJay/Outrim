@@ -60,49 +60,41 @@ interface PiOptions {
 }
 
 const TEST_COMMANDS = [
-  /\bcargo\s+test\b/i,
-  /\b(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+(?:test|run\s+test))\b/i,
-  /\b(?:pytest|go\s+test|jest|vitest)\b/i,
+  /^\s*cargo\s+test\b/i,
+  /^\s*(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+(?:test|run\s+test))\b/i,
+  /^\s*(?:pytest|go\s+test|jest|vitest)\b/i,
 ];
 
 const BUILD_COMMANDS = [
-  /\bcargo\s+(?:build|check|clippy)\b/i,
-  /\b(?:bun|npm|pnpm|yarn)\s+(?:build|run\s+build)\b/i,
-  /\b(?:go\s+build|tsc|vite\s+build|cmake\s+--build|make)\b/i,
+  /^\s*cargo\s+(?:build|check|clippy)\b/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:build|run\s+build)\b/i,
+  /^\s*(?:go\s+build|tsc|vite\s+build|cmake\s+--build|make)\b/i,
 ];
 
 const RUNTIME_COMMANDS = [
-  /\bcargo\s+run\b/i,
-  /\b(?:bun|npm|pnpm|yarn)\s+(?:start|run\s+(?:dev|start))\b/i,
-  /\b(?:node|python(?:3(?:\.\d+)?)?|go)\s+(?:\S+|$)/i,
+  /^\s*cargo\s+run\b/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:start|run\s+(?:dev|start))\b/i,
+  /^\s*(?:node|python(?:3(?:\.\d+)?)?|go)\s+(?:\S+|$)/i,
 ];
 
-function stringsIn(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value)) return value.flatMap(stringsIn);
-  if (value !== null && typeof value === "object") {
-    return Object.values(value).flatMap(stringsIn);
-  }
-  return [];
-}
-
-function matchesAny(patterns: RegExp[], values: string[]): boolean {
-  return values.some((value) => patterns.some((pattern) => pattern.test(value)));
+function matchesAny(patterns: RegExp[], command: string): boolean {
+  return patterns.some((pattern) => pattern.test(command));
 }
 
 function sourceFor(toolName: string, input: Record<string, unknown>): Source {
   if (["find", "grep", "ls"].includes(toolName)) return "search";
   if (toolName !== "bash" && toolName !== "powershell") return "unknown";
-  const values = stringsIn(input);
-  if (matchesAny(TEST_COMMANDS, values)) return "test_log";
-  if (matchesAny(BUILD_COMMANDS, values)) return "build_log";
-  if (matchesAny(RUNTIME_COMMANDS, values)) return "runtime_log";
+  const command = input.command;
+  if (typeof command !== "string") return "unknown";
+  if (matchesAny(TEST_COMMANDS, command)) return "test_log";
+  if (matchesAny(BUILD_COMMANDS, command)) return "build_log";
+  if (matchesAny(RUNTIME_COMMANDS, command)) return "runtime_log";
   return "unknown";
 }
 
-function exitCodeFrom(details: unknown): number | null {
-  if (details === null || typeof details !== "object") return null;
-  const value = (details as Record<string, unknown>).exitCode;
+function exitCodeFrom(structuredContent: unknown): number | null {
+  if (structuredContent === null || typeof structuredContent !== "object") return null;
+  const value = (structuredContent as Record<string, unknown>).exit_code;
   return typeof value === "number" && Number.isInteger(value) &&
       value >= -2_147_483_648 && value <= 2_147_483_647
     ? value
@@ -138,7 +130,7 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
         name: event.toolName,
         input: event.input,
         source: sourceFor(event.toolName, event.input),
-        exit_code: exitCodeFrom(event.details),
+        exit_code: exitCodeFrom(event.structuredContent),
       },
       text,
       context.signal,

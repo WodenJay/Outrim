@@ -71,7 +71,8 @@ function toolEvent(overrides = {}) {
     toolCallId: "call-1",
     input: { command: "cargo test" },
     content: [{ type: "text", text: "original output" }],
-    details: { exitCode: 1 },
+    details: {},
+    structuredContent: { exit_code: 1 },
     isError: true,
     usage: { input: 4, output: 5 },
     ...overrides,
@@ -92,7 +93,7 @@ describe("Pi result adapter", () => {
     const third = handle(
       toolEvent({
         toolCallId: "call-3",
-        input: { command: "echo done" },
+        input: { command: 'echo "vitest"' },
         content: [{ type: "text", text: "cargo test output stays unknown" }],
       }),
     );
@@ -123,7 +124,8 @@ describe("Pi result adapter", () => {
     expect(firstResult.content[0].text).toBe("compressed first");
     expect(secondResult.content[0].text).toBe("compressed second");
     expect(thirdResult).toBeUndefined();
-    expect(firstResult.details).toEqual({ exitCode: 1 });
+    expect(firstResult.details).toEqual({});
+    expect(firstResult.structuredContent).toEqual({ exit_code: 1 });
     expect(firstResult.isError).toBe(true);
     expect(firstResult.usage).toEqual({ input: 4, output: 5 });
   });
