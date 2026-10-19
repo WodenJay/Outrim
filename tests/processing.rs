@@ -218,12 +218,12 @@ fn originals_and_their_directories_grant_access_only_to_the_owner() {
 }
 
 #[test]
-fn search_candidate_losing_gain_to_hint_returns_original() {
+fn search_candidate_that_loses_ingress_savings_to_hint_keeps_original_output() {
     let home = tempfile::tempdir().unwrap();
     let path = "short.rs";
     let text = format!("{path}:1:hit\n{path}:2:hit\n{path}:3:hit\n{path}:4:hit\n{path}:5:hit\n");
-    let compact = "short.rs:\n  1:hit\n  2:hit\n  3:hit\n  4:hit\n  5:hit\n";
-    assert!(compact.chars().count() < text.chars().count());
+    let grouped = "short.rs:\n  1:hit\n  2:hit\n  3:hit\n  4:hit\n  5:hit\n";
+    assert!(grouped.chars().count() < text.chars().count());
 
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
     assert_eq!(response.disposition, Disposition::NotShorter);
@@ -233,12 +233,12 @@ fn search_candidate_losing_gain_to_hint_returns_original() {
 }
 
 #[test]
-fn search_candidates_with_no_formatting_savings_return_original() {
+fn search_candidate_without_ingress_savings_keeps_original_output() {
     let home = tempfile::tempdir().unwrap();
     let content = "x".repeat(64);
     let text = format!("a.rs:1:{content}\na.rs:2:{content}\n");
-    let candidate = format!("a.rs:\n  1:{content}\n  2:{content}\n");
-    assert_eq!(candidate.chars().count(), text.chars().count());
+    let grouped = format!("a.rs:\n  1:{content}\n  2:{content}\n");
+    assert_eq!(grouped.chars().count(), text.chars().count());
 
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
     assert_eq!(response.disposition, Disposition::NotShorter);
@@ -263,6 +263,38 @@ fn search_output_with_context_records_is_left_unchanged() {
 }
 
 #[test]
+fn prose_prefixes_are_not_mistaken_for_search_paths() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "note a.rs:12:hello\nnote a.rs:13:world\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn path_only_search_output_is_left_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "src/main.rs\nsrc/lib.rs\nsrc/main.rs\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn numeric_text_is_not_mistaken_for_a_search_path() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "3:12:fails\n3:13:fails\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
 fn search_records_with_ambiguous_numeric_colons_are_not_grouped() {
     let home = tempfile::tempdir().unwrap();
     let text = "C:12345678901234567890:5:hit\nC:12345678901234567890:6:hit\n";
@@ -272,6 +304,78 @@ fn search_records_with_ambiguous_numeric_colons_are_not_grouped() {
     assert_eq!(response.text, text);
     assert!(response.applied_rule.is_none());
     assert!(response.original_path.is_none());
+}
+
+#[test]
+fn drive_relative_paths_are_not_mistaken_for_line_number_records() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "C:12:hit\nC:13:hit\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn repeated_text_remains_tied_to_each_file_and_position() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!(
+        "workspace/{}/duplicate.rs",
+        "long-component-name/".repeat(8)
+    );
+    let other = "workspace/another/deeply/nested/module.rs";
+    let mut text = format!("{file}:12:3:same match\n{other}:9:7:same match\n");
+    for (line, column) in [(21, 4), (35, 6), (47, 8), (60, 2), (72, 9)] {
+        text.push_str(&format!("{file}:{line}:{column}:same match\n"));
+    }
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
+    assert!(response.text.contains(&format!(
+        "{file}:\n  12:3:same match\n  21:4:same match\n  35:6:same match\n  47:8:same match\n  60:2:same match\n  72:9:same match\n"
+    )));
+    assert!(
+        response
+            .text
+            .contains(&format!("{other}:\n  9:7:same match\n"))
+    );
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
+}
+
+#[test]
+fn grouping_separates_an_unterminated_hit_moved_before_another_group() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!(
+        "workspace/{}/duplicate.rs",
+        "long-component-name/".repeat(8)
+    );
+    let text = format!("{file}:12:first hit\nother.rs:3:other hit\n{file}:21:last hit");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert!(response.text.contains(&format!(
+        "{file}:\n  12:first hit\n  21:last hit\nother.rs:\n  3:other hit\n"
+    )));
+}
+
+#[test]
+fn search_grouping_preserves_crlf_record_endings() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/module.rs", "long-component-name/".repeat(12));
+    let text =
+        format!("{file}:12:match\r\n{file}:47:match\r\n{file}:81:match\r\n{file}:96:match\r\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert!(
+        response
+            .text
+            .contains(&format!("{file}:\r\n  12:match\r\n  47:match\r\n"))
+    );
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
 }
 
 #[test]
@@ -305,7 +409,7 @@ fn location_lists_group_repeated_paths_without_losing_line_numbers() {
     let response = Processor::new(home.path()).process(input);
 
     assert_eq!(response.disposition, Disposition::Compressed);
-    assert_eq!(response.applied_rule.as_deref(), Some("search_paths"));
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
     let original_path = response.original_path.unwrap();
     assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
     assert_eq!(
@@ -333,7 +437,7 @@ fn search_results_group_repeated_paths_without_losing_hits_or_positions() {
     let response = processor.process(input);
 
     assert_eq!(response.disposition, Disposition::Compressed);
-    assert_eq!(response.applied_rule.as_deref(), Some("search_paths"));
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
     assert!(response.text.chars().count() < text.chars().count());
     let original_path = response.original_path.unwrap();
     assert_eq!(fs::read_to_string(&original_path).unwrap(), text);

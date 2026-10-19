@@ -49,119 +49,34 @@ pub(crate) fn protected(tool: &Tool) -> bool {
     })
 }
 
-pub(crate) fn compress_candidate(tool: &Tool, text: &str) -> Option<(&'static str, String)> {
+#[derive(Clone, Copy)]
+pub(crate) enum AppliedRule {
+    LogTail,
+    SearchHitGroups,
+}
+
+impl AppliedRule {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::LogTail => "log_tail",
+            Self::SearchHitGroups => "search_hit_groups",
+        }
+    }
+}
+
+pub(crate) fn compress_candidate(tool: &Tool, text: &str) -> Option<(AppliedRule, String)> {
     match tool.source {
         Source::BuildLog | Source::TestLog | Source::RuntimeLog => {
-            let lines: Vec<_> = text.split_inclusive('\n').collect();
-            Some(("log_tail", lines[lines.len().saturating_sub(10)..].concat()))
+            Some((AppliedRule::LogTail, log_tail(text)))
         }
-        Source::Search => group_search_results(text).map(|text| ("search_paths", text)),
+        Source::Search => {
+            crate::search::group_search_hits(text).map(|text| (AppliedRule::SearchHitGroups, text))
+        }
         _ => None,
     }
 }
 
-struct SearchHit<'a> {
-    path: &'a str,
-    line_number: &'a str,
-    content: &'a str,
-    terminated: bool,
-}
-
-fn group_search_results(text: &str) -> Option<String> {
-    let hits: Vec<_> = text
-        .split_inclusive('\n')
-        .map(parse_search_hit)
-        .collect::<Option<_>>()?;
-    if !hits.windows(2).any(|pair| pair[0].path == pair[1].path) {
-        return None;
-    }
-
-    let mut grouped = String::with_capacity(text.len());
-    let mut previous_path = None;
-    for hit in hits {
-        if previous_path != Some(hit.path) {
-            grouped.push_str(hit.path);
-            grouped.push_str(":\n");
-            previous_path = Some(hit.path);
-        }
-        grouped.push_str("  ");
-        grouped.push_str(hit.line_number);
-        grouped.push(':');
-        grouped.push_str(hit.content);
-        if hit.terminated {
-            grouped.push('\n');
-        }
-    }
-    Some(grouped)
-}
-
-fn parse_search_hit(record: &str) -> Option<SearchHit<'_>> {
-    let (record, terminated) = match record.strip_suffix('\n') {
-        Some(record) => (record.strip_suffix('\r').unwrap_or(record), true),
-        None => (record, false),
-    };
-
-    for (separator, character) in record.char_indices() {
-        if character != ':' {
-            continue;
-        }
-        let number_start = separator + 1;
-        let Some(number_end) = digit_run_end(record, number_start) else {
-            continue;
-        };
-        let has_content = record.as_bytes().get(number_end) == Some(&b':');
-        if number_end != record.len() && !has_content {
-            continue;
-        }
-
-        let path = &record[..separator];
-        let line_number = &record[number_start..number_end];
-        let content = if has_content {
-            &record[number_end + 1..]
-        } else {
-            ""
-        };
-        if !valid_search_path(path)
-            || line_number
-                .parse::<u64>()
-                .ok()
-                .is_none_or(|line_number| line_number == 0)
-            || (has_content && contains_location_separator(&record[number_end..]))
-        {
-            return None;
-        }
-        return Some(SearchHit {
-            path,
-            line_number,
-            content,
-            terminated,
-        });
-    }
-    None
-}
-
-fn digit_run_end(text: &str, start: usize) -> Option<usize> {
-    let end = text[start..]
-        .find(|character: char| !character.is_ascii_digit())
-        .map_or(text.len(), |offset| start + offset);
-    (end > start).then_some(end)
-}
-
-fn valid_search_path(path: &str) -> bool {
-    if path.is_empty() || path.chars().any(char::is_control) {
-        return false;
-    }
-    match path.find(':') {
-        None => true,
-        Some(1) if path.as_bytes()[0].is_ascii_alphabetic() => !path[2..].contains(':'),
-        Some(_) => false,
-    }
-}
-
-fn contains_location_separator(text: &str) -> bool {
-    text.char_indices().any(|(separator, character)| {
-        character == ':'
-            && digit_run_end(text, separator + 1)
-                .is_some_and(|number_end| text.as_bytes().get(number_end) == Some(&b':'))
-    })
+fn log_tail(text: &str) -> String {
+    let lines: Vec<_> = text.split_inclusive('\n').collect();
+    lines[lines.len().saturating_sub(10)..].concat()
 }

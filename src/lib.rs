@@ -4,6 +4,7 @@
 pub mod bridge;
 pub mod protocol;
 mod rules;
+mod search;
 mod storage;
 
 use protocol::{Disposition, Request, Response, VERSION};
@@ -64,7 +65,7 @@ impl Processor {
             Ok(Some((text, path))) => {
                 response.text = text;
                 response.original_path = Some(path.to_string_lossy().into_owned());
-                response.applied_rule = Some(rule.into());
+                response.applied_rule = Some(rule.as_str().into());
                 response.disposition = Disposition::Compressed;
             }
             Ok(None) => response.disposition = Disposition::NotShorter,

@@ -1,7 +1,7 @@
 # Outrim
 
 Shared Rust core for tool-output ingress compression. The current slice handles
-known build, test, and runtime logs plus path/line search results; host adapters
+known build, test, and runtime logs plus search hit lists; host adapters
 and remaining compression policies are separate implementation tickets.
 
 ## Development
@@ -44,7 +44,7 @@ Example request (the text is deliberately short and therefore stays unchanged):
 
 A normal response contains `version`, `id`, `text`, `disposition`, `applied_rule`,
 and `original_path`. Only a compressed response has a non-null applied rule
-(`log_tail` or `search_paths`) and original path. Dispositions currently produced are:
+(`log_tail` or `search_hit_groups`) and original path. Dispositions currently produced are:
 
 | Disposition | Result |
 | --- | --- |
@@ -69,12 +69,15 @@ normal `failed_open` response with unchanged text.
 
 Routing is ordered: explicit source/configuration and known source/configuration
 file outputs are protected first. Known log sources retain exactly the last ten
-lines, preserving their original line endings. Search results in `path:line:content`
-or `path:line` form are grouped by consecutive path while retaining every hit and
-line number. Search input paths describe the query scope, not returned source-file
-contents. Context, heading, mixed, or otherwise unrecognized search output remains
-unchanged. Unknown content also remains unchanged. No content-wide JSON guessing
-can bypass source protection.
+lines, preserving their original line endings. Search results in `path:line:content`,
+`path:line`, or `path:line:column:content` form are grouped by path in order of first
+appearance; hits within each group retain their encounter order, content, positions,
+and record line endings. A separator is inserted if grouping moves an unterminated
+record before another group. Search input paths describe the query scope, not
+returned source-file contents. Context, heading, mixed, ambiguous, or otherwise
+unrecognized search output, including path-only lists without hit positions, remains
+unchanged. Unknown content also remains unchanged. No content-wide JSON guessing can
+bypass source protection.
 
 The candidate ends with the fixed hint:
 
@@ -120,7 +123,8 @@ as placeholders for later tickets:
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
-| `src/rules.rs` | Source protection and pure in-memory content policies |
+| `src/rules.rs` | Source protection and policy selection |
+| `src/search.rs` | Search-hit parsing and path grouping |
 | `src/storage.rs` | Host/session layout and non-overwriting original writes |
 | `src/storage/windows.rs` | Native Windows private-directory access control |
 | `tests/processing.rs` | Public single-output behavior and privacy checks |
