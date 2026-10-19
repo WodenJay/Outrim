@@ -11,7 +11,22 @@ fn main() -> ExitCode {
         return run_bridge();
     }
     if matches_command(&arguments, &["gain"]) {
-        return run_gain();
+        return run_gain(&arguments[1..]);
+    }
+    if matches_command(&arguments, &["gain", "record", "on"])
+        || matches_command(&arguments, &["gain", "record", "off"])
+        || matches_command(&arguments, &["gain", "--detail"])
+        || (arguments.len() == 4
+            && matches_command(&arguments[..3], &["gain", "--detail", "--session"]))
+    {
+        return run_gain(&arguments[1..]);
+    }
+    if matches_command(&arguments, &["--help"]) || matches_command(&arguments, &["gain", "--help"])
+    {
+        println!(
+            "outrim gain [--detail [--session <session-id>]]\noutrim gain record on|off\nFull local recording is off by default. On authorizes saving complete tool arguments and texts, which may contain source code, paths and secrets. Restart hosts to apply; running instances keep their startup setting. Off does not delete historical data."
+        );
+        return ExitCode::SUCCESS;
     }
     if matches_command(&arguments, &["install", "--agent", "pi"]) {
         return install_pi();
@@ -148,12 +163,19 @@ fn uninstall_pi() -> ExitCode {
     }
 }
 
-fn run_gain() -> ExitCode {
+fn run_gain(arguments: &[std::ffi::OsString]) -> ExitCode {
     let home = match user_home() {
         Ok(home) => home,
         Err(error) => return fail_with_error(error),
     };
-    match outrim::gain::render(&home) {
+    let report = if arguments.first().is_some_and(|arg| arg == "record") {
+        outrim::gain::set_recording(&home, arguments[1] == "on")
+    } else if arguments.first().is_some_and(|arg| arg == "--detail") {
+        outrim::gain::render_detail(&home, arguments.get(2).and_then(|s| s.to_str()))
+    } else {
+        outrim::gain::render(&home)
+    };
+    match report {
         Ok(report) => {
             print!("{report}");
             ExitCode::SUCCESS

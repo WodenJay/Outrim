@@ -45,6 +45,48 @@ impl Bridge {
     }
 }
 
+fn gain_command(home: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_outrim"))
+        .arg("gain")
+        .args(args)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn recording_is_explicit_persistent_and_detail_is_read_only() {
+    let home = tempfile::tempdir().unwrap();
+    let detail = gain_command(home.path(), &["--detail"]);
+    assert!(detail.status.success());
+    let report = String::from_utf8(detail.stdout).unwrap();
+    assert!(report.contains("off"));
+    assert!(report.contains("No recorded sessions"));
+    assert!(!home.path().join(".outrim").exists());
+
+    let enabled = gain_command(home.path(), &["record", "on"]);
+    assert!(enabled.status.success());
+    let notice = String::from_utf8(enabled.stdout).unwrap();
+    assert!(notice.contains("Restart"));
+    assert!(notice.contains("secrets"));
+    let detail = gain_command(home.path(), &["--detail"]);
+    assert!(String::from_utf8(detail.stdout).unwrap().contains("on"));
+    assert!(
+        gain_command(home.path(), &["record", "off"])
+            .status
+            .success()
+    );
+    let detail = gain_command(home.path(), &["--detail"]);
+    assert!(String::from_utf8(detail.stdout).unwrap().contains("off"));
+    assert!(!gain_command(home.path(), &["record"]).status.success());
+    assert!(
+        !gain_command(home.path(), &["record", "metadata"])
+            .status
+            .success()
+    );
+}
+
 fn tool_request(id: &str, text: &str) -> Value {
     json!({
         "version": 1,

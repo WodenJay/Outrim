@@ -174,6 +174,48 @@ fn valid_delivery(delivery: &RecordDeliveryRequest) -> bool {
     }
 }
 
+pub fn set_recording(home: &Path, enabled: bool) -> io::Result<String> {
+    let directory = home.join(".outrim");
+    storage::private_directory(&directory)?;
+    let mut file = NamedTempFile::new_in(&directory)?;
+    serde_json::to_writer(&mut file, &serde_json::json!({ "recording": enabled }))?;
+    file.write_all(b"\n")?;
+    file.as_file().sync_all()?;
+    let path = directory.join("recording.json");
+    #[cfg(windows)]
+    persist_tempfile_with_retry(file, &path)?;
+    #[cfg(not(windows))]
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(format!(
+        "Full local recording is {}. Restart hosts to apply; running instances keep their startup setting. Historical data is not deleted.\nFull content includes tool arguments, source code, paths and secrets.\n",
+        if enabled { "on" } else { "off" }
+    ))
+}
+
+pub(crate) fn recording_enabled(home: &Path) -> io::Result<bool> {
+    #[derive(Deserialize)]
+    struct Settings {
+        recording: bool,
+    }
+    match fs::read(home.join(".outrim/recording.json")) {
+        Ok(bytes) => Ok(serde_json::from_slice::<Settings>(&bytes)?.recording),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn render_detail(home: &Path, _session: Option<&str>) -> io::Result<String> {
+    Ok(format!(
+        "Outrim Gain · Local records\nSaved recording setting: {}\nRestart hosts to apply; running instances keep their startup setting.\nData directory: {}\nNo recorded sessions.\n",
+        if recording_enabled(home)? {
+            "on"
+        } else {
+            "off"
+        },
+        home.join(".outrim/records").display()
+    ))
+}
+
 pub fn render(home: &Path) -> io::Result<String> {
     Ok(render_stats(&Store::new(home).read_for_render()?))
 }
