@@ -37,14 +37,14 @@ impl Processor {
             response.disposition = Disposition::Protected;
             return response;
         }
-        let (rule, summary) = if let Some(tail) = rules::log_tail(&request.tool, &response.text) {
+        let (rule, retained) = if let Some(tail) = rules::log_tail(&request.tool, &response.text) {
             ("log_tail", tail)
-        } else if let Some(summary) = rules::generic_line_fallback(&response.text) {
-            ("generic_line_fallback", summary)
+        } else if let Some(retained) = rules::generic_line_fallback(&response.text) {
+            ("generic_line_fallback", retained)
         } else {
             return response;
         };
-        if summary.chars().count() >= response.text.chars().count() {
+        if retained.chars().count() >= response.text.chars().count() {
             response.disposition = Disposition::NotShorter;
             return response;
         }
@@ -54,9 +54,9 @@ impl Processor {
                 .path()
                 .to_str()
                 .ok_or_else(|| std::io::Error::other("non-Unicode original path"))?;
-            let separator = if summary.ends_with('\n') { "" } else { "\n" };
+            let separator = if retained.ends_with('\n') { "" } else { "\n" };
             let candidate =
-                format!("{summary}{separator}[outrim]: The full output is available at {path}");
+                format!("{retained}{separator}[outrim]: The full output is available at {path}");
             if candidate.chars().count() >= response.text.chars().count() {
                 return Ok(None);
             }

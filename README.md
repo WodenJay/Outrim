@@ -70,10 +70,11 @@ normal `failed_open` response with unchanged text.
 
 Routing is ordered: explicit source/configuration and known source/configuration
 file paths are protected first. Known log sources retain the last ten lines,
-preserving their original line endings. Other eligible text with at least 20 lines
-retains its first and last ten lines; shorter text has no generic match. The final
-candidate, including the path hint, must still be strictly shorter. No content-wide
-JSON guessing can bypass source protection.
+preserving their original line endings. After applicable content rules, all other
+non-protected tool outputs (including `search` and `unknown` sources) with at least
+20 lines retain their first and last ten lines; shorter text has no generic match.
+The final candidate, including the path hint, must still be strictly shorter. No
+content-wide JSON guessing can bypass source protection.
 
 The candidate ends with the fixed hint:
 

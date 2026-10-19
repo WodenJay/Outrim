@@ -26,11 +26,14 @@ fn log() -> String {
 }
 
 #[test]
-fn source_and_configuration_are_protected_before_log_routing() {
+fn source_and_configuration_are_protected_before_compression() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
+    let long_text = (1..=24)
+        .map(|line| format!("content {line}: {}\n", "🦀".repeat(30)))
+        .collect::<String>();
     for source in [Source::SourceCode, Source::Configuration] {
-        let input = request(&log(), source);
+        let input = request(&long_text, source);
         let response = processor.process(input.clone());
         assert_eq!(response.disposition, Disposition::Protected);
         assert_eq!(response.text, input.text);
@@ -127,66 +130,69 @@ fn short_logs_and_short_unknown_content_pass_through() {
 fn generic_fallback_keeps_head_and_tail_and_restores_original() {
     let home = tempfile::tempdir().unwrap();
     let lines: Vec<_> = (1..=24)
-        .map(|line| format!("row {line}: {} 🦀\n", "日志".repeat(30)))
+        .map(|line| {
+            let content = match line % 4 {
+                0 => "warning: retrying build",
+                1 => "status=ready",
+                2 => "{\"kind\":\"event\"}",
+                _ => "ordinary mixed text",
+            };
+            let ending = if line == 24 { "" } else { "\n" };
+            format!("row {line}: {content} {} 🦀{ending}", "日志".repeat(30))
+        })
         .collect();
     let text = lines.concat();
     let retained = format!("{}{}", lines[..10].concat(), lines[14..].concat());
-    let response = Processor::new(home.path()).process(request(&text, Source::Unknown));
+    let separator = if retained.ends_with('\n') { "" } else { "\n" };
+    let processor = Processor::new(home.path());
 
-    assert_eq!(response.disposition, Disposition::Compressed);
-    assert_eq!(
-        response.applied_rule.as_deref(),
-        Some("generic_line_fallback")
-    );
-    let path = response.original_path.unwrap();
-    assert!(Path::new(&path).is_absolute());
-    assert_eq!(fs::read_to_string(&path).unwrap(), text);
-    assert_eq!(
-        response.text,
-        format!("{retained}[outrim]: The full output is available at {path}")
-    );
+    for source in [Source::Unknown, Source::Search] {
+        let response = processor.process(request(&text, source));
+        assert_eq!(response.disposition, Disposition::Compressed);
+        assert_eq!(
+            response.applied_rule.as_deref(),
+            Some("generic_line_fallback")
+        );
+        let path = response.original_path.unwrap();
+        assert!(Path::new(&path).is_absolute());
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(
+            response.text,
+            format!("{retained}{separator}[outrim]: The full output is available at {path}")
+        );
+    }
 }
 
 #[test]
-fn generic_fallback_observes_line_and_unicode_length_boundaries() {
+fn generic_fallback_obeys_line_threshold_and_final_hint_length() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
 
     let nineteen = (1..=19)
-        .map(|line| format!("line {line}\n"))
-        .collect::<String>();
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let response = processor.process(request(&nineteen, Source::Unknown));
     assert_eq!(response.disposition, Disposition::NoMatch);
     assert_eq!(response.text, nineteen);
 
     let twenty = (1..=20)
-        .map(|line| format!("line {line}: {}\n", "🦀".repeat(40)))
-        .collect::<String>();
+        .map(|line| format!("line {line}: {}", "🦀".repeat(40)))
+        .collect::<Vec<_>>()
+        .join("\n");
     let response = processor.process(request(&twenty, Source::Unknown));
     assert_eq!(response.disposition, Disposition::NotShorter);
     assert_eq!(response.text, twenty);
     assert!(response.original_path.is_none());
 
-    let head = (1..=10)
-        .map(|line| format!("head {line}: {}\n", "🦀".repeat(40)))
-        .collect::<String>();
-    let tail = (11..=20)
-        .map(|line| format!("tail {line}: {}\n", "🦀".repeat(40)))
-        .collect::<String>();
-    let retained = format!("{head}{tail}");
-    let probe_text = format!("{head}{}\n{tail}", "🦀".repeat(200));
-    let probe = processor.process(request(&probe_text, Source::Unknown));
-    assert_eq!(probe.disposition, Disposition::Compressed);
-    let omitted_length = probe.text.chars().count() - retained.chars().count();
-    let equal_text = format!("{head}{}\n{tail}", "🦀".repeat(omitted_length - 1));
-    let equal = processor.process(request(&equal_text, Source::Unknown));
-    assert_eq!(equal.disposition, Disposition::NotShorter);
-    assert_eq!(equal.text, equal_text);
-
-    let longer_text = format!("{head}{}\n{tail}", "🦀".repeat(omitted_length));
-    let longer = processor.process(request(&longer_text, Source::Unknown));
-    assert_eq!(longer.disposition, Disposition::Compressed);
-    assert_eq!(longer_text.chars().count(), longer.text.chars().count() + 1);
+    let twenty_one = (1..=21)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let response = processor.process(request(&twenty_one, Source::Unknown));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, twenty_one);
+    assert!(response.original_path.is_none());
 }
 
 #[test]
