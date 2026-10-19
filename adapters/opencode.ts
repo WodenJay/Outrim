@@ -180,16 +180,7 @@ export async function registerOpenCodePlugin(
     const selection = textSelection(result);
     if (!selection) return;
     if (inputReferencesOriginals(input)) {
-      const beforeChars = selection.texts.reduce(
-        (total, text) => total + Array.from(text).length,
-        0,
-      );
-      bridge.recordDelivery({
-        disposition: "recovery_skipped",
-        appliedRule: null,
-        beforeChars,
-        afterChars: beforeChars,
-      });
+      bridge.recordDelivery(selection.texts, "recovery_skipped");
       return;
     }
 
@@ -218,16 +209,7 @@ export async function registerOpenCodePlugin(
       );
       if (closed || controller.signal.aborted) return;
       selection.texts.forEach((original, index) => {
-        const processed = processedResults[index];
-        bridge.recordDelivery(
-          {
-            disposition: processed?.disposition ?? "failed_open",
-            appliedRule: processed?.appliedRule ?? null,
-            beforeChars: Array.from(original).length,
-            afterChars: Array.from(processed?.text ?? original).length,
-          },
-          controller.signal,
-        );
+        bridge.recordDelivery(original, processedResults[index], controller.signal);
       });
       const replacements = processedResults.map((processed) => processed?.text);
       if (

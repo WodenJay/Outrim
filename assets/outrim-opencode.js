@@ -165,21 +165,24 @@ function createBridge(host, executable, spawnProcess) {
       }
     });
   }
-  function recordDelivery(delivery, signal) {
+  function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
       return;
     const currentChild = child ?? start();
     if (!currentChild)
       return;
+    const texts = typeof original === "string" ? [original] : original;
+    const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
+    const processed = typeof outcome === "object" ? outcome : undefined;
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
       version: 1,
       id,
-      disposition: delivery.disposition,
-      applied_rule: delivery.appliedRule,
-      before_chars: delivery.beforeChars,
-      after_chars: delivery.afterChars
+      disposition: processed?.disposition ?? (outcome === "recovery_skipped" ? outcome : "failed_open"),
+      applied_rule: processed?.appliedRule ?? null,
+      before_chars: beforeChars,
+      after_chars: processed ? Array.from(processed.text).length : beforeChars
     };
     let line;
     try {
@@ -305,13 +308,7 @@ async function registerOpenCodePlugin(context, options = {}) {
     if (!selection)
       return;
     if (inputReferencesOriginals(input)) {
-      const beforeChars = selection.texts.reduce((total, text) => total + Array.from(text).length, 0);
-      bridge.recordDelivery({
-        disposition: "recovery_skipped",
-        appliedRule: null,
-        beforeChars,
-        afterChars: beforeChars
-      });
+      bridge.recordDelivery(selection.texts, "recovery_skipped");
       return;
     }
     const controller = new AbortController;
@@ -331,13 +328,7 @@ async function registerOpenCodePlugin(context, options = {}) {
       if (closed || controller.signal.aborted)
         return;
       selection.texts.forEach((original, index) => {
-        const processed = processedResults[index];
-        bridge.recordDelivery({
-          disposition: processed?.disposition ?? "failed_open",
-          appliedRule: processed?.appliedRule ?? null,
-          beforeChars: Array.from(original).length,
-          afterChars: Array.from(processed?.text ?? original).length
-        }, controller.signal);
+        bridge.recordDelivery(original, processedResults[index], controller.signal);
       });
       const replacements = processedResults.map((processed) => processed?.text);
       if (replacements.some((text, index) => text !== undefined && text !== selection.texts[index])) {

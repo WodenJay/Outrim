@@ -165,21 +165,24 @@ function createBridge(host, executable, spawnProcess) {
       }
     });
   }
-  function recordDelivery(delivery, signal) {
+  function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
       return;
     const currentChild = child ?? start();
     if (!currentChild)
       return;
+    const texts = typeof original === "string" ? [original] : original;
+    const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
+    const processed = typeof outcome === "object" ? outcome : undefined;
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
       version: 1,
       id,
-      disposition: delivery.disposition,
-      applied_rule: delivery.appliedRule,
-      before_chars: delivery.beforeChars,
-      after_chars: delivery.afterChars
+      disposition: processed?.disposition ?? (outcome === "recovery_skipped" ? outcome : "failed_open"),
+      applied_rule: processed?.appliedRule ?? null,
+      before_chars: beforeChars,
+      after_chars: processed ? Array.from(processed.text).length : beforeChars
     };
     let line;
     try {
@@ -238,14 +241,8 @@ function registerPiExtension(pi, options = {}) {
     }
     const original = content;
     const text = original.text;
-    const beforeChars = Array.from(text).length;
     if (inputReferencesOriginals(event.input)) {
-      bridge.recordDelivery({
-        disposition: "recovery_skipped",
-        appliedRule: null,
-        beforeChars,
-        afterChars: beforeChars
-      }, context.signal);
+      bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return;
     }
     const processed = await bridge.process(context.sessionManager.getSessionId(), {
@@ -255,22 +252,12 @@ function registerPiExtension(pi, options = {}) {
       exit_code: exitCodeFrom(event.structuredContent)
     }, text, context.signal);
     if (processed === undefined) {
-      bridge.recordDelivery({
-        disposition: "failed_open",
-        appliedRule: null,
-        beforeChars,
-        afterChars: beforeChars
-      }, context.signal);
+      bridge.recordDelivery(text, undefined, context.signal);
       return;
     }
     if (context.signal?.aborted)
       return;
-    bridge.recordDelivery({
-      disposition: processed.disposition,
-      appliedRule: processed.appliedRule,
-      beforeChars,
-      afterChars: Array.from(processed.text).length
-    }, context.signal);
+    bridge.recordDelivery(text, processed, context.signal);
     if (processed.text === text)
       return;
     return {

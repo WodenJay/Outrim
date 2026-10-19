@@ -94,13 +94,6 @@ export interface ProcessedResult {
   appliedRule: string | null;
 }
 
-export interface DeliveryRecord {
-  disposition: Disposition;
-  appliedRule: string | null;
-  beforeChars: number;
-  afterChars: number;
-}
-
 export interface BridgeChild {
   stdin: {
     write(chunk: string, callback: (error?: Error | null) => void): boolean;
@@ -145,7 +138,11 @@ export function createBridge(
     text: string,
     signal?: AbortSignalLike,
   ): Promise<ProcessedResult | undefined>;
-  recordDelivery(delivery: DeliveryRecord, signal?: AbortSignalLike): void;
+  recordDelivery(
+    original: string | readonly string[],
+    outcome: ProcessedResult | "recovery_skipped" | undefined,
+    signal?: AbortSignalLike,
+  ): void;
   close(): void;
 } {
   let child: BridgeChild | undefined;
@@ -270,20 +267,30 @@ export function createBridge(
     });
   }
 
-  function recordDelivery(delivery: DeliveryRecord, signal?: AbortSignalLike): void {
+  // Called only when the host adopts the result. An absent outcome records fail-open;
+  // recovery may cover several text parts, but remains one unchanged delivery.
+  function recordDelivery(
+    original: string | readonly string[],
+    outcome: ProcessedResult | "recovery_skipped" | undefined,
+    signal?: AbortSignalLike,
+  ): void {
     if (closed || signal?.aborted) return;
     const currentChild = child ?? start();
     if (!currentChild) return;
 
+    const texts = typeof original === "string" ? [original] : original;
+    const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
+    const processed = typeof outcome === "object" ? outcome : undefined;
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
       version: 1,
       id,
-      disposition: delivery.disposition,
-      applied_rule: delivery.appliedRule,
-      before_chars: delivery.beforeChars,
-      after_chars: delivery.afterChars,
+      disposition:
+        processed?.disposition ?? (outcome === "recovery_skipped" ? outcome : "failed_open"),
+      applied_rule: processed?.appliedRule ?? null,
+      before_chars: beforeChars,
+      after_chars: processed ? Array.from(processed.text).length : beforeChars,
     };
     let line: string;
     try {

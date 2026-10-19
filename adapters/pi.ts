@@ -93,17 +93,8 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
 
     const original = content as TextContent;
     const text = original.text;
-    const beforeChars = Array.from(text).length;
     if (inputReferencesOriginals(event.input)) {
-      bridge.recordDelivery(
-        {
-          disposition: "recovery_skipped",
-          appliedRule: null,
-          beforeChars,
-          afterChars: beforeChars,
-        },
-        context.signal,
-      );
+      bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return undefined;
     }
 
@@ -119,28 +110,12 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       context.signal,
     );
     if (processed === undefined) {
-      bridge.recordDelivery(
-        {
-          disposition: "failed_open",
-          appliedRule: null,
-          beforeChars,
-          afterChars: beforeChars,
-        },
-        context.signal,
-      );
+      bridge.recordDelivery(text, undefined, context.signal);
       return undefined;
     }
     if (context.signal?.aborted) return undefined;
 
-    bridge.recordDelivery(
-      {
-        disposition: processed.disposition,
-        appliedRule: processed.appliedRule,
-        beforeChars,
-        afterChars: Array.from(processed.text).length,
-      },
-      context.signal,
-    );
+    bridge.recordDelivery(text, processed, context.signal);
     if (processed.text === text) return undefined;
 
     return {

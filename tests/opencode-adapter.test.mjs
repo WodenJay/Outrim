@@ -418,20 +418,46 @@ describe("OpenCode result adapter", () => {
       id: "call-2",
       input: { command: "cargo build" },
       result: {
-        content: [{ type: "text", text: "log output" }, file],
+        content: [
+          { type: "text", text: "🦀 log output" },
+          file,
+          { type: "text", text: "🙂 unchanged" },
+        ],
         output: structuredOutput,
         metadata: { exit: 0 },
       },
     };
 
     const pending = handlers.get("execute.after")(event);
-    const [request] = child.requests();
-    child.respond(request, "short output");
+    const [request, unchangedRequest] = child.requests();
+    child.respond(request, "🦀 short");
+    child.respond(unchangedRequest, "🙂 unchanged", {
+      disposition: "no_match",
+      applied_rule: null,
+    });
     await pending;
 
-    expect(event.result?.content).toEqual([{ type: "text", text: "short output" }, file]);
+    expect(event.result?.content).toEqual([
+      { type: "text", text: "🦀 short" },
+      file,
+      { type: "text", text: "🙂 unchanged" },
+    ]);
     expect(event.result?.content[1]).toBe(file);
     expect(event.result?.output).toBe(structuredOutput);
+    expect(child.deliveryRequests()).toMatchObject([
+      {
+        disposition: "compressed",
+        applied_rule: "log_tail",
+        before_chars: Array.from("🦀 log output").length,
+        after_chars: Array.from("🦀 short").length,
+      },
+      {
+        disposition: "no_match",
+        applied_rule: null,
+        before_chars: Array.from("🙂 unchanged").length,
+        after_chars: Array.from("🙂 unchanged").length,
+      },
+    ]);
     await dispose();
   });
 
@@ -448,16 +474,24 @@ describe("OpenCode result adapter", () => {
       sessionID: "session-3",
       id: "recover",
       input: { nested: { filePath: "/home/me/.outrim/outputs/opencode/saved.txt" } },
-      result: { content: [{ type: "text", text: "recovered original" }] },
+      result: {
+        content: [
+          { type: "text", text: "🦀 recovered" },
+          { type: "image", data: "retained" },
+          { type: "text", text: "🙂 original" },
+        ],
+      },
     };
     await handlers.get("execute.after")(recovered);
     expect(child.requests()).toHaveLength(0);
-    expect(child.deliveryRequests()[0]).toMatchObject({
-      disposition: "recovery_skipped",
-      applied_rule: null,
-      before_chars: Array.from("recovered original").length,
-      after_chars: Array.from("recovered original").length,
-    });
+    expect(child.deliveryRequests()).toMatchObject([
+      {
+        disposition: "recovery_skipped",
+        applied_rule: null,
+        before_chars: Array.from("🦀 recovered🙂 original").length,
+        after_chars: Array.from("🦀 recovered🙂 original").length,
+      },
+    ]);
 
     const outputMentionsPath = {
       ...recovered,
