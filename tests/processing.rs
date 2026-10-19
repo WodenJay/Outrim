@@ -249,6 +249,18 @@ fn search_candidate_without_ingress_savings_keeps_original_output() {
 }
 
 #[test]
+fn unstructured_search_text_for_a_source_path_is_left_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "fn main() {\n    println!(\"hello\");\n}\n";
+    let mut input = request(text, Source::Search);
+    input.tool.input = json!({"path": "src/main.rs"});
+    let response = Processor::new(home.path()).process(input);
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
 fn search_output_with_context_records_is_left_unchanged() {
     let home = tempfile::tempdir().unwrap();
     let path = "workspace/deeply/nested/source-file.rs";
@@ -294,6 +306,31 @@ fn terminal_blank_records_are_preserved_while_grouping_hits() {
 }
 
 #[test]
+fn whitespace_in_path_prefixes_fails_open() {
+    let home = tempfile::tempdir().unwrap();
+    let path = format!("workspace/{}/a.rs", "deep-component/".repeat(10));
+    let texts = [
+        format!(" {path}:12:hello\n {path}:13:world\n"),
+        format!("12 matches in {path}:12:hello\n12 matches in {path}:13:world\n"),
+    ];
+    for text in texts {
+        let response = Processor::new(home.path()).process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::NoMatch);
+        assert_eq!(response.text, text);
+    }
+}
+
+#[test]
+fn paths_without_repeated_hits_are_left_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "src/main.rs:12:hit\nsrc/lib.rs:21:hit\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
 fn path_only_search_output_is_left_unchanged() {
     let home = tempfile::tempdir().unwrap();
     let text = "src/main.rs\nsrc/lib.rs\nsrc/main.rs\n";
@@ -332,6 +369,17 @@ fn drive_relative_paths_are_not_mistaken_for_line_number_records() {
     let home = tempfile::tempdir().unwrap();
     let text = "C:12:hit\nC:13:hit\n";
     let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn unsupported_extensionless_paths_fail_open_in_mixed_lists() {
+    let home = tempfile::tempdir().unwrap();
+    let path = format!("workspace/{}/module.rs", "long-component-name/".repeat(8));
+    let text = format!("{path}:12:hit\nMakefile:3:hit\n{path}:47:hit\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
 
     assert_eq!(response.disposition, Disposition::NoMatch);
     assert_eq!(response.text, text);
@@ -382,20 +430,18 @@ fn grouping_separates_an_unterminated_hit_moved_before_another_group() {
 }
 
 #[test]
-fn search_grouping_preserves_crlf_record_endings() {
+fn search_grouping_preserves_crlf_record_endings_and_trailing_blank_lines() {
     let home = tempfile::tempdir().unwrap();
     let file = format!("workspace/{}/module.rs", "long-component-name/".repeat(12));
     let text =
-        format!("{file}:12:match\r\n{file}:47:match\r\n{file}:81:match\r\n{file}:96:match\r\n");
+        format!("{file}:12:match\r\n{file}:47:match\r\n{file}:81:match\r\n{file}:96:match\r\n\r\n");
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
 
     assert_eq!(response.disposition, Disposition::Compressed);
-    assert!(
-        response
-            .text
-            .contains(&format!("{file}:\r\n  12:match\r\n  47:match\r\n"))
-    );
     let original_path = response.original_path.unwrap();
+    assert!(response.text.contains(&format!(
+        "{file}:\r\n  12:match\r\n  47:match\r\n  81:match\r\n  96:match\r\n\r\n[outrim]: The full output is available at {original_path}"
+    )));
     assert_eq!(fs::read_to_string(original_path).unwrap(), text);
 }
 
@@ -440,7 +486,7 @@ fn log_source_keeps_log_policy_for_search_shaped_lines() {
 }
 
 #[test]
-fn location_lists_group_repeated_paths_without_losing_line_numbers() {
+fn position_only_search_hits_group_repeated_paths_without_losing_positions() {
     let home = tempfile::tempdir().unwrap();
     let file = format!(
         "workspace/{}/src/module.rs",

@@ -125,11 +125,11 @@ fn digit_run_end(text: &str, start: usize) -> Option<usize> {
 }
 
 fn valid_search_path(path: &str) -> bool {
+    // Separator or extension distinguishes paths from prose and diagnostics.
     let has_directory_separator = path.contains('/') || path.contains('\\');
     let path_like = has_directory_separator || path.contains('.');
-    let unqualified_whitespace = !has_directory_separator && path.chars().any(char::is_whitespace);
-    if path.is_empty() || !path_like || unqualified_whitespace || path.chars().any(char::is_control)
-    {
+    let contains_whitespace = path.chars().any(char::is_whitespace);
+    if path.is_empty() || !path_like || contains_whitespace || path.chars().any(char::is_control) {
         return false;
     }
     !path.contains(':') || is_drive_relative_path(path)

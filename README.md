@@ -69,16 +69,17 @@ normal `failed_open` response with unchanged text.
 
 Routing is ordered: explicit source/configuration and known source/configuration
 file outputs are protected first. Known log sources retain exactly the last ten
-lines, preserving their original line endings. Search results in `path:line:content`,
+lines, preserving their original line endings. Search hits in `path:line:content`,
 `path:line`, or `path:line:column:content` form are grouped by path in order of first
 appearance; hits within each group retain their encounter order, any supplied
 content, positions, and record line endings. A separator is inserted if grouping
 moves an unterminated record before another group. Trailing blank lines are
 retained. Search input paths describe the query scope, not returned source-file
-contents. Context, heading, mixed, ambiguous, or otherwise
-unrecognized search output, including path-only lists without hit positions, remains
-unchanged. Unknown content also remains unchanged. No content-wide JSON guessing can
-bypass source protection.
+contents. The generic parser requires path tokens with a directory separator or dot and no
+whitespace. Lists containing bare paths without hit positions, context or headings,
+mixed records, and ambiguous or otherwise unrecognized search output remain unchanged.
+Unknown content also remains unchanged.
+No content-wide JSON guessing can bypass source protection.
 
 The candidate ends with the fixed hint:
 
