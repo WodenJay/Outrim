@@ -280,6 +280,7 @@ fn mixed_json_uses_a_lossless_compact_candidate_when_final_text_is_shorter() {
 #[test]
 fn repeated_json_records_choose_the_smaller_lossless_toon_candidate() {
     let home = tempfile::tempdir().unwrap();
+    // Repetition makes the table representation beat the fixed path hint.
     let records: Vec<_> = (0..80)
         .map(|id| {
             json!({
@@ -318,6 +319,7 @@ fn numeric_and_escaped_string_boundaries_fall_back_to_exact_compact_json() {
     let home = tempfile::tempdir().unwrap();
     let row = r#"{ "lower": 9007199254740991, "upper": 9007199254740992, "overflow": 18446744073709551616, "decimal": 0.1000000000000000055511151231257827, "negative_zero": -0, "escaped": "line\\n\\t\\\"quoted\\\"\\\\path/🦀" }"#;
     let compact_row = r#"{"lower":9007199254740991,"upper":9007199254740992,"overflow":18446744073709551616,"decimal":0.1000000000000000055511151231257827,"negative_zero":-0,"escaped":"line\\n\\t\\\"quoted\\\"\\\\path/🦀"}"#;
+    // Repeat enough rows for whitespace savings to beat the fixed path hint.
     let rows = vec![row; 40].join(",\n    ");
     let text = format!("{{\n  \"records\": [\n    {rows}\n  ]\n}}");
     let expected = format!("{{\"records\":[{}]}}", vec![compact_row; 40].join(","));
@@ -326,6 +328,8 @@ fn numeric_and_escaped_string_boundaries_fall_back_to_exact_compact_json() {
 
     assert_eq!(response.disposition, Disposition::Compressed);
     assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+    let original_path = response.original_path.as_ref().unwrap();
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
     let (encoded, _) = response
         .text
         .split_once("\n[outrim]: The full output is available at ")
@@ -337,6 +341,7 @@ fn numeric_and_escaped_string_boundaries_fall_back_to_exact_compact_json() {
 fn duplicate_json_keys_are_preserved_by_compact_fallback() {
     let home = tempfile::tempdir().unwrap();
     let row = r#"{ "id": 1, "id": 2, "kind": "same" }"#;
+    // Repeat enough rows for whitespace savings to beat the fixed path hint.
     let rows = vec![row; 80].join(",\n    ");
     let text = format!("{{\n  \"records\": [\n    {rows}\n  ]\n}}");
 
@@ -344,6 +349,8 @@ fn duplicate_json_keys_are_preserved_by_compact_fallback() {
 
     assert_eq!(response.disposition, Disposition::Compressed);
     assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+    let original_path = response.original_path.as_ref().unwrap();
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
     let (encoded, _) = response
         .text
         .split_once("\n[outrim]: The full output is available at ")
