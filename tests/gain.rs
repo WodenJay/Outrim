@@ -182,6 +182,8 @@ fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
     let report = String::from_utf8(detail.stdout).unwrap();
     assert!(report.contains("compressed"));
     assert!(report.contains("host-call"));
+    assert!(report.contains("chars 500 → "));
+    assert!(!report.contains("Some("));
     let mut restarted = Bridge::start(home.path());
     restarted.exchange(&observation);
     restarted.stop();

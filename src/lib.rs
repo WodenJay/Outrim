@@ -130,7 +130,7 @@ impl Processor {
                     );
                     response.candidates[index].final_chars = Some(text.chars().count() as u64);
                     response.candidates[index].reason = if text.chars().count() < original_length {
-                        "longer_candidate".into()
+                        "smaller_or_equal_final_selected".into()
                     } else {
                         "not_shorter_with_hint".into()
                     };

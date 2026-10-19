@@ -234,11 +234,15 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
             .unwrap();
             writeln!(
                 report,
-                "  Outcome: {} · rule {} · chars {:?} → {:?}",
+                "  Outcome: {} · rule {} · chars {} → {}",
                 serde_json::to_value(&event.outcome)?,
                 event.applied_rule.as_deref().unwrap_or("none"),
-                event.before_chars,
-                event.after_chars
+                event
+                    .before_chars
+                    .map_or_else(|| "unknown".into(), |value| value.to_string()),
+                event
+                    .after_chars
+                    .map_or_else(|| "unknown".into(), |value| value.to_string())
             )
             .unwrap();
             if let Some(reason) = &event.reason {
