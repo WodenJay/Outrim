@@ -1,9 +1,16 @@
 use std::collections::HashMap;
 
 pub(crate) fn group_search_hits(text: &str) -> Option<String> {
-    let hits: Vec<_> = text
-        .split_inclusive('\n')
-        .map(parse_search_hit)
+    let records: Vec<_> = text.split_inclusive('\n').collect();
+    let trailing_blank_count = records
+        .iter()
+        .rev()
+        .take_while(|record| matches!(**record, "\n" | "\r\n"))
+        .count();
+    let hit_record_count = records.len() - trailing_blank_count;
+    let hits: Vec<_> = records[..hit_record_count]
+        .iter()
+        .map(|record| parse_search_hit(record))
         .collect::<Option<_>>()?;
     let hit_count = hits.len();
     let mut groups: Vec<SearchGroup<'_>> = Vec::new();
@@ -35,26 +42,21 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
     for group in groups {
         grouped.push_str(group.path);
         grouped.push(':');
-        if group.hits[0].line_ending.is_empty() {
-            grouped.push('\n');
-        } else {
-            grouped.push_str(group.hits[0].line_ending);
-        }
+        grouped.push_str(group.hits[0].line_ending.unwrap_or("\n"));
         for hit in group.hits {
             grouped.push_str("  ");
             grouped.push_str(hit.line_number_text);
-            if hit.suffix_after_line.is_empty() {
-                grouped.push(':');
-            } else {
-                grouped.push_str(hit.suffix_after_line);
-            }
-            if !hit.line_ending.is_empty() {
-                grouped.push_str(hit.line_ending);
-            } else if emitted_hits + 1 < hit_count {
-                grouped.push('\n');
+            grouped.push_str(hit.suffix_after_line);
+            match hit.line_ending {
+                Some(line_ending) => grouped.push_str(line_ending),
+                None if emitted_hits + 1 < hit_count => grouped.push('\n'),
+                None => {}
             }
             emitted_hits += 1;
         }
+    }
+    for record in &records[hit_record_count..] {
+        grouped.push_str(record);
     }
     Some(grouped)
 }
@@ -69,16 +71,16 @@ struct SearchHit<'a> {
     line_number_text: &'a str,
     // Optional column and hit content stay attached to the validated line number.
     suffix_after_line: &'a str,
-    line_ending: &'a str,
+    line_ending: Option<&'a str>,
 }
 
 fn parse_search_hit(record: &str) -> Option<SearchHit<'_>> {
     let (record, line_ending) = match record.strip_suffix('\n') {
         Some(record) => match record.strip_suffix('\r') {
-            Some(record) => (record, "\r\n"),
-            None => (record, "\n"),
+            Some(record) => (record, Some("\r\n")),
+            None => (record, Some("\n")),
         },
-        None => (record, ""),
+        None => (record, None),
     };
 
     let mut hit = None;
@@ -102,7 +104,7 @@ fn parse_search_hit(record: &str) -> Option<SearchHit<'_>> {
         if !valid_search_path(path) || line_number == 0 {
             continue;
         }
-        if is_drive_relative_path(&record[..number_end]) || hit.is_some() {
+        if hit.is_some() {
             return None;
         }
         hit = Some(SearchHit {
@@ -124,8 +126,7 @@ fn digit_run_end(text: &str, start: usize) -> Option<usize> {
 
 fn valid_search_path(path: &str) -> bool {
     let has_directory_separator = path.contains('/') || path.contains('\\');
-    let path_like =
-        has_directory_separator || path.chars().any(char::is_alphabetic) || path.contains('.');
+    let path_like = has_directory_separator || path.contains('.');
     let unqualified_whitespace = !has_directory_separator && path.chars().any(char::is_whitespace);
     if path.is_empty() || !path_like || unqualified_whitespace || path.chars().any(char::is_control)
     {

@@ -238,6 +238,7 @@ fn search_candidate_without_ingress_savings_keeps_original_output() {
     let content = "x".repeat(64);
     let text = format!("a.rs:1:{content}\na.rs:2:{content}\n");
     let grouped = format!("a.rs:\n  1:{content}\n  2:{content}\n");
+    // The header and indentation exactly offset the repeated-path savings.
     assert_eq!(grouped.chars().count(), text.chars().count());
 
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
@@ -265,11 +266,31 @@ fn search_output_with_context_records_is_left_unchanged() {
 #[test]
 fn prose_prefixes_are_not_mistaken_for_search_paths() {
     let home = tempfile::tempdir().unwrap();
-    let text = "note a.rs:12:hello\nnote a.rs:13:world\n";
-    let response = Processor::new(home.path()).process(request(text, Source::Search));
+    for text in [
+        "note a.rs:12:hello\nnote a.rs:13:world\n",
+        "error:12:timeout\nerror:13:timeout\n",
+        "x:y:12:foo\nx:y:13:bar\n",
+        "12 matches in a.rs:3:x\n12 matches in a.rs:4:y\n",
+    ] {
+        let response = Processor::new(home.path()).process(request(text, Source::Search));
+        assert_eq!(response.disposition, Disposition::NoMatch);
+        assert_eq!(response.text, text);
+    }
+}
 
-    assert_eq!(response.disposition, Disposition::NoMatch);
-    assert_eq!(response.text, text);
+#[test]
+fn terminal_blank_records_are_preserved_while_grouping_hits() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/module.rs", "long-component-name/".repeat(8));
+    let text = format!("{file}:12:hit\n{file}:47:hit\n\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    let original_path = response.original_path.unwrap();
+    assert!(response.text.contains(&format!(
+        "{file}:\n  12:hit\n  47:hit\n\n[outrim]: The full output is available at {original_path}"
+    )));
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
 }
 
 #[test]
@@ -397,6 +418,28 @@ fn logs_keep_last_ten_lines_and_recover_exact_input() {
 }
 
 #[test]
+fn log_source_keeps_log_policy_for_search_shaped_lines() {
+    let home = tempfile::tempdir().unwrap();
+    let path = format!("workspace/{}/module.rs", "long-component-name/".repeat(5));
+    let mut text = format!("{}\n", "older log output ".repeat(50));
+    let mut tail = String::new();
+    for line in 1..=10 {
+        let record = format!("{path}:{line}:hit\n");
+        text.push_str(&record);
+        tail.push_str(&record);
+    }
+    let response = Processor::new(home.path()).process(request(&text, Source::TestLog));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("log_tail"));
+    assert!(response.text.starts_with(&tail));
+    assert_eq!(
+        fs::read_to_string(response.original_path.unwrap()).unwrap(),
+        text
+    );
+}
+
+#[test]
 fn location_lists_group_repeated_paths_without_losing_line_numbers() {
     let home = tempfile::tempdir().unwrap();
     let file = format!(
@@ -415,7 +458,7 @@ fn location_lists_group_repeated_paths_without_losing_line_numbers() {
     assert_eq!(
         response.text,
         format!(
-            "{file}:\n  8:\n  21:\n  34:\n  55:\n[outrim]: The full output is available at {original_path}"
+            "{file}:\n  8\n  21\n  34\n  55\n[outrim]: The full output is available at {original_path}"
         )
     );
 }

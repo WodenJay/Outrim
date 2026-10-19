@@ -48,7 +48,7 @@ and `original_path`. Only a compressed response has a non-null applied rule
 
 | Disposition | Result |
 | --- | --- |
-| `compressed` | Log tail or grouped search paths plus original-output path replaces the input |
+| `compressed` | Log tail or grouped search hits plus original-output path replaces the input |
 | `protected` | Source/configuration is intentionally unchanged |
 | `not_shorter` | Candidate including its hint is not strictly shorter |
 | `no_match` | No currently implemented policy applies |
@@ -71,10 +71,11 @@ Routing is ordered: explicit source/configuration and known source/configuration
 file outputs are protected first. Known log sources retain exactly the last ten
 lines, preserving their original line endings. Search results in `path:line:content`,
 `path:line`, or `path:line:column:content` form are grouped by path in order of first
-appearance; hits within each group retain their encounter order, content, positions,
-and record line endings. A separator is inserted if grouping moves an unterminated
-record before another group. Search input paths describe the query scope, not
-returned source-file contents. Context, heading, mixed, ambiguous, or otherwise
+appearance; hits within each group retain their encounter order, any supplied
+content, positions, and record line endings. A separator is inserted if grouping
+moves an unterminated record before another group. Trailing blank lines are
+retained. Search input paths describe the query scope, not returned source-file
+contents. Context, heading, mixed, ambiguous, or otherwise
 unrecognized search output, including path-only lists without hit positions, remains
 unchanged. Unknown content also remains unchanged. No content-wide JSON guessing can
 bypass source protection.
