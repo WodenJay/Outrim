@@ -48,6 +48,7 @@ jobs:
           bun install --frozen-lockfile
           bun run build
           git diff --exit-code -- assets
+          test -z "$(git ls-files --others --exclude-standard -- assets)"
           bun check
           bun run lint
           bun run test
@@ -55,6 +56,14 @@ jobs:
         run: |
           bash -n scripts/install.sh scripts/check-source.sh
           if [ '${{ runner.os }}' = Linux ]; then shellcheck scripts/*.sh; fi
+      - name: Parse PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/install.ps1", [ref]$tokens, [ref]$errors) > $null
+          if ($errors.Count) { $errors; exit 1 }
       - name: Check Rust
         run: |
           cargo fmt --all -- --check

@@ -106,6 +106,20 @@ for (const [os, arch, asset] of [
   });
 }
 
+test("shell installer accepts a trusted local artifact without download or PATH changes", () => {
+  const f = fixture();
+  try {
+    const result = f.run(["--from-file", shellPath(join(f.root, "binary")), "--no-path"]);
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(f.root, ".outrim/bin/outrim"), "utf8")).toBe(f.payload);
+    expect(existsSync(join(f.root, "requests"))).toBe(false);
+    expect(existsSync(join(f.root, ".profile"))).toBe(false);
+    expect(readdirSync(join(f.root, ".outrim"))).toEqual(["bin"]);
+  } finally {
+    f.clean();
+  }
+});
+
 test("unsupported macOS Intel fails before download", () => {
   const f = fixture("Darwin", "x86_64");
   try {
