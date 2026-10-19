@@ -1,11 +1,11 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import {
-  createBridge,
-  inputReferencesOriginals,
   type AbortSignalLike,
   type BridgeChild,
-  sourceFor,
+  createBridge,
+  inputReferencesOriginals,
   type SpawnProcess,
+  sourceFor,
 } from "./shared";
 
 export const OUTRIM_EXTENSION_MARKER = "outrim-managed: pi-extension";
@@ -62,8 +62,10 @@ interface PiOptions {
 function exitCodeFrom(structuredContent: unknown): number | null {
   if (structuredContent === null || typeof structuredContent !== "object") return null;
   const value = (structuredContent as Record<string, unknown>).exit_code;
-  return typeof value === "number" && Number.isInteger(value) &&
-      value >= -2_147_483_648 && value <= 2_147_483_647
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= -2_147_483_648 &&
+    value <= 2_147_483_647
     ? value
     : null;
 }
@@ -79,16 +81,17 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   );
 
   pi.on("tool_result", async (event, context) => {
+    const [content] = event.content;
     if (
       event.parentToolCallId ||
       event.content.length !== 1 ||
-      event.content[0].type !== "text" ||
-      typeof event.content[0].text !== "string"
+      content?.type !== "text" ||
+      typeof content.text !== "string"
     ) {
       return undefined;
     }
 
-    const original = event.content[0] as TextContent;
+    const original = content as TextContent;
     const text = original.text;
     const beforeChars = Array.from(text).length;
     if (inputReferencesOriginals(event.input)) {

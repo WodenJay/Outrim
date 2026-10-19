@@ -1,4 +1,4 @@
-import { registerOpenCodePlugin, type OpenCodePluginContext } from "./opencode";
+import { type OpenCodePluginContext, registerOpenCodePlugin } from "./opencode";
 
 export const OUTRIM_PLUGIN_MARKER = "outrim-managed: opencode-plugin";
 

@@ -1,12 +1,12 @@
+import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "bun:test";
-import opencodePlugin from "../assets/outrim-opencode.js";
 import { registerOpenCodePlugin } from "../adapters/opencode.ts";
+import opencodePlugin from "../assets/outrim-opencode.js";
 
 class FakeChild extends EventEmitter {
   writes = [];
@@ -34,24 +34,29 @@ class FakeChild extends EventEmitter {
   }
 
   requests() {
-    return this.writes.map((line) => JSON.parse(line))
+    return this.writes
+      .map((line) => JSON.parse(line))
       .filter((request) => request.type !== "record_delivery");
   }
 
   deliveryRequests() {
-    return this.writes.map((line) => JSON.parse(line))
+    return this.writes
+      .map((line) => JSON.parse(line))
       .filter((request) => request.type === "record_delivery");
   }
 
   respond(request, text, metadata = {}) {
-    this.stdout.emit("data", `${JSON.stringify({
-      version: 1,
-      id: request.id,
-      text,
-      disposition: "compressed",
-      applied_rule: "log_tail",
-      ...metadata,
-    })}\n`);
+    this.stdout.emit(
+      "data",
+      `${JSON.stringify({
+        version: 1,
+        id: request.id,
+        text,
+        disposition: "compressed",
+        applied_rule: "log_tail",
+        ...metadata,
+      })}\n`,
+    );
   }
 
   exit() {
@@ -80,12 +85,16 @@ function harness(options, subscribe = false) {
   if (subscribe) {
     context.event = {
       subscribe({ signal }) {
-        signal.addEventListener("abort", () => {
-          if (!eventWaiter) return;
-          const resolve = eventWaiter;
-          eventWaiter = undefined;
-          resolve({ done: true });
-        }, { once: true });
+        signal.addEventListener(
+          "abort",
+          () => {
+            if (!eventWaiter) return;
+            const resolve = eventWaiter;
+            eventWaiter = undefined;
+            resolve({ done: true });
+          },
+          { once: true },
+        );
         return {
           [Symbol.asyncIterator]() {
             return this;
@@ -129,19 +138,12 @@ describe("OpenCode result adapter", () => {
     try {
       execFileSync(
         process.execPath,
-        [
-          "build",
-          "adapters/opencode-plugin.ts",
-          "--target=bun",
-          `--outfile=${generatedAsset}`,
-        ],
+        ["build", "adapters/opencode-plugin.ts", "--target=bun", `--outfile=${generatedAsset}`],
         { cwd: projectRoot, stdio: "ignore" },
       );
       const normalizeLineEndings = (text) => text.replace(/\r\n/g, "\n");
       expect(normalizeLineEndings(readFileSync(generatedAsset, "utf8"))).toBe(
-        normalizeLineEndings(
-          readFileSync(join(projectRoot, "assets/outrim-opencode.js"), "utf8"),
-        ),
+        normalizeLineEndings(readFileSync(join(projectRoot, "assets/outrim-opencode.js"), "utf8")),
       );
     } finally {
       rmSync(tempDir, { force: true, recursive: true });
@@ -286,9 +288,7 @@ describe("OpenCode result adapter", () => {
       input: { filePath: "src/main.rs" },
       result: nestedReadResultBeforeExecute,
     };
-    const pendingNestedReadBeforeExecute = handlers.get("execute.after")(
-      nestedReadBeforeExecute,
-    );
+    const pendingNestedReadBeforeExecute = handlers.get("execute.after")(nestedReadBeforeExecute);
     const afterNestedReadBeforeExecute = child.requests();
     for (const request of afterNestedReadBeforeExecute.slice(1)) {
       child.respond(request, "unexpected compression");
@@ -358,13 +358,9 @@ describe("OpenCode result adapter", () => {
     child.respond(requestA, "compressed summary A");
     await pendingA;
 
-    expect(executeEventA.result.content).toEqual([
-      { type: "text", text: "compressed summary A" },
-    ]);
+    expect(executeEventA.result.content).toEqual([{ type: "text", text: "compressed summary A" }]);
     expect(executeEventA.result.output).toBe(outputA);
-    expect(executeEventB.result.content).toEqual([
-      { type: "text", text: "compressed summary B" },
-    ]);
+    expect(executeEventB.result.content).toEqual([{ type: "text", text: "compressed summary B" }]);
     expect(executeEventB.result.output).toBe(outputB);
     await dispose();
   });
@@ -433,10 +429,7 @@ describe("OpenCode result adapter", () => {
     child.respond(request, "short output");
     await pending;
 
-    expect(event.result?.content).toEqual([
-      { type: "text", text: "short output" },
-      file,
-    ]);
+    expect(event.result?.content).toEqual([{ type: "text", text: "short output" }, file]);
     expect(event.result?.content[1]).toBe(file);
     expect(event.result?.output).toBe(structuredOutput);
     await dispose();
@@ -470,7 +463,9 @@ describe("OpenCode result adapter", () => {
       ...recovered,
       id: "normal",
       input: { command: "cargo test" },
-      result: { content: [{ type: "text", text: "large output mentioning ~/.outrim/outputs/file.txt" }] },
+      result: {
+        content: [{ type: "text", text: "large output mentioning ~/.outrim/outputs/file.txt" }],
+      },
     };
     const pending = handlers.get("execute.after")(outputMentionsPath);
     const [request] = child.requests();
@@ -572,10 +567,13 @@ describe("OpenCode result adapter", () => {
 
   it("clears only the interrupted session's Code Mode state", async () => {
     const child = new FakeChild();
-    const { handlers, cleanup, emitEvent } = harness({
-      executable: "outrim-test",
-      spawnProcess: () => child,
-    }, true);
+    const { handlers, cleanup, emitEvent } = harness(
+      {
+        executable: "outrim-test",
+        spawnProcess: () => child,
+      },
+      true,
+    );
     const dispose = await cleanup;
     const codeModeID = "shared-code-mode-call";
     await handlers.get("execute.before")({
@@ -677,10 +675,13 @@ describe("OpenCode result adapter", () => {
 
   it("passes through on session interruption", async () => {
     const child = new FakeChild();
-    const { handlers, cleanup, emitEvent } = harness({
-      executable: "outrim-test",
-      spawnProcess: () => child,
-    }, true);
+    const { handlers, cleanup, emitEvent } = harness(
+      {
+        executable: "outrim-test",
+        spawnProcess: () => child,
+      },
+      true,
+    );
     const dispose = await cleanup;
     await handlers.get("execute.before")({
       tool: "execute",
