@@ -1,5 +1,5 @@
-import { EventEmitter } from "node:events";
 import { describe, expect, it } from "bun:test";
+import { EventEmitter } from "node:events";
 import { registerPiExtension } from "../assets/outrim-pi.js";
 
 class FakeChild extends EventEmitter {
@@ -20,7 +20,7 @@ class FakeChild extends EventEmitter {
         this.stdout.emit("data", `${JSON.stringify({ version: 1, id: request.id })}\n`);
       }
       return true;
-    }
+    };
     this.stdin.end = () => {
       this.ended = true;
     };
@@ -172,7 +172,9 @@ describe("Pi result adapter", () => {
       expect(await handle(toolEvent({ input: { nested: { path } } }))).toBeUndefined();
     }
     expect(children).toHaveLength(1);
-    expect(children[0].requests().filter((request) => request.type === "record_delivery")).toHaveLength(7);
+    expect(
+      children[0].requests().filter((request) => request.type === "record_delivery"),
+    ).toHaveLength(7);
 
     const outputMentionsDirectory = handle(
       toolEvent({
@@ -229,7 +231,9 @@ describe("Pi result adapter", () => {
     child.respond(nextRequest, "next result");
 
     expect((await next).content[0].text).toBe("next result");
-    expect(children[0].requests().filter((request) => request.type === "record_delivery")).toHaveLength(1);
+    expect(
+      children[0].requests().filter((request) => request.type === "record_delivery"),
+    ).toHaveLength(1);
     expect(children).toHaveLength(1);
   });
 

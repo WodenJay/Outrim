@@ -88,11 +88,11 @@ function createBridge(host, executable, spawnProcess) {
         return;
       }
       const response = parsed;
-      if (response.version !== 1 || typeof response.id !== "string" || !pending.has(response.id)) {
+      const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
+      if (response.version !== 1 || !request) {
         fail(failedChild);
         return;
       }
-      const request = pending.get(response.id);
       pending.delete(response.id);
       request.finish(response);
     }
@@ -367,10 +367,11 @@ async function registerOpenCodePlugin(context, options = {}) {
     throw error;
   }
   let eventLoop;
-  if (context.event) {
+  const events = context.event;
+  if (events) {
     eventLoop = (async () => {
       try {
-        for await (const event of context.event.subscribe({ signal: eventController.signal })) {
+        for await (const event of events.subscribe({ signal: eventController.signal })) {
           if (event.type !== "session.deleted" && event.type !== "session.execution.interrupted") {
             continue;
           }

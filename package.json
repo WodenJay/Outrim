@@ -1,0 +1,16 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run scripts/build-bundles.ts",
+    "lint": "biome check adapters tests scripts",
+    "format": "biome check --write adapters tests scripts",
+    "test": "bun test --path-ignore-patterns='target/**'",
+    "verify": "bun check && bun run lint && bun run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
+  }
+}

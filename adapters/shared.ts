@@ -43,20 +43,18 @@ function matchesAny(patterns: RegExp[], command: string): boolean {
   return patterns.some((pattern) => pattern.test(command));
 }
 
-export function sourceFor(
-  host: Host,
-  toolName: string,
-  input: Record<string, unknown>,
-): Source {
+export function sourceFor(host: Host, toolName: string, input: Record<string, unknown>): Source {
   if (
     ["find", "grep", "ls"].includes(toolName) ||
     (host === "opencode" && ["glob", "list"].includes(toolName))
-  ) return "search";
+  )
+    return "search";
   if (
     toolName !== "bash" &&
     toolName !== "powershell" &&
     !(host === "opencode" && toolName === "shell")
-  ) return "unknown";
+  )
+    return "unknown";
   const command = input.command;
   if (typeof command !== "string") return "unknown";
   if (matchesAny(TEST_COMMANDS, command)) return "test_log";
@@ -141,7 +139,12 @@ export function createBridge(
   executable: string,
   spawnProcess: SpawnProcess,
 ): {
-  process(session: string, tool: ToolInput, text: string, signal?: AbortSignalLike): Promise<ProcessedResult | undefined>;
+  process(
+    session: string,
+    tool: ToolInput,
+    text: string,
+    signal?: AbortSignalLike,
+  ): Promise<ProcessedResult | undefined>;
   recordDelivery(delivery: DeliveryRecord, signal?: AbortSignalLike): void;
   close(): void;
 } {
@@ -180,15 +183,11 @@ export function createBridge(
         return;
       }
       const response = parsed as CoreResponse;
-      if (
-        response.version !== 1 ||
-        typeof response.id !== "string" ||
-        !pending.has(response.id)
-      ) {
+      const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
+      if (response.version !== 1 || !request) {
         fail(failedChild);
         return;
       }
-      const request = pending.get(response.id)!;
       pending.delete(response.id);
       request.finish(response);
     }

@@ -24,7 +24,7 @@ function matchesAny(patterns, command) {
 function sourceFor(host, toolName, input) {
   if (["find", "grep", "ls"].includes(toolName) || host === "opencode" && ["glob", "list"].includes(toolName))
     return "search";
-  if (toolName !== "bash" && toolName !== "powershell")
+  if (toolName !== "bash" && toolName !== "powershell" && !(host === "opencode" && toolName === "shell"))
     return "unknown";
   const command = input.command;
   if (typeof command !== "string")
@@ -88,11 +88,11 @@ function createBridge(host, executable, spawnProcess) {
         return;
       }
       const response = parsed;
-      if (response.version !== 1 || typeof response.id !== "string" || !pending.has(response.id)) {
+      const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
+      if (response.version !== 1 || !request) {
         fail(failedChild);
         return;
       }
-      const request = pending.get(response.id);
       pending.delete(response.id);
       request.finish(response);
     }
@@ -232,10 +232,11 @@ var defaultSpawn = (executable, args, options) => nodeSpawn(executable, args, op
 function registerPiExtension(pi, options = {}) {
   const bridge = createBridge("pi", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   pi.on("tool_result", async (event, context) => {
-    if (event.parentToolCallId || event.content.length !== 1 || event.content[0].type !== "text" || typeof event.content[0].text !== "string") {
+    const [content] = event.content;
+    if (event.parentToolCallId || event.content.length !== 1 || content?.type !== "text" || typeof content.text !== "string") {
       return;
     }
-    const original = event.content[0];
+    const original = content;
     const text = original.text;
     const beforeChars = Array.from(text).length;
     if (inputReferencesOriginals(event.input)) {

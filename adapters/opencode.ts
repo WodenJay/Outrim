@@ -1,11 +1,11 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import {
-  createBridge,
-  inputReferencesOriginals,
-  sourceFor,
   type AbortSignalLike,
   type BridgeChild,
+  createBridge,
+  inputReferencesOriginals,
   type SpawnProcess,
+  sourceFor,
 } from "./shared";
 
 const BRIDGE_EXECUTABLE = "__OUTRIM_EXECUTABLE__";
@@ -70,7 +70,7 @@ interface OpenCodeOptions {
 
 interface TextSelection {
   texts: string[];
-  apply(replacements: Array<string | undefined>): ToolResult["content"];
+  apply(replacements: Array<string | undefined>): string | readonly unknown[];
 }
 
 const defaultSpawn: SpawnProcess = (executable, args, options) =>
@@ -78,15 +78,17 @@ const defaultSpawn: SpawnProcess = (executable, args, options) =>
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : undefined;
 }
 
 function exitCodeFrom(metadata: unknown): number | null {
   const value = record(metadata);
   const code = value?.exit;
-  return typeof code === "number" && Number.isInteger(code) &&
-      code >= -2_147_483_648 && code <= 2_147_483_647
+  return typeof code === "number" &&
+    Number.isInteger(code) &&
+    code >= -2_147_483_648 &&
+    code <= 2_147_483_647
     ? code
     : null;
 }
@@ -166,9 +168,11 @@ export async function registerOpenCodePlugin(
       }
     }
     if (
-      closed || event.status !== "completed" ||
+      closed ||
+      event.status !== "completed" ||
       (isCodeModeCall && (event.tool !== "execute" || codeModeDepth > 1))
-    ) return;
+    )
+      return;
     const input = record(event.input);
     const result = event.result;
     if (!input || !result) return;
@@ -254,10 +258,11 @@ export async function registerOpenCodePlugin(
     throw error;
   }
   let eventLoop: Promise<void> | undefined;
-  if (context.event) {
+  const events = context.event;
+  if (events) {
     eventLoop = (async () => {
       try {
-        for await (const event of context.event!.subscribe({ signal: eventController.signal })) {
+        for await (const event of events.subscribe({ signal: eventController.signal })) {
           if (event.type !== "session.deleted" && event.type !== "session.execution.interrupted") {
             continue;
           }
