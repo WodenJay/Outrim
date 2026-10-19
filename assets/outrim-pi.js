@@ -1,7 +1,42 @@
+// @bun
 // adapters/pi.ts
-import { spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn } from "child_process";
 
 // adapters/shared.ts
+var TEST_COMMANDS = [
+  /^\s*cargo\s+test\b/i,
+  /^\s*(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+(?:test|run\s+test))\b/i,
+  /^\s*(?:pytest|go\s+test|jest|vitest)\b/i
+];
+var BUILD_COMMANDS = [
+  /^\s*cargo\s+(?:build|check|clippy)\b/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:build|run\s+build)\b/i,
+  /^\s*(?:go\s+build|tsc|vite\s+build|cmake\s+--build|make)\b/i
+];
+var RUNTIME_COMMANDS = [
+  /^\s*cargo\s+run\b/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:start|run\s+(?:dev|start))\b/i,
+  /^\s*(?:node|python(?:3(?:\.\d+)?)?|go)\s+(?:\S+|$)/i
+];
+function matchesAny(patterns, command) {
+  return patterns.some((pattern) => pattern.test(command));
+}
+function sourceFor(host, toolName, input) {
+  if (["find", "grep", "ls"].includes(toolName) || host === "opencode" && ["glob", "list"].includes(toolName))
+    return "search";
+  if (toolName !== "bash" && toolName !== "powershell")
+    return "unknown";
+  const command = input.command;
+  if (typeof command !== "string")
+    return "unknown";
+  if (matchesAny(TEST_COMMANDS, command))
+    return "test_log";
+  if (matchesAny(BUILD_COMMANDS, command))
+    return "build_log";
+  if (matchesAny(RUNTIME_COMMANDS, command))
+    return "runtime_log";
+  return "unknown";
+}
 function inputReferencesOriginals(value) {
   if (typeof value === "string") {
     const normalized = value.replaceAll("\\", "/");
@@ -146,40 +181,6 @@ function createBridge(host, executable, spawnProcess) {
 // adapters/pi.ts
 var OUTRIM_EXTENSION_MARKER = "outrim-managed: pi-extension";
 var BRIDGE_EXECUTABLE = "__OUTRIM_EXECUTABLE__";
-var TEST_COMMANDS = [
-  /^\s*cargo\s+test\b/i,
-  /^\s*(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+(?:test|run\s+test))\b/i,
-  /^\s*(?:pytest|go\s+test|jest|vitest)\b/i
-];
-var BUILD_COMMANDS = [
-  /^\s*cargo\s+(?:build|check|clippy)\b/i,
-  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:build|run\s+build)\b/i,
-  /^\s*(?:go\s+build|tsc|vite\s+build|cmake\s+--build|make)\b/i
-];
-var RUNTIME_COMMANDS = [
-  /^\s*cargo\s+run\b/i,
-  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:start|run\s+(?:dev|start))\b/i,
-  /^\s*(?:node|python(?:3(?:\.\d+)?)?|go)\s+(?:\S+|$)/i
-];
-function matchesAny(patterns, command) {
-  return patterns.some((pattern) => pattern.test(command));
-}
-function sourceFor(toolName, input) {
-  if (["find", "grep", "ls"].includes(toolName))
-    return "search";
-  if (toolName !== "bash" && toolName !== "powershell")
-    return "unknown";
-  const command = input.command;
-  if (typeof command !== "string")
-    return "unknown";
-  if (matchesAny(TEST_COMMANDS, command))
-    return "test_log";
-  if (matchesAny(BUILD_COMMANDS, command))
-    return "build_log";
-  if (matchesAny(RUNTIME_COMMANDS, command))
-    return "runtime_log";
-  return "unknown";
-}
 function exitCodeFrom(structuredContent) {
   if (structuredContent === null || typeof structuredContent !== "object")
     return null;
@@ -198,7 +199,7 @@ function registerPiExtension(pi, options = {}) {
     const processed = await bridge.process(context.sessionManager.getSessionId(), {
       name: event.toolName,
       input: event.input,
-      source: sourceFor(event.toolName, event.input),
+      source: sourceFor("pi", event.toolName, event.input),
       exit_code: exitCodeFrom(event.structuredContent)
     }, text, context.signal);
     if (processed === undefined || processed === text)

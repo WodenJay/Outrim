@@ -16,8 +16,14 @@ fn main() -> ExitCode {
     if matches_command(&arguments, &["uninstall", "--agent", "pi"]) {
         return uninstall_pi();
     }
+    if matches_command(&arguments, &["install", "--agent", "opencode"]) {
+        return install_opencode();
+    }
+    if matches_command(&arguments, &["uninstall", "--agent", "opencode"]) {
+        return uninstall_opencode();
+    }
     eprintln!(
-        "Usage:\n  outrim bridge\n  outrim install --agent pi\n  outrim uninstall --agent pi"
+        "Usage:\n  outrim bridge\n  outrim install --agent pi\n  outrim uninstall --agent pi\n  outrim install --agent opencode\n  outrim uninstall --agent opencode"
     );
     ExitCode::from(2)
 }
@@ -44,6 +50,55 @@ fn user_home() -> io::Result<PathBuf> {
 fn configured_pi_agent_dir(user_home: &Path) -> PathBuf {
     let configured_dir = std::env::var_os("PI_CODING_AGENT_DIR");
     outrim::install::pi_agent_dir(user_home, configured_dir.as_deref())
+}
+
+fn configured_opencode_config_dir(user_home: &Path) -> PathBuf {
+    let configured_home = std::env::var_os("XDG_CONFIG_HOME");
+    outrim::install::opencode_config_dir(user_home, configured_home.as_deref())
+}
+
+fn install_opencode() -> ExitCode {
+    let home = match user_home() {
+        Ok(home) => home,
+        Err(error) => return fail_with_error(error),
+    };
+    let config_dir = configured_opencode_config_dir(&home);
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => return fail_with_error(error),
+    };
+    match outrim::install::install_opencode_plugin(&config_dir, &executable) {
+        Ok(path) => {
+            println!(
+                "OpenCode integration is ready at {}. Restart OpenCode to activate.",
+                path.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail_with_error(error),
+    }
+}
+
+fn uninstall_opencode() -> ExitCode {
+    let home = match user_home() {
+        Ok(home) => home,
+        Err(error) => return fail_with_error(error),
+    };
+    let config_dir = configured_opencode_config_dir(&home);
+    match outrim::install::uninstall_opencode_plugin(&config_dir) {
+        Ok(Some(path)) => {
+            println!(
+                "Removed OpenCode integration at {}. Restart OpenCode to unload.",
+                path.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(None) => {
+            println!("OpenCode integration is not installed.");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail_with_error(error),
+    }
 }
 
 fn install_pi() -> ExitCode {

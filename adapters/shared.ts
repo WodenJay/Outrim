@@ -21,6 +21,46 @@ export interface ToolInput {
   exit_code: number | null;
 }
 
+const TEST_COMMANDS = [
+  /^\s*cargo\s+test\b/i,
+  /^\s*(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+(?:test|run\s+test))\b/i,
+  /^\s*(?:pytest|go\s+test|jest|vitest)\b/i,
+];
+
+const BUILD_COMMANDS = [
+  /^\s*cargo\s+(?:build|check|clippy)\b/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:build|run\s+build)\b/i,
+  /^\s*(?:go\s+build|tsc|vite\s+build|cmake\s+--build|make)\b/i,
+];
+
+const RUNTIME_COMMANDS = [
+  /^\s*cargo\s+run\b/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:start|run\s+(?:dev|start))\b/i,
+  /^\s*(?:node|python(?:3(?:\.\d+)?)?|go)\s+(?:\S+|$)/i,
+];
+
+function matchesAny(patterns: RegExp[], command: string): boolean {
+  return patterns.some((pattern) => pattern.test(command));
+}
+
+export function sourceFor(
+  host: Host,
+  toolName: string,
+  input: Record<string, unknown>,
+): Source {
+  if (
+    ["find", "grep", "ls"].includes(toolName) ||
+    (host === "opencode" && ["glob", "list"].includes(toolName))
+  ) return "search";
+  if (toolName !== "bash" && toolName !== "powershell") return "unknown";
+  const command = input.command;
+  if (typeof command !== "string") return "unknown";
+  if (matchesAny(TEST_COMMANDS, command)) return "test_log";
+  if (matchesAny(BUILD_COMMANDS, command)) return "build_log";
+  if (matchesAny(RUNTIME_COMMANDS, command)) return "runtime_log";
+  return "unknown";
+}
+
 interface CoreRequest {
   version: 1;
   id: string;
