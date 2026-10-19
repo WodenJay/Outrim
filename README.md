@@ -1,8 +1,8 @@
 # Outrim
 
 Shared Rust core for tool-output ingress compression. The current slice handles
-known build, test, and runtime logs; host adapters and other compression policies
-are separate implementation tickets.
+known build, test, and runtime logs, plus valid JSON from unknown sources; host
+adapters and other compression policies are separate implementation tickets.
 
 ## Development
 
@@ -44,7 +44,8 @@ Example request (the text is deliberately short and therefore stays unchanged):
 
 A normal response contains `version`, `id`, `text`, `disposition`, `applied_rule`,
 and `original_path`. Only a compressed response has a non-null applied rule
-(`log_tail`) and original path. Dispositions currently produced are:
+(`log_tail`, `json_compact`, or `json_toon`) and original path. Dispositions
+currently produced are:
 
 | Disposition | Result |
 | --- | --- |
@@ -69,9 +70,13 @@ normal `failed_open` response with unchanged text.
 
 Routing is ordered: explicit source/configuration and known source/configuration
 file paths are protected first. Known log sources retain exactly the last ten
-lines, preserving their original line endings. Search and unknown content remain
-unchanged until their policies are implemented. No content-wide JSON guessing
-can bypass source protection.
+lines, preserving their original line endings. Unknown-source valid JSON gets a
+whitespace-compacted JSON candidate; TOON is also considered only when there are
+no duplicate object keys and every number is an integer in the exact range
+`[-9007199254740991, 9007199254740991]`. TOON must decode to the same JSON value.
+Search results and unknown non-JSON text remain unchanged. No content-wide JSON
+guessing can bypass source protection. The shortest candidate including the full
+hint is used only when it is strictly shorter than the original.
 
 The candidate ends with the fixed hint:
 
@@ -117,7 +122,7 @@ as placeholders for later tickets:
 | `src/bridge.rs` | Persistent newline-delimited JSON transport |
 | `src/protocol.rs` | Versioned request/response serialization |
 | `src/lib.rs` | Single-output orchestration and final candidate selection |
-| `src/rules.rs` | Source protection and pure in-memory log policy |
+| `src/rules.rs` | Source protection and in-memory log/JSON candidates |
 | `src/storage.rs` | Host/session layout and non-overwriting original writes |
 | `src/storage/windows.rs` | Native Windows private-directory access control |
 | `tests/processing.rs` | Public single-output behavior and privacy checks |
