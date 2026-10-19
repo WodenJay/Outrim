@@ -144,7 +144,7 @@ describe("OpenCode result adapter", () => {
     await dispose();
   });
 
-  it("preserves Code Mode inputs and rewrites only the final model-facing result", async () => {
+  it("preserves Code Mode inputs and rewrites final results across sessions", async () => {
     const child = new FakeChild();
     const { handlers, cleanup } = harness({
       executable: "outrim-test",
@@ -152,32 +152,40 @@ describe("OpenCode result adapter", () => {
     });
     const dispose = await cleanup;
     const id = "code-mode-call";
-    const sessionID = "session-code-mode";
-    await handlers.get("execute.before")({
-      tool: "execute",
-      sessionID,
-      id,
+    const sessionIDs = ["session-code-mode-a", "session-code-mode-b"];
+    for (const sessionID of sessionIDs) {
+      await handlers.get("execute.before")({
+        tool: "execute",
+        sessionID,
+        id,
+      });
+    }
+
+    const nestedEvents = sessionIDs.map((sessionID) => {
+      const nestedResult = {
+        content: [{ type: "text", text: "raw nested result" }],
+        output: { rows: ["raw data for the program"] },
+      };
+      return {
+        status: "completed",
+        tool: "read",
+        sessionID,
+        id,
+        input: { filePath: "src/main.rs" },
+        result: nestedResult,
+      };
     });
+    const nestedPending = nestedEvents.map((event) => handlers.get("execute.after")(event));
+    const nestedRequests = child.requests();
+    for (const request of nestedRequests) child.respond(request, "unexpected compression");
+    await Promise.all(nestedPending);
+    expect(nestedRequests).toHaveLength(0);
+    expect(nestedEvents.map((event) => event.result.content[0].text)).toEqual([
+      "raw nested result",
+      "raw nested result",
+    ]);
 
-    const nestedOutput = { rows: ["raw data for the program"] };
-    const nestedResult = {
-      content: [{ type: "text", text: "raw nested result" }],
-      output: nestedOutput,
-    };
-    const nestedEvent = {
-      status: "completed",
-      tool: "read",
-      sessionID,
-      id,
-      input: { filePath: "src/main.rs" },
-      result: nestedResult,
-    };
-    await handlers.get("execute.after")(nestedEvent);
-    expect(child.requests()).toHaveLength(0);
-    expect(nestedEvent.result).toBe(nestedResult);
-
-    const executeOutput = { output: "program summary", toolCalls: [] };
-    const executeEvent = {
+    const executeEvents = sessionIDs.map((sessionID) => ({
       status: "completed",
       tool: "execute",
       sessionID,
@@ -185,19 +193,28 @@ describe("OpenCode result adapter", () => {
       input: { code: "return await tools.read({ filePath: 'src/main.rs' })" },
       result: {
         content: [{ type: "text", text: "program summary" }],
-        output: executeOutput,
+        output: { output: "program summary", toolCalls: [] },
       },
-    };
-    const pending = handlers.get("execute.after")(executeEvent);
-    const [request] = child.requests();
-    expect(request.text).toBe("program summary");
-    child.respond(request, "compressed summary");
-    await pending;
-
-    expect(executeEvent.result.content).toEqual([
-      { type: "text", text: "compressed summary" },
+    }));
+    const executeOutputs = executeEvents.map((event) => event.result.output);
+    const pending = executeEvents.map((event) => handlers.get("execute.after")(event));
+    const requests = child.requests();
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.text)).toEqual([
+      "program summary",
+      "program summary",
     ]);
-    expect(executeEvent.result.output).toBe(executeOutput);
+    child.respond(requests[1], "compressed summary 2");
+    child.respond(requests[0], "compressed summary 1");
+    await Promise.all(pending);
+
+    expect(executeEvents.map((event) => event.result.content[0].text)).toEqual([
+      "compressed summary 1",
+      "compressed summary 2",
+    ]);
+    executeEvents.forEach((event, index) => {
+      expect(event.result.output).toBe(executeOutputs[index]);
+    });
     await dispose();
   });
 

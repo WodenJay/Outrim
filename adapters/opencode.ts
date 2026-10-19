@@ -144,7 +144,10 @@ export async function registerOpenCodePlugin(
   );
   const activeCallsBySession = new Map<string, Set<AbortController>>();
   // OpenCode v2 Code Mode forwards the wrapper call ID to nested tool hooks.
-  const activeCodeModeCalls = new Map<string, string>();
+  // Key by session too because call IDs need not be unique across sessions.
+  const activeCodeModeCalls = new Set<string>();
+  const codeModeCallKey = (sessionID: string, id: string) =>
+    JSON.stringify([sessionID, id]);
   const eventController = new AbortController();
   let closed = false;
 
@@ -153,8 +156,9 @@ export async function registerOpenCodePlugin(
   }
 
   async function handleResult(event: ToolHookEvent): Promise<void> {
-    const isCodeModeCall = activeCodeModeCalls.get(event.id) === event.sessionID;
-    if (event.tool === "execute") activeCodeModeCalls.delete(event.id);
+    const callKey = codeModeCallKey(event.sessionID, event.id);
+    const isCodeModeCall = activeCodeModeCalls.has(callKey);
+    if (event.tool === "execute") activeCodeModeCalls.delete(callKey);
     if (
       closed || event.status !== "completed" ||
       (isCodeModeCall && event.tool !== "execute")
@@ -202,7 +206,9 @@ export async function registerOpenCodePlugin(
   }
 
   const beforeRegistration = await context.tool.hook("execute.before", (event) => {
-    if (event.tool === "execute") activeCodeModeCalls.set(event.id, event.sessionID);
+    if (event.tool === "execute") {
+      activeCodeModeCalls.add(codeModeCallKey(event.sessionID, event.id));
+    }
   });
   let registration: ToolHookRegistration;
   try {
