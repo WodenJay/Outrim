@@ -119,6 +119,7 @@ fn malformed_request_gets_correlated_error_and_next_request_still_works() {
     let mut child = start(home.path());
     let mut input = child.stdin.take().unwrap();
     writeln!(input, "not json").unwrap();
+    input.write_all(b"\xff\n").unwrap();
     writeln!(input, "{{\"version\":1,\"id\":\"bad-request\"}}").unwrap();
     writeln!(
         input,
@@ -134,13 +135,15 @@ fn malformed_request_gets_correlated_error_and_next_request_still_works() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(lines.len(), 3);
+    assert_eq!(lines.len(), 4);
     assert_eq!(lines[0]["error"], "invalid_json");
     assert_eq!(lines[0]["id"], serde_json::Value::Null);
-    assert_eq!(lines[1]["error"], "invalid_request");
-    assert_eq!(lines[1]["id"], "bad-request");
-    assert_eq!(lines[2]["id"], "good");
-    assert_eq!(lines[2]["disposition"], "compressed");
+    assert_eq!(lines[1]["error"], "invalid_json");
+    assert_eq!(lines[1]["id"], serde_json::Value::Null);
+    assert_eq!(lines[2]["error"], "invalid_request");
+    assert_eq!(lines[2]["id"], "bad-request");
+    assert_eq!(lines[3]["id"], "good");
+    assert_eq!(lines[3]["disposition"], "compressed");
     assert!(!output.stderr.is_empty());
 }
 

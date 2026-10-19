@@ -13,13 +13,13 @@ pub fn run(
     mut output: impl Write,
     mut diagnostics: impl Write,
 ) -> io::Result<()> {
-    for line in input.lines() {
+    for line in input.split(b'\n') {
         let line = line?;
-        let request = match serde_json::from_str::<Request>(&line) {
+        let request = match serde_json::from_slice::<Request>(&line) {
             Ok(request) => request,
             Err(error) => {
                 writeln!(diagnostics, "outrim: invalid request: {error}")?;
-                let value = serde_json::from_str::<serde_json::Value>(&line);
+                let value = serde_json::from_slice::<serde_json::Value>(&line);
                 let id = value
                     .as_ref()
                     .ok()
