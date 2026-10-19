@@ -47,7 +47,10 @@ else
     else
         actual=$(shasum -a 256 "$staging/outrim" | awk '{print $1}')
     fi
-    [ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo "Checksum mismatch for $asset" >&2; exit 1; }
+    if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+        echo "Checksum mismatch for $asset" >&2
+        exit 1
+    fi
 fi
 [ -s "$staging/outrim" ] || { echo "Empty binary" >&2; exit 1; }
 chmod 755 "$staging/outrim"
