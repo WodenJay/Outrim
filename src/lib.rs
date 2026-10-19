@@ -3,11 +3,13 @@
 
 pub mod bridge;
 mod json;
+mod protection;
 pub mod protocol;
 mod rules;
+mod search;
 mod storage;
 
-use protocol::{Disposition, Request, Response, VERSION};
+use protocol::{Disposition, Request, Response, Source, VERSION};
 use std::path::Path;
 
 pub struct Processor {
@@ -34,7 +36,13 @@ impl Processor {
             response.disposition = Disposition::FailedOpen;
             return response;
         }
-        if rules::protected(&request.tool) {
+        // Search paths are query scope only when the output parses as hit records.
+        let search_candidate = if matches!(request.tool.source, Source::Search) {
+            search::group_search_hits(&response.text)
+        } else {
+            None
+        };
+        if protection::protected(&request.tool) && search_candidate.is_none() {
             response.disposition = Disposition::Protected;
             return response;
         }
@@ -42,6 +50,18 @@ impl Processor {
             vec![("log_tail", tail)]
         } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
             json_candidates
+        } else if matches!(request.tool.source, Source::Search) {
+            let mut search_candidates = Vec::new();
+            if let Some(grouped) = search_candidate {
+                search_candidates.push(("search_hit_groups", grouped));
+            }
+            if let Some(retained) = rules::generic_line_fallback(&response.text) {
+                search_candidates.push(("generic_line_fallback", retained));
+            }
+            if search_candidates.is_empty() {
+                return response;
+            }
+            search_candidates
         } else if let Some(retained) = rules::generic_line_fallback(&response.text) {
             vec![("generic_line_fallback", retained)]
         } else {

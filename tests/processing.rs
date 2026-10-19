@@ -476,3 +476,334 @@ fn parser_rejected_multiline_json_does_not_reach_generic_fallback() {
     assert!(response.applied_rule.is_none());
     assert!(response.original_path.is_none());
 }
+
+#[test]
+fn search_candidate_that_loses_ingress_savings_to_hint_keeps_original_output() {
+    let home = tempfile::tempdir().unwrap();
+    let path = "short.rs";
+    let text = format!("{path}:1:hit\n{path}:2:hit\n{path}:3:hit\n{path}:4:hit\n{path}:5:hit\n");
+    let grouped = "short.rs:\n  1:hit\n  2:hit\n  3:hit\n  4:hit\n  5:hit\n";
+    assert!(grouped.chars().count() < text.chars().count());
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
+fn search_candidate_without_ingress_savings_keeps_original_output() {
+    let home = tempfile::tempdir().unwrap();
+    let content = "x".repeat(64);
+    let text = format!("a.rs:1:{content}\na.rs:2:{content}\n");
+    let grouped = format!("a.rs:\n  1:{content}\n  2:{content}\n");
+    // The header and indentation exactly offset the repeated-path savings.
+    assert_eq!(grouped.chars().count(), text.chars().count());
+
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
+fn generic_fallback_remains_available_for_search_lists() {
+    let home = tempfile::tempdir().unwrap();
+    let lines: Vec<_> = (1..=40).map(|line| format!("a.rs:{line}:x\n")).collect();
+    let text = lines.concat();
+    let retained = format!("{}{}", lines[..10].concat(), lines[30..].concat());
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(
+        response.applied_rule.as_deref(),
+        Some("generic_line_fallback")
+    );
+    let original_path = response.original_path.unwrap();
+    assert!(response.text.starts_with(&retained));
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
+}
+
+#[test]
+fn unstructured_search_text_for_a_source_path_remains_protected() {
+    let home = tempfile::tempdir().unwrap();
+    let text = (1..=24)
+        .map(|line| {
+            format!(
+                "fn line_{line}() {{ let text = \"{}\"; }}\n",
+                "x".repeat(100)
+            )
+        })
+        .collect::<String>();
+    let mut input = request(&text, Source::Search);
+    input.tool.input = json!({"path": "src/main.rs"});
+    let response = Processor::new(home.path()).process(input);
+
+    assert_eq!(response.disposition, Disposition::Protected);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn search_output_with_context_records_is_left_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let path = "workspace/deeply/nested/source-file.rs";
+    let text =
+        format!("{path}:12:match\n{path}-13:context\n--\n{path}:14:match\n{path}:15:match\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn prose_prefixes_are_not_mistaken_for_search_paths() {
+    let home = tempfile::tempdir().unwrap();
+    for text in [
+        "note a.rs:12:hello\nnote a.rs:13:world\n",
+        "error:12:timeout\nerror:13:timeout\n",
+        "x:y:12:foo\nx:y:13:bar\n",
+        "12 matches in a.rs:3:x\n12 matches in a.rs:4:y\n",
+    ] {
+        let response = Processor::new(home.path()).process(request(text, Source::Search));
+        assert_eq!(response.disposition, Disposition::NoMatch);
+        assert_eq!(response.text, text);
+    }
+}
+
+#[test]
+fn terminal_blank_records_are_preserved_while_grouping_hits() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/module.rs", "long-component-name/".repeat(8));
+    let text = format!("{file}:12:hit\n{file}:47:hit\n\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    let original_path = response.original_path.unwrap();
+    assert!(response.text.contains(&format!(
+        "{file}:\n  12:hit\n  47:hit\n\n[outrim]: The full output is available at {original_path}"
+    )));
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
+}
+
+#[test]
+fn whitespace_in_path_prefixes_fails_open() {
+    let home = tempfile::tempdir().unwrap();
+    let path = format!("workspace/{}/a.rs", "deep-component/".repeat(10));
+    let texts = [
+        format!(" {path}:12:hello\n {path}:13:world\n"),
+        format!("12 matches in {path}:12:hello\n12 matches in {path}:13:world\n"),
+    ];
+    for text in texts {
+        let response = Processor::new(home.path()).process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::NoMatch);
+        assert_eq!(response.text, text);
+    }
+}
+
+#[test]
+fn paths_without_repeated_hits_are_left_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "src/main.rs:12:hit\nsrc/lib.rs:21:hit\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn path_only_search_output_is_left_unchanged() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "src/main.rs\nsrc/lib.rs\nsrc/main.rs\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn numeric_text_is_not_mistaken_for_a_search_path() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "3:12:fails\n3:13:fails\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
+fn search_records_with_ambiguous_numeric_colons_are_not_grouped() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "C:12345678901234567890:5:hit\nC:12345678901234567890:6:hit\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
+fn drive_relative_paths_are_not_mistaken_for_line_number_records() {
+    let home = tempfile::tempdir().unwrap();
+    let text = "C:12:hit\nC:13:hit\n";
+    let response = Processor::new(home.path()).process(request(text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn unsupported_extensionless_paths_fail_open_in_mixed_lists() {
+    let home = tempfile::tempdir().unwrap();
+    let path = format!("workspace/{}/module.rs", "long-component-name/".repeat(8));
+    let text = format!("{path}:12:hit\nMakefile:3:hit\n{path}:47:hit\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn repeated_text_remains_tied_to_each_file_and_position() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!(
+        "workspace/{}/duplicate.rs",
+        "long-component-name/".repeat(8)
+    );
+    let other = "workspace/another/deeply/nested/module.rs";
+    let mut text = format!("{file}:12:3:same match\n{other}:9:7:same match\n");
+    for (line, column) in [(21, 4), (35, 6), (47, 8), (60, 2), (72, 9)] {
+        text.push_str(&format!("{file}:{line}:{column}:same match\n"));
+    }
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
+    assert!(response.text.contains(&format!(
+        "{file}:\n  12:3:same match\n  21:4:same match\n  35:6:same match\n  47:8:same match\n  60:2:same match\n  72:9:same match\n"
+    )));
+    assert!(
+        response
+            .text
+            .contains(&format!("{other}:\n  9:7:same match\n"))
+    );
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
+}
+
+#[test]
+fn grouping_separates_an_unterminated_hit_moved_before_another_group() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!(
+        "workspace/{}/duplicate.rs",
+        "long-component-name/".repeat(8)
+    );
+    let text = format!("{file}:12:first hit\nother.rs:3:other hit\n{file}:21:last hit");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert!(response.text.contains(&format!(
+        "{file}:\n  12:first hit\n  21:last hit\nother.rs:\n  3:other hit\n"
+    )));
+}
+
+#[test]
+fn search_grouping_preserves_crlf_record_endings_and_trailing_blank_lines() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/module.rs", "long-component-name/".repeat(12));
+    let text =
+        format!("{file}:12:match\r\n{file}:47:match\r\n{file}:81:match\r\n{file}:96:match\r\n\r\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    let original_path = response.original_path.unwrap();
+    assert!(response.text.contains(&format!(
+        "{file}:\r\n  12:match\r\n  47:match\r\n  81:match\r\n  96:match\r\n\r\n[outrim]: The full output is available at {original_path}"
+    )));
+    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
+}
+
+#[test]
+fn log_source_keeps_log_policy_for_search_shaped_lines() {
+    let home = tempfile::tempdir().unwrap();
+    let path = format!("workspace/{}/module.rs", "long-component-name/".repeat(5));
+    let mut text = format!("{}\n", "older log output ".repeat(50));
+    let mut tail = String::new();
+    for line in 1..=10 {
+        let record = format!("{path}:{line}:hit\n");
+        text.push_str(&record);
+        tail.push_str(&record);
+    }
+    let response = Processor::new(home.path()).process(request(&text, Source::TestLog));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("log_tail"));
+    assert!(response.text.starts_with(&tail));
+    assert_eq!(
+        fs::read_to_string(response.original_path.unwrap()).unwrap(),
+        text
+    );
+}
+
+#[test]
+fn position_only_search_hits_group_repeated_paths_without_losing_positions() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!(
+        "workspace/{}/src/module.rs",
+        "long-location-component/".repeat(6)
+    );
+    let text = format!("{file}:8\n{file}:21\n{file}:34\n{file}:55\n");
+    let mut input = request(&text, Source::Search);
+    input.tool.input = json!({"path": "src/module.rs"});
+    let response = Processor::new(home.path()).process(input);
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{file}:\n  8\n  21\n  34\n  55\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn search_results_group_repeated_paths_without_losing_hits_or_positions() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let file = format!(
+        "workspace/{}/src/duplicate.rs",
+        "long-component-name/".repeat(6)
+    );
+    let other = "workspace/another/very/deep/module.rs";
+    let text = format!(
+        "{file}:12:same match\n{file}:47:same match\n{file}:81:same match\n{file}:96:same match\n{other}:9:same match\n"
+    );
+    let mut input = request(&text, Source::Search);
+    input.tool.input = json!({"path": "src/duplicate.rs", "pattern": "same match"});
+    let response = processor.process(input);
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
+    assert!(response.text.chars().count() < text.chars().count());
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{file}:\n  12:same match\n  47:same match\n  81:same match\n  96:same match\n{other}:\n  9:same match\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
