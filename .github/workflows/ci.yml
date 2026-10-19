@@ -69,6 +69,8 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked
+      - name: Check installed hosts against Rust
+        run: bun run test:hosts
       - name: Build release binary
         run: |
           cargo build --release --locked --target '${{ matrix.target }}'
