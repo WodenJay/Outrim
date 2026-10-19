@@ -26,6 +26,9 @@ bun check
 
 ## Pi integration
 
+Verified with stable Pi 1.3.0, including install, compression, recovery read/skip,
+and uninstall smoke tests.
+
 Install the currently running binary for the current user:
 
 ```sh
