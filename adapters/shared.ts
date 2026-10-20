@@ -50,7 +50,7 @@ function matchesAny(patterns: RegExp[], command: string): boolean {
 // Only recognize a single, unambiguous direct invocation. This is deliberately
 // not a shell parser: escapes, expansions and compound syntax stay unknown.
 function isDirectSearch(command: string): boolean {
-  if (!/^\s*(?:rg|grep|git\s+grep)(?=\s|$)/.test(command)) return false;
+  if (!/^[ \t]*(?:rg|grep|git[ \t]+grep)(?=[ \t]|$)/.test(command)) return false;
   let quote: "'" | '"' | undefined;
   for (const char of command) {
     if (quote === "'") {

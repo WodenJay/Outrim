@@ -25,7 +25,7 @@ function matchesAny(patterns, command) {
   return patterns.some((pattern) => pattern.test(command));
 }
 function isDirectSearch(command) {
-  if (!/^\s*(?:rg|grep|git\s+grep)(?=\s|$)/.test(command))
+  if (!/^[ \t]*(?:rg|grep|git[ \t]+grep)(?=[ \t]|$)/.test(command))
     return false;
   let quote;
   for (const char of command) {

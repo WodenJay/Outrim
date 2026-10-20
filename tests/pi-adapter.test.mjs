@@ -112,6 +112,9 @@ describe("Pi result adapter", () => {
   });
   it.each([
     "rg-extra -n hit .",
+    "rg\u00a0-n hit .",
+    "git\u00a0grep hit",
+    "rg\f-n hit .",
     "grep.exe -n hit .",
     "git grepping hit",
     "/usr/bin/rg -n hit .",
