@@ -125,7 +125,7 @@ fn final_hint_counts_and_unicode_codepoints_must_be_strictly_shorter() {
 }
 
 #[test]
-fn short_logs_and_subthreshold_unknown_content_pass_through() {
+fn short_logs_and_unmatched_content_pass_through() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
     for text in ["", "one line", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"] {
@@ -137,67 +137,6 @@ fn short_logs_and_subthreshold_unknown_content_pass_through() {
         let response = processor.process(request(&log(), source));
         assert_eq!(response.disposition, Disposition::NoMatch);
         assert_eq!(response.text, log());
-    }
-    assert!(!home.path().join(".outrim").exists());
-}
-
-#[test]
-fn generic_fallback_keeps_head_and_tail_and_restores_original() {
-    let home = tempfile::tempdir().unwrap();
-    let lines: Vec<_> = (1..=24)
-        .map(|line| {
-            let content = match line % 4 {
-                0 => "warning: retrying build",
-                1 => "status=ready",
-                2 => "{\"kind\":\"event\"}",
-                _ => "ordinary mixed text",
-            };
-            let ending = if line == 24 { "" } else { "\n" };
-            format!("row {line}: {content} {} 🦀{ending}", "日志".repeat(30))
-        })
-        .collect();
-    let text = lines.concat();
-    let retained = format!("{}{}", lines[..10].concat(), lines[14..].concat());
-    let separator = if retained.ends_with('\n') { "" } else { "\n" };
-    let processor = Processor::new(home.path());
-
-    for source in [Source::Unknown, Source::Search] {
-        let response = processor.process(request(&text, source));
-        assert_eq!(response.disposition, Disposition::Compressed);
-        assert_eq!(
-            response.applied_rule.as_deref(),
-            Some("generic_line_fallback")
-        );
-        let path = response.original_path.unwrap();
-        assert!(Path::new(&path).is_absolute());
-        assert_eq!(fs::read_to_string(&path).unwrap(), text);
-        assert_eq!(
-            response.text,
-            format!("{retained}{separator}[outrim]: The full output is available at {path}")
-        );
-    }
-}
-
-#[test]
-fn read_output_is_exempt_from_generic_fallback() {
-    let home = tempfile::tempdir().unwrap();
-    let processor = Processor::new(home.path());
-    let text = (1..=40)
-        .map(|line| format!("paragraph {line}: {}\n", "document content ".repeat(20)))
-        .collect::<String>();
-
-    for host in [Host::Pi, Host::Opencode] {
-        for source in [Source::Unknown, Source::Search] {
-            let mut input = request(&text, source);
-            input.host = host;
-            input.tool.name = "read".into();
-            input.tool.input = json!({"path": "notes.md", "offset": 100, "limit": 40});
-            let response = processor.process(input);
-            assert_eq!(response.disposition, Disposition::NoMatch);
-            assert_eq!(response.text, text);
-            assert!(response.applied_rule.is_none());
-            assert!(response.original_path.is_none());
-        }
     }
     assert!(!home.path().join(".outrim").exists());
 }
@@ -222,40 +161,6 @@ fn read_output_remains_eligible_for_json_compression() {
         let (encoded, _) = response.text.split_once("\n[outrim]:").unwrap();
         assert_eq!(serde_json::from_str::<Value>(encoded).unwrap(), value);
     }
-}
-
-#[test]
-fn generic_fallback_obeys_line_threshold_and_final_hint_length() {
-    let home = tempfile::tempdir().unwrap();
-    let processor = Processor::new(home.path());
-
-    let nineteen = (1..=19)
-        .map(|line| format!("line {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let response = processor.process(request(&nineteen, Source::Unknown));
-    assert_eq!(response.disposition, Disposition::NoMatch);
-    assert_eq!(response.text, nineteen);
-
-    let twenty = (1..=20)
-        .map(|line| format!("line {line}: {}", "🦀".repeat(40)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let response = processor.process(request(&twenty, Source::Unknown));
-    assert_eq!(response.disposition, Disposition::NotShorter);
-    assert_eq!(response.text, twenty);
-    assert!(response.original_path.is_none());
-
-    let twenty_one = (1..=21)
-        .map(|line| format!("line {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let response = processor.process(request(&twenty_one, Source::Unknown));
-    assert_eq!(response.disposition, Disposition::NotShorter);
-    assert_eq!(response.text, twenty_one);
-    assert!(response.original_path.is_none());
-    assert!(response.applied_rule.is_none());
-    assert!(response.original_path.is_none());
 }
 
 #[test]
@@ -509,7 +414,7 @@ fn json_with_no_final_savings_and_unrepresentable_numbers_passes_unchanged() {
 }
 
 #[test]
-fn parser_rejected_multiline_json_does_not_reach_generic_fallback() {
+fn parser_rejected_multiline_json_passes_unchanged() {
     let home = tempfile::tempdir().unwrap();
     let row = format!("{{\"number\":1e400,\"payload\":\"{}\"}}", "x".repeat(100));
     let rows = vec![row; 24].join(",\n    ");
@@ -552,24 +457,6 @@ fn search_candidate_without_ingress_savings_keeps_original_output() {
     assert_eq!(response.text, text);
     assert!(response.applied_rule.is_none());
     assert!(response.original_path.is_none());
-}
-
-#[test]
-fn generic_fallback_remains_available_for_search_lists() {
-    let home = tempfile::tempdir().unwrap();
-    let lines: Vec<_> = (1..=40).map(|line| format!("a.rs:{line}:x\n")).collect();
-    let text = lines.concat();
-    let retained = format!("{}{}", lines[..10].concat(), lines[30..].concat());
-    let response = Processor::new(home.path()).process(request(&text, Source::Search));
-
-    assert_eq!(response.disposition, Disposition::Compressed);
-    assert_eq!(
-        response.applied_rule.as_deref(),
-        Some("generic_line_fallback")
-    );
-    let original_path = response.original_path.unwrap();
-    assert!(response.text.starts_with(&retained));
-    assert_eq!(fs::read_to_string(original_path).unwrap(), text);
 }
 
 #[test]

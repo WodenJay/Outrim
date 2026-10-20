@@ -10,7 +10,6 @@ pub(crate) fn candidates(tool: &Tool, text: &str) -> Option<Vec<(&'static str, S
     let value = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(value) => value,
         Err(_) if matches!(text.trim_start().chars().next(), Some('{') | Some('[')) => {
-            // Do not send unparsed structured values to the lossy generic fallback.
             return Some(vec![("json_compact", text.to_owned())]);
         }
         Err(_) => return None,

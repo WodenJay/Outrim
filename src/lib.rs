@@ -80,20 +80,8 @@ impl Processor {
             vec![("log_tail", tail)]
         } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
             json_candidates
-        } else if matches!(request.tool.source, Source::Search) {
-            let mut search_candidates = Vec::new();
-            if let Some(grouped) = search_candidate {
-                search_candidates.push(("search_hit_groups", grouped));
-            }
-            if let Some(retained) = rules::generic_line_fallback(&request.tool, &response.text) {
-                search_candidates.push(("generic_line_fallback", retained));
-            }
-            if search_candidates.is_empty() {
-                return response;
-            }
-            search_candidates
-        } else if let Some(retained) = rules::generic_line_fallback(&request.tool, &response.text) {
-            vec![("generic_line_fallback", retained)]
+        } else if let Some(grouped) = search_candidate {
+            vec![("search_hit_groups", grouped)]
         } else {
             return response;
         };

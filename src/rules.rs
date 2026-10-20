@@ -20,18 +20,3 @@ pub(crate) fn log_tail(tool: &Tool, text: &str) -> Option<String> {
     let lines = line_chunks(text);
     Some(last_lines(&lines))
 }
-
-pub(crate) fn generic_line_fallback(tool: &Tool, text: &str) -> Option<String> {
-    if tool.name == "read" {
-        return None;
-    }
-    let lines = line_chunks(text);
-    if lines.len() < RETAINED_LINES * 2 {
-        return None;
-    }
-    Some(format!(
-        "{}{}",
-        lines[..RETAINED_LINES].concat(),
-        last_lines(&lines[RETAINED_LINES..])
-    ))
-}
