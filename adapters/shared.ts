@@ -56,8 +56,9 @@ function isShell(host: Host, toolName: string): boolean {
 }
 
 // Recognize only a bounded simple-command grammar, not a full shell language.
-// Generic shell entry points must be safe under both Bash and PowerShell.
-function isSimpleCommand(command: string, powershell: boolean): boolean {
+// Generic entry points use only a common subset: their dialect is unknown,
+// and cmd.exe does not share Bash/PowerShell single-quote or expansion rules.
+function isSimpleCommand(command: string, dialect: "bash" | "powershell" | "generic"): boolean {
   const head = /^[ \t]*([A-Za-z0-9_./:-]+)(?=[ \t]|$)/.exec(command)?.[1]?.toLowerCase();
   if (
     !head ||
@@ -65,6 +66,8 @@ function isSimpleCommand(command: string, powershell: boolean): boolean {
     [
       "eval",
       "exec",
+      "call",
+      "start",
       "source",
       ".",
       "command",
@@ -99,15 +102,17 @@ function isSimpleCommand(command: string, powershell: boolean): boolean {
   // PowerShell also treats typographic quotes as delimiters. They are outside
   // this recognizer's supported quoting grammar, even inside ASCII quotes.
   if (/[\0\u2018\u2019\u201c\u201d]/.test(command)) return false;
+  if (dialect === "generic" && /[%!^\r\n]/.test(command)) return false;
   let quote: "'" | '"' | undefined;
   for (const char of command) {
     if (quote === "'") {
       if (char === "'") quote = undefined;
-    } else if ((!powershell && char === "\\") || char === "`" || char === "$") {
+    } else if ((dialect !== "powershell" && char === "\\") || char === "`" || char === "$") {
       return false;
     } else if (quote === '"') {
       if (char === '"') quote = undefined;
     } else if (char === "'" || char === '"') {
+      if (dialect === "generic" && char === "'") return false;
       quote = char;
     } else if (
       "|&;<>()[]{}#@,!%^\r\n\0".includes(char) ||
@@ -128,8 +133,10 @@ export function shellSkipReason(
   const command = input.command;
   if (
     typeof command !== "string" ||
-    (toolName !== "powershell" && !isSimpleCommand(command, false)) ||
-    (toolName !== "bash" && !isSimpleCommand(command, true))
+    !isSimpleCommand(
+      command,
+      toolName === "bash" || toolName === "powershell" ? toolName : "generic",
+    )
   ) {
     return "compound_or_uncertain_shell_command";
   }

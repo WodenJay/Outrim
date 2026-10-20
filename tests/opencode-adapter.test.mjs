@@ -229,8 +229,8 @@ describe("OpenCode result adapter", () => {
     await dispose();
   });
 
-  it.each(
-    ["shell", "bash", "powershell"].flatMap((tool) =>
+  it.each([
+    ...["shell", "bash", "powershell"].flatMap((tool) =>
       [
         "cargo test && git diff",
         "cargo test || cargo build",
@@ -263,7 +263,10 @@ describe("OpenCode result adapter", () => {
         null,
       ].map((command) => [tool, command]),
     ),
-  )("preserves the whole result for %s complex or uncertain input: %s", async (tool, command) => {
+    ...["cargo test 'a&git diff&rem '", 'cargo test "%SOME_VAR%"', 'cargo test "a\nb"'].map(
+      (command) => ["shell", command],
+    ),
+  ])("preserves the whole result for %s complex or uncertain input: %s", async (tool, command) => {
     const child = new FakeChild();
     const { handlers, cleanup } = harness({ executable: "outrim-test", spawnProcess: () => child });
     const dispose = await cleanup;

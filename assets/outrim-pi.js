@@ -27,11 +27,13 @@ function matchesAny(patterns, command) {
 function isShell(host, toolName) {
   return toolName === "bash" || toolName === "powershell" || host === "opencode" && toolName === "shell";
 }
-function isSimpleCommand(command, powershell) {
+function isSimpleCommand(command, dialect) {
   const head = /^[ \t]*([A-Za-z0-9_./:-]+)(?=[ \t]|$)/.exec(command)?.[1]?.toLowerCase();
   if (!head || /(?:^|\/)(?:bash|sh|zsh|dash|fish|ksh|csh|tcsh|cmd|pwsh|powershell)(?:\.exe)?$/.test(head) || [
     "eval",
     "exec",
+    "call",
+    "start",
     "source",
     ".",
     "command",
@@ -64,17 +66,21 @@ function isSimpleCommand(command, powershell) {
     return false;
   if (/[\0\u2018\u2019\u201c\u201d]/.test(command))
     return false;
+  if (dialect === "generic" && /[%!^\r\n]/.test(command))
+    return false;
   let quote;
   for (const char of command) {
     if (quote === "'") {
       if (char === "'")
         quote = undefined;
-    } else if (!powershell && char === "\\" || char === "`" || char === "$") {
+    } else if (dialect !== "powershell" && char === "\\" || char === "`" || char === "$") {
       return false;
     } else if (quote === '"') {
       if (char === '"')
         quote = undefined;
     } else if (char === "'" || char === '"') {
+      if (dialect === "generic" && char === "'")
+        return false;
       quote = char;
     } else if (`|&;<>()[]{}#@,!%^\r
 \x00`.includes(char) || /\s/.test(char) && char !== " " && char !== "\t") {
@@ -87,7 +93,7 @@ function shellSkipReason(host, toolName, input) {
   if (!isShell(host, toolName))
     return null;
   const command = input.command;
-  if (typeof command !== "string" || toolName !== "powershell" && !isSimpleCommand(command, false) || toolName !== "bash" && !isSimpleCommand(command, true)) {
+  if (typeof command !== "string" || !isSimpleCommand(command, toolName === "bash" || toolName === "powershell" ? toolName : "generic")) {
     return "compound_or_uncertain_shell_command";
   }
   return null;
