@@ -203,19 +203,9 @@ describe("OpenCode result adapter", () => {
       ),
     ),
     ...["find", "grep", "ls", "glob", "list"].map((tool) => [tool, "", "search"]),
-    ...[
-      "rg.exe hit",
-      "git grepping hit",
-      '"grep" -n hit .',
-      "/usr/bin/rg hit",
-      "env rg hit",
-      "git -C repo grep hit",
-      "rg hit | sort",
-      "grep hit; echo done",
-      "git grep hit && echo done",
-      'rg "$(echo hit)"',
-      "rg 'unclosed",
-    ].map((command) => ["shell", command, "unknown"]),
+    ...["rg.exe hit", "git grepping hit", "/usr/bin/rg hit", "git -C repo grep hit"].map(
+      (command) => ["shell", command, "unknown"],
+    ),
   ])("classifies search events through %s: %s → %s", async (tool, command, source) => {
     const child = new FakeChild();
     const { handlers, cleanup } = harness({
@@ -236,6 +226,93 @@ describe("OpenCode result adapter", () => {
     child.respond(request, "original output");
     await pending;
     expect(request.tool.source).toBe(source);
+    await dispose();
+  });
+
+  it.each(
+    ["shell", "bash", "powershell"].flatMap((tool) =>
+      [
+        "cargo test && git diff",
+        "cargo test || cargo build",
+        "cargo test; git diff",
+        "cargo test\r\ngit diff",
+        "cargo test | Select-Object -Last 2",
+        "cargo test &",
+        "cargo test $(git diff)",
+        "cargo test `git diff`",
+        "cargo test 'unclosed",
+        'cargo test "unclosed',
+        "& { cargo test; git diff }",
+        "cargo test @('one', 'two')",
+        'cargo test "a`"; git diff #"',
+        'cargo test "a”; git diff #"',
+        "powershell -Command 'cargo test'",
+        "pwsh -c 'cargo test'",
+        "bash -c 'cargo test'",
+        'cmd /c "cargo test & git diff"',
+        "Invoke-Expression 'cargo test'",
+        "cargo test --% && git diff",
+        '"grep" -n hit .',
+        "env rg hit",
+        "rg hit | sort",
+        "grep hit; echo done",
+        "git grep hit && echo done",
+        'rg "$(echo hit)"',
+        "rg 'unclosed",
+        "",
+        null,
+      ].map((command) => [tool, command]),
+    ),
+  )("preserves the whole result for %s complex or uncertain input: %s", async (tool, command) => {
+    const child = new FakeChild();
+    const { handlers, cleanup } = harness({ executable: "outrim-test", spawnProcess: () => child });
+    const dispose = await cleanup;
+    const text = `${Array.from({ length: 100 }, (_, i) => `工具 log ${i}\n`).join("")}diff 🦀`;
+    const result = {
+      content: [
+        { type: "text", text, annotations: { retained: true } },
+        { type: "image", data: "retained" },
+        {
+          type: "text",
+          text: JSON.stringify(
+            Array.from({ length: 100 }, () => ({ name: "same", value: 123 })),
+            null,
+            2,
+          ),
+        },
+        {
+          type: "text",
+          text: Array.from({ length: 100 }, (_, i) => `src/main.rs:${i + 1}:same hit`).join("\n"),
+        },
+        { type: "text", text: "" },
+      ],
+      metadata: { exit: 1, retained: true },
+      output: { retained: true },
+    };
+    const before = structuredClone(result);
+    const event = {
+      status: "completed",
+      tool,
+      sessionID: "session-1",
+      id: "call-1",
+      input: { command },
+      result,
+    };
+    const pending = handlers.get("execute.after")(event);
+    expect(child.requests().filter((request) => !request.type)).toEqual([]);
+    await pending;
+    expect(event.result).toBe(result);
+    expect(event.result).toEqual(before);
+    const count = result.content
+      .filter((part) => part.type === "text")
+      .reduce((total, part) => total + Array.from(part.text).length, 0);
+    expect(child.deliveryRequests()).toHaveLength(1);
+    expect(child.deliveryRequests()[0]).toMatchObject({
+      disposition: "protected",
+      applied_rule: null,
+      before_chars: count,
+      after_chars: count,
+    });
     await dispose();
   });
 

@@ -47,25 +47,93 @@ function matchesAny(patterns: RegExp[], command: string): boolean {
   return patterns.some((pattern) => pattern.test(command));
 }
 
-// Only recognize a single, unambiguous direct invocation. This is deliberately
-// not a shell parser: escapes, expansions and compound syntax stay unknown.
-function isDirectSearch(command: string): boolean {
-  if (!/^[ \t]*(?:rg|grep|git[ \t]+grep)(?=[ \t]|$)/.test(command)) return false;
+function isShell(host: Host, toolName: string): boolean {
+  return (
+    toolName === "bash" ||
+    toolName === "powershell" ||
+    (host === "opencode" && toolName === "shell")
+  );
+}
+
+// Recognize only a bounded simple-command grammar, not a full shell language.
+// Generic shell entry points must be safe under both Bash and PowerShell.
+function isSimpleCommand(command: string, powershell: boolean): boolean {
+  const head = /^[ \t]*([A-Za-z0-9_./:-]+)(?=[ \t]|$)/.exec(command)?.[1]?.toLowerCase();
+  if (
+    !head ||
+    /(?:^|\/)(?:bash|sh|zsh|dash|fish|ksh|csh|tcsh|cmd|pwsh|powershell)(?:\.exe)?$/.test(head) ||
+    [
+      "eval",
+      "exec",
+      "source",
+      ".",
+      "command",
+      "builtin",
+      "env",
+      "sudo",
+      "invoke-expression",
+      "iex",
+      "invoke-command",
+      "icm",
+      "if",
+      "then",
+      "else",
+      "fi",
+      "for",
+      "while",
+      "until",
+      "do",
+      "done",
+      "case",
+      "esac",
+      "function",
+      "foreach",
+      "switch",
+      "try",
+      "trap",
+      "time",
+      "coproc",
+    ].includes(head)
+  )
+    return false;
+  // PowerShell also treats typographic quotes as delimiters. They are outside
+  // this recognizer's supported quoting grammar, even inside ASCII quotes.
+  if (/[\0\u2018\u2019\u201c\u201d]/.test(command)) return false;
   let quote: "'" | '"' | undefined;
   for (const char of command) {
     if (quote === "'") {
       if (char === "'") quote = undefined;
-    } else if (char === "\\" || char === "`" || char === "$") {
+    } else if ((!powershell && char === "\\") || char === "`" || char === "$") {
       return false;
     } else if (quote === '"') {
       if (char === '"') quote = undefined;
     } else if (char === "'" || char === '"') {
       quote = char;
-    } else if ("|&;<>()[]{}#\r\n\0".includes(char)) {
+    } else if (
+      "|&;<>()[]{}#@,!%^\r\n\0".includes(char) ||
+      (/\s/.test(char) && char !== " " && char !== "\t")
+    ) {
       return false;
     }
   }
   return quote === undefined;
+}
+
+export function shellSkipReason(
+  host: Host,
+  toolName: string,
+  input: Record<string, unknown>,
+): string | null {
+  if (!isShell(host, toolName)) return null;
+  const command = input.command;
+  if (
+    typeof command !== "string" ||
+    (toolName !== "powershell" && !isSimpleCommand(command, false)) ||
+    (toolName !== "bash" && !isSimpleCommand(command, true))
+  ) {
+    return "compound_or_uncertain_shell_command";
+  }
+  return null;
 }
 
 export function sourceFor(host: Host, toolName: string, input: Record<string, unknown>): Source {
@@ -74,15 +142,10 @@ export function sourceFor(host: Host, toolName: string, input: Record<string, un
     (host === "opencode" && ["glob", "list"].includes(toolName))
   )
     return "search";
-  if (
-    toolName !== "bash" &&
-    toolName !== "powershell" &&
-    !(host === "opencode" && toolName === "shell")
-  )
-    return "unknown";
+  if (!isShell(host, toolName) || shellSkipReason(host, toolName, input)) return "unknown";
   const command = input.command;
   if (typeof command !== "string") return "unknown";
-  if (isDirectSearch(command)) return "search";
+  if (/^[ \t]*(?:rg|grep|git[ \t]+grep)(?=[ \t]|$)/.test(command)) return "search";
   if (matchesAny(TEST_COMMANDS, command)) return "test_log";
   if (matchesAny(BUILD_COMMANDS, command)) return "build_log";
   if (matchesAny(RUNTIME_COMMANDS, command)) return "runtime_log";
@@ -247,7 +310,7 @@ export function createBridge(
   ): Promise<ProcessedResult | undefined>;
   recordDelivery(
     original: string | readonly string[],
-    outcome: ProcessedResult | "recovery_skipped" | undefined,
+    outcome: ProcessedResult | "recovery_skipped" | "protected" | undefined,
     signal?: AbortSignalLike,
   ): void;
   recordObservation(
@@ -397,7 +460,7 @@ export function createBridge(
   // recovery may cover several text parts, but remains one unchanged delivery.
   function recordDelivery(
     original: string | readonly string[],
-    outcome: ProcessedResult | "recovery_skipped" | undefined,
+    outcome: ProcessedResult | "recovery_skipped" | "protected" | undefined,
     signal?: AbortSignalLike,
   ): void {
     if (closed || signal?.aborted) return;
@@ -413,7 +476,7 @@ export function createBridge(
       version: 2,
       id,
       disposition:
-        processed?.disposition ?? (outcome === "recovery_skipped" ? outcome : "failed_open"),
+        processed?.disposition ?? (typeof outcome === "string" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
       before_chars: beforeChars,
       after_chars: processed ? Array.from(processed.text).length : beforeChars,

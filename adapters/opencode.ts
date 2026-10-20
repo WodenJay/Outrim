@@ -6,6 +6,7 @@ import {
   inputReferencesOriginals,
   processingFacts,
   type SpawnProcess,
+  shellSkipReason,
   sourceFor,
 } from "./shared";
 
@@ -208,6 +209,16 @@ export async function registerOpenCodePlugin(
         reason: "original_directory_in_arguments",
       });
       bridge.recordDelivery(selection.texts, "recovery_skipped");
+      return;
+    }
+
+    const shellReason = shellSkipReason("opencode", event.tool, input);
+    if (shellReason) {
+      bridge.recordObservation(observation, originalText, originalText, {
+        outcome: "protected",
+        reason: shellReason,
+      });
+      bridge.recordDelivery(selection.texts, "protected");
       return;
     }
 

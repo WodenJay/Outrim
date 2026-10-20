@@ -95,6 +95,26 @@ function toolEvent(overrides = {}) {
 }
 
 describe("Pi result adapter", () => {
+  it("preserves a compound log command's entire result", async () => {
+    const { children, handle } = harness();
+    const text = `${Array.from({ length: 100 }, (_, i) => `工具 log ${i}\n`).join("")}diff --git a/x b/x`;
+    const event = toolEvent({
+      input: { command: "cargo test && git diff" },
+      content: [{ type: "text", text }],
+    });
+    const before = structuredClone(event);
+    const pending = handle(event);
+    const requests = children.flatMap((child) => child.requests());
+    expect(requests.filter((request) => !request.type)).toEqual([]);
+    expect(await pending).toBeUndefined();
+    expect(event).toEqual(before);
+    expect(requests.find((request) => request.type === "record_delivery")).toMatchObject({
+      disposition: "protected",
+      applied_rule: null,
+      before_chars: Array.from(text).length,
+      after_chars: Array.from(text).length,
+    });
+  });
   it.each(
     ["bash", "powershell"].flatMap((toolName) =>
       ["rg -n hit .", "grep -Rn hit .", "git grep -n hit", " \trg -n 'a|b' ."].map((command) => [
@@ -112,17 +132,27 @@ describe("Pi result adapter", () => {
   });
   it.each([
     "rg-extra -n hit .",
-    "rg\u00a0-n hit .",
-    "git\u00a0grep hit",
-    "rg\f-n hit .",
     "grep.exe -n hit .",
     "git grepping hit",
     "/usr/bin/rg -n hit .",
+    "git -C repo grep -n hit",
+  ])("keeps unsupported simple search spellings unknown: %s", async (command) => {
+    const { children, handle } = harness();
+    const pending = handle(toolEvent({ input: { command } }));
+    const [request] = children[0].requests();
+    children[0].respond(request, "original output");
+    expect(request.tool.source).toBe("unknown");
+    await pending;
+  });
+
+  it.each([
+    "rg\u00a0-n hit .",
+    "git\u00a0grep hit",
+    "rg\f-n hit .",
     '"rg" -n hit .',
     "env rg -n hit .",
     "FOO=1 rg -n hit .",
     "sudo grep -n hit .",
-    "git -C repo grep -n hit",
     "rg -n hit . | sort",
     "grep -n hit . || echo missing",
     "git grep -n hit && echo done",
@@ -137,14 +167,64 @@ describe("Pi result adapter", () => {
     "rg -n 'unclosed",
     'rg -n "unclosed',
     String.raw`rg -n \"hit | sort`,
-  ])("leaves unsupported or compound searches unknown: %s", async (command) => {
+    "cargo test && cargo build",
+    "cd project && cargo test",
+    "cargo test || git diff",
+    "cargo test; git diff",
+    "cargo test\ngit diff",
+    "cargo test &",
+    "cargo test $(git diff)",
+    "cargo test <(git diff)",
+    "bash -c 'cargo test'",
+    "cargo test \\\n git diff",
+    null,
+  ])("preserves all text for compound or uncertain Bash: %s", async (command) => {
     const { children, handle } = harness();
-    const pending = handle(toolEvent({ input: { command } }));
-    const [request] = children[0].requests();
-    children[0].respond(request, "original output");
-    expect(request.tool.source).toBe("unknown");
-    await pending;
+    const outputs = [
+      `${Array.from({ length: 100 }, (_, i) => `工具 log ${i}\r\n`).join("")}diff 🦀`,
+      JSON.stringify(
+        Array.from({ length: 100 }, () => ({ name: "same", value: 123 })),
+        null,
+        2,
+      ),
+      Array.from({ length: 100 }, (_, i) => `src/main.rs:${i + 1}:same hit`).join("\n"),
+      "",
+    ];
+    for (const text of outputs) {
+      const event = toolEvent({
+        input: { command },
+        content: [{ type: "text", text, extra: true }],
+      });
+      const before = structuredClone(event);
+      const pending = handle(event);
+      expect(
+        children.flatMap((child) => child.requests()).filter((request) => !request.type),
+      ).toEqual([]);
+      expect(await pending).toBeUndefined();
+      expect(event).toEqual(before);
+    }
   });
+
+  it.each(
+    ["bash", "powershell"].flatMap((toolName) =>
+      [
+        'cargo test "a&&b;|<>()"',
+        "cargo test 'a&&b;|<>()'",
+        "cargo test 'a''b&&c'",
+        "cargo test '$literal `literal \\literal'",
+      ].map((command) => [toolName, command]),
+    ),
+  )(
+    "retains simple log eligibility with literal quoted syntax in %s: %s",
+    async (toolName, command) => {
+      const { children, handle } = harness();
+      const pending = handle(toolEvent({ toolName, input: { command } }));
+      const [request] = children[0].requests();
+      expect(request.tool.source).toBe("test_log");
+      children[0].respond(request, "last ten lines");
+      expect((await pending).content[0].text).toBe("last ten lines");
+    },
+  );
 
   it.each(["find", "grep", "ls"])("preserves native %s search classification", async (toolName) => {
     const { children, handle } = harness();
@@ -216,8 +296,6 @@ describe("Pi result adapter", () => {
       "cargo build-all",
       "npm run dev:local",
       "/usr/bin/pytest",
-      '"cargo" test',
-      "FOO=1 cargo test",
       "npx vitest",
       "npm --prefix app test",
       "gh --repo owner/repo run watch",

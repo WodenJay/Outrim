@@ -24,37 +24,83 @@ var RUNTIME_COMMANDS = [
 function matchesAny(patterns, command) {
   return patterns.some((pattern) => pattern.test(command));
 }
-function isDirectSearch(command) {
-  if (!/^[ \t]*(?:rg|grep|git[ \t]+grep)(?=[ \t]|$)/.test(command))
+function isShell(host, toolName) {
+  return toolName === "bash" || toolName === "powershell" || host === "opencode" && toolName === "shell";
+}
+function isSimpleCommand(command, powershell) {
+  const head = /^[ \t]*([A-Za-z0-9_./:-]+)(?=[ \t]|$)/.exec(command)?.[1]?.toLowerCase();
+  if (!head || /(?:^|\/)(?:bash|sh|zsh|dash|fish|ksh|csh|tcsh|cmd|pwsh|powershell)(?:\.exe)?$/.test(head) || [
+    "eval",
+    "exec",
+    "source",
+    ".",
+    "command",
+    "builtin",
+    "env",
+    "sudo",
+    "invoke-expression",
+    "iex",
+    "invoke-command",
+    "icm",
+    "if",
+    "then",
+    "else",
+    "fi",
+    "for",
+    "while",
+    "until",
+    "do",
+    "done",
+    "case",
+    "esac",
+    "function",
+    "foreach",
+    "switch",
+    "try",
+    "trap",
+    "time",
+    "coproc"
+  ].includes(head))
+    return false;
+  if (/[\0\u2018\u2019\u201c\u201d]/.test(command))
     return false;
   let quote;
   for (const char of command) {
     if (quote === "'") {
       if (char === "'")
         quote = undefined;
-    } else if (char === "\\" || char === "`" || char === "$") {
+    } else if (!powershell && char === "\\" || char === "`" || char === "$") {
       return false;
     } else if (quote === '"') {
       if (char === '"')
         quote = undefined;
     } else if (char === "'" || char === '"') {
       quote = char;
-    } else if (`|&;<>()[]{}#\r
-\x00`.includes(char)) {
+    } else if (`|&;<>()[]{}#@,!%^\r
+\x00`.includes(char) || /\s/.test(char) && char !== " " && char !== "\t") {
       return false;
     }
   }
   return quote === undefined;
 }
+function shellSkipReason(host, toolName, input) {
+  if (!isShell(host, toolName))
+    return null;
+  const command = input.command;
+  if (typeof command !== "string" || toolName !== "powershell" && !isSimpleCommand(command, false) || toolName !== "bash" && !isSimpleCommand(command, true)) {
+    return "compound_or_uncertain_shell_command";
+  }
+  return null;
+}
 function sourceFor(host, toolName, input) {
   if (["find", "grep", "ls"].includes(toolName) || host === "opencode" && ["glob", "list"].includes(toolName))
     return "search";
-  if (toolName !== "bash" && toolName !== "powershell" && !(host === "opencode" && toolName === "shell"))
+  if (!isShell(host, toolName) || shellSkipReason(host, toolName, input))
     return "unknown";
   const command = input.command;
   if (typeof command !== "string")
     return "unknown";
-  if (isDirectSearch(command))
+  if (/^[ \t]*(?:rg|grep|git[ \t]+grep)(?=[ \t]|$)/.test(command))
     return "search";
   if (matchesAny(TEST_COMMANDS, command))
     return "test_log";
@@ -240,7 +286,7 @@ function createBridge(host, executable, spawnProcess) {
       type: "record_delivery",
       version: 2,
       id,
-      disposition: processed?.disposition ?? (outcome === "recovery_skipped" ? outcome : "failed_open"),
+      disposition: processed?.disposition ?? (typeof outcome === "string" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
       before_chars: beforeChars,
       after_chars: processed ? Array.from(processed.text).length : beforeChars
@@ -431,6 +477,15 @@ async function registerOpenCodePlugin(context, options = {}) {
         reason: "original_directory_in_arguments"
       });
       bridge.recordDelivery(selection.texts, "recovery_skipped");
+      return;
+    }
+    const shellReason = shellSkipReason("opencode", event.tool, input);
+    if (shellReason) {
+      bridge.recordObservation(observation, originalText, originalText, {
+        outcome: "protected",
+        reason: shellReason
+      });
+      bridge.recordDelivery(selection.texts, "protected");
       return;
     }
     const controller = new AbortController;

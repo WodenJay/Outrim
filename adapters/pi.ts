@@ -6,6 +6,7 @@ import {
   inputReferencesOriginals,
   processingFacts,
   type SpawnProcess,
+  shellSkipReason,
   sourceFor,
 } from "./shared";
 
@@ -118,6 +119,16 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
         reason: "original_directory_in_arguments",
       });
       bridge.recordDelivery(text, "recovery_skipped", context.signal);
+      return undefined;
+    }
+
+    const shellReason = shellSkipReason("pi", event.toolName, event.input);
+    if (shellReason) {
+      bridge.recordObservation(observation, text, text, {
+        outcome: context.signal?.aborted ? "cancelled" : "protected",
+        reason: shellReason,
+      });
+      bridge.recordDelivery(text, "protected", context.signal);
       return undefined;
     }
 

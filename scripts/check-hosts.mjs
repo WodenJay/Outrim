@@ -11,6 +11,26 @@ const original = Array.from(
   (_, index) => `🦀 log ${index}: ${"工具 output ".repeat(20)}\n`,
 ).join("");
 const chars = (text) => Array.from(text).length;
+const passthroughCases = [
+  ["cargo test && git diff", original],
+  ["cargo fmt --all && cargo clippy && cargo test", original],
+  ["cd project && cargo test", original],
+  [
+    "cargo test | sort",
+    JSON.stringify(
+      Array.from({ length: 100 }, () => ({ name: "same", value: 123 })),
+      null,
+      2,
+    ),
+  ],
+  [
+    "rg hit .; echo done",
+    Array.from({ length: 100 }, (_, i) => `src/main.rs:${i + 1}:same hit`).join("\n"),
+  ],
+  ["cargo test $(git diff)", ""],
+  ["cargo test\ngit diff", "Unicode 🦀\r\nno final newline"],
+];
+const passthroughChars = passthroughCases.reduce((total, [, text]) => total + chars(text), 0);
 
 async function checkHost(host) {
   const handlers = new Map();
@@ -114,6 +134,7 @@ async function checkHost(host) {
     }
     const compressed = await handle(original, { command: "cargo test" });
     assert.ok(chars(compressed) < chars(original));
+    assert.ok(compressed.startsWith(original.slice(original.indexOf("🦀 log 90:"))));
     const path = compressed.split("[outrim]: The full output is available at ")[1];
     assert.ok(path, "compressed output must expose its saved original");
     assert.equal(readFileSync(path, "utf8"), original);
@@ -123,6 +144,16 @@ async function checkHost(host) {
       await unsupported();
       await multipart?.();
     }
+    const outputsDirectory = dirname(path);
+    const outputsBefore = readdirSync(outputsDirectory, { recursive: true });
+    for (const [command, text] of passthroughCases) {
+      assert.equal(await handle(text, { command }), text, `must preserve ${command}`);
+    }
+    assert.deepEqual(
+      readdirSync(outputsDirectory, { recursive: true }),
+      outputsBefore,
+      "passthrough must not save compression originals",
+    );
     return compressed;
   } finally {
     await close();
@@ -168,16 +199,17 @@ if (process.argv[2] === "--host") {
       const compressed = runHost();
       assert.throws(() => readdirSync(join(home, ".outrim/records")), { code: "ENOENT" });
       const stats = JSON.parse(readFileSync(join(home, ".outrim/gain.json"), "utf8"));
-      assert.equal(stats.outputs, 2);
+      assert.equal(stats.outputs, 2 + passthroughCases.length);
+      assert.equal(stats.outcomes.protected, passthroughCases.length);
       assert.equal(stats.outcomes.compressed, 1);
       assert.equal(stats.outcomes.recovery_skipped, 1);
-      assert.equal(stats.before_chars, chars(original) * 2);
-      assert.equal(stats.after_chars, chars(compressed) + chars(original));
+      assert.equal(stats.before_chars, chars(original) * 2 + passthroughChars);
+      assert.equal(stats.after_chars, chars(compressed) + chars(original) + passthroughChars);
       assert.deepEqual(stats.rules, {
         log_tail: { count: 1, before_chars: chars(original), after_chars: chars(compressed) },
       });
       const gain = execFileSync(artifact.executable, ["gain"], { env, encoding: "utf8" });
-      assert.match(gain, /Outputs: 2\b/);
+      assert.ok(gain.includes(`Outputs: ${2 + passthroughCases.length}`));
       execFileSync(artifact.executable, ["gain", "record", "on"], { env });
       env.OUTRIM_CHECK_RECORDING = "on";
       env.OUTRIM_BINARY = artifact.executable;
@@ -190,7 +222,19 @@ if (process.argv[2] === "--host") {
           .split("\n")
           .map((line) => ({ ...JSON.parse(line), directory }));
       });
-      assert.equal(events.length, host === "pi" ? 4 : 6);
+      assert.equal(events.length, (host === "pi" ? 4 : 6) + passthroughCases.length);
+      for (const [index, event] of events.slice(-passthroughCases.length).entries()) {
+        const [, text] = passthroughCases[index];
+        assert.equal(event.outcome, "protected");
+        assert.equal(event.reason, "compound_or_uncertain_shell_command");
+        assert.equal(event.applied_rule, null);
+        assert.equal(event.original_path, null);
+        assert.deepEqual(event.candidates, []);
+        assert.equal(event.before_chars, chars(text));
+        assert.equal(event.after_chars, chars(text));
+        assert.equal(event.content.original, event.content.final);
+        assert.equal(readFileSync(join(event.directory, event.content.original), "utf8"), text);
+      }
       const [compressedEvent, recovery] = events;
       assert.equal(compressedEvent.host, host);
       assert.equal(compressedEvent.session, "roundtrip");
