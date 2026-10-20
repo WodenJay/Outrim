@@ -24,6 +24,28 @@ var RUNTIME_COMMANDS = [
 function matchesAny(patterns, command) {
   return patterns.some((pattern) => pattern.test(command));
 }
+function isDirectSearch(command) {
+  if (!/^\s*(?:rg|grep|git\s+grep)(?=\s|$)/.test(command))
+    return false;
+  let quote;
+  for (const char of command) {
+    if (quote === "'") {
+      if (char === "'")
+        quote = undefined;
+    } else if (char === "\\" || char === "`" || char === "$") {
+      return false;
+    } else if (quote === '"') {
+      if (char === '"')
+        quote = undefined;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (`|&;<>()[]{}#\r
+\x00`.includes(char)) {
+      return false;
+    }
+  }
+  return quote === undefined;
+}
 function sourceFor(host, toolName, input) {
   if (["find", "grep", "ls"].includes(toolName) || host === "opencode" && ["glob", "list"].includes(toolName))
     return "search";
@@ -32,6 +54,8 @@ function sourceFor(host, toolName, input) {
   const command = input.command;
   if (typeof command !== "string")
     return "unknown";
+  if (isDirectSearch(command))
+    return "search";
   if (matchesAny(TEST_COMMANDS, command))
     return "test_log";
   if (matchesAny(BUILD_COMMANDS, command))

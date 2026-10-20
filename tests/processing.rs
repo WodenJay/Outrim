@@ -52,6 +52,8 @@ fn source_and_configuration_are_protected_before_content_routing() {
     for (text, source, path) in [
         (&long_text, Source::Unknown, "src/main.rs"),
         (&json_text, Source::Unknown, "config/settings.json"),
+        (&json_text, Source::Search, "config/settings.json"),
+        (&json_text, Source::Search, "src/main.rs"),
         (&build_log, Source::BuildLog, "src/main.rs"),
     ] {
         let mut input = request(text, source);
@@ -275,6 +277,29 @@ fn logs_keep_last_ten_lines_and_recover_exact_input() {
         format!(
             "14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n[outrim]: The full output is available at {path}"
         )
+    );
+}
+
+#[test]
+fn search_without_hit_groups_can_use_existing_json_rules() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let mut items: Vec<_> = (0..80).map(|id| json!({"id": id})).collect();
+    items.push(json!([true, null, {"nested": "value"}]));
+    let value = json!({"items": items});
+    let text = serde_json::to_string_pretty(&value).unwrap();
+    let mut input = request(&text, Source::Search);
+    input.tool.input = json!({"command": "rg --json hit ."});
+    let response = processor.process(input);
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+    let (encoded, _) = response.text.split_once("\n[outrim]:").unwrap();
+    assert_eq!(serde_json::from_str::<Value>(encoded).unwrap(), value);
+    assert!(response.text.chars().count() < text.chars().count());
+    assert_eq!(
+        fs::read_to_string(response.original_path.unwrap()).unwrap(),
+        text
     );
 }
 
@@ -724,19 +749,26 @@ fn search_results_group_repeated_paths_without_losing_hits_or_positions() {
     let text = format!(
         "{file}:12:same match\n{file}:47:same match\n{file}:81:same match\n{file}:96:same match\n{other}:9:same match\n"
     );
-    let mut input = request(&text, Source::Search);
-    input.tool.input = json!({"path": "src/duplicate.rs", "pattern": "same match"});
-    let response = processor.process(input);
+    for tool_input in [
+        json!({"path": "src/duplicate.rs", "pattern": "same match"}),
+        json!({"command": "rg -n 'same match' ."}),
+        json!({"command": "grep -Rn 'same match' ."}),
+        json!({"command": "git grep -n 'same match'"}),
+    ] {
+        let mut input = request(&text, Source::Search);
+        input.tool.input = tool_input;
+        let response = processor.process(input);
 
-    assert_eq!(response.disposition, Disposition::Compressed);
-    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
-    assert!(response.text.chars().count() < text.chars().count());
-    let original_path = response.original_path.unwrap();
-    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
-    assert_eq!(
-        response.text,
-        format!(
-            "{file}:\n  12:same match\n  47:same match\n  81:same match\n  96:same match\n{other}:\n  9:same match\n[outrim]: The full output is available at {original_path}"
-        )
-    );
+        assert_eq!(response.disposition, Disposition::Compressed);
+        assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
+        assert!(response.text.chars().count() < text.chars().count());
+        let original_path = response.original_path.unwrap();
+        assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+        assert_eq!(
+            response.text,
+            format!(
+                "{file}:\n  12:same match\n  47:same match\n  81:same match\n  96:same match\n{other}:\n  9:same match\n[outrim]: The full output is available at {original_path}"
+            )
+        );
+    }
 }

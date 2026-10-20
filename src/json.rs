@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer};
 use std::fmt;
 
 pub(crate) fn candidates(tool: &Tool, text: &str) -> Option<Vec<(&'static str, String)>> {
-    if !matches!(tool.source, Source::Unknown) {
+    if !matches!(tool.source, Source::Unknown | Source::Search) {
         return None;
     }
     let value = match serde_json::from_str::<serde_json::Value>(text) {

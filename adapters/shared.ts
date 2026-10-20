@@ -47,6 +47,27 @@ function matchesAny(patterns: RegExp[], command: string): boolean {
   return patterns.some((pattern) => pattern.test(command));
 }
 
+// Only recognize a single, unambiguous direct invocation. This is deliberately
+// not a shell parser: escapes, expansions and compound syntax stay unknown.
+function isDirectSearch(command: string): boolean {
+  if (!/^\s*(?:rg|grep|git\s+grep)(?=\s|$)/.test(command)) return false;
+  let quote: "'" | '"' | undefined;
+  for (const char of command) {
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+    } else if (char === "\\" || char === "`" || char === "$") {
+      return false;
+    } else if (quote === '"') {
+      if (char === '"') quote = undefined;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if ("|&;<>()[]{}#\r\n\0".includes(char)) {
+      return false;
+    }
+  }
+  return quote === undefined;
+}
+
 export function sourceFor(host: Host, toolName: string, input: Record<string, unknown>): Source {
   if (
     ["find", "grep", "ls"].includes(toolName) ||
@@ -61,6 +82,7 @@ export function sourceFor(host: Host, toolName: string, input: Record<string, un
     return "unknown";
   const command = input.command;
   if (typeof command !== "string") return "unknown";
+  if (isDirectSearch(command)) return "search";
   if (matchesAny(TEST_COMMANDS, command)) return "test_log";
   if (matchesAny(BUILD_COMMANDS, command)) return "build_log";
   if (matchesAny(RUNTIME_COMMANDS, command)) return "runtime_log";

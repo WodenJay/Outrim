@@ -95,6 +95,63 @@ function toolEvent(overrides = {}) {
 }
 
 describe("Pi result adapter", () => {
+  it.each(
+    ["bash", "powershell"].flatMap((toolName) =>
+      ["rg -n hit .", "grep -Rn hit .", "git grep -n hit", " \trg -n 'a|b' ."].map((command) => [
+        toolName,
+        command,
+      ]),
+    ),
+  )("recognizes direct search through %s: %s", async (toolName, command) => {
+    const { children, handle } = harness();
+    const pending = handle(toolEvent({ toolName, input: { command } }));
+    const [request] = children[0].requests();
+    children[0].respond(request, "original output");
+    expect(request.tool.source).toBe("search");
+    await pending;
+  });
+  it.each([
+    "rg-extra -n hit .",
+    "grep.exe -n hit .",
+    "git grepping hit",
+    "/usr/bin/rg -n hit .",
+    '"rg" -n hit .',
+    "env rg -n hit .",
+    "FOO=1 rg -n hit .",
+    "sudo grep -n hit .",
+    "git -C repo grep -n hit",
+    "rg -n hit . | sort",
+    "grep -n hit . || echo missing",
+    "git grep -n hit && echo done",
+    "rg -n hit .; echo done",
+    "rg -n hit .\necho done",
+    "rg -n hit . > hits.txt",
+    "rg -n $(echo hit) .",
+    'rg -n "$(echo hit)" .',
+    "rg -n `echo hit` .",
+    "rg -n $pattern .",
+    "rg -n hit . # comment",
+    "rg -n 'unclosed",
+    'rg -n "unclosed',
+    String.raw`rg -n \"hit | sort`,
+  ])("leaves unsupported or compound searches unknown: %s", async (command) => {
+    const { children, handle } = harness();
+    const pending = handle(toolEvent({ input: { command } }));
+    const [request] = children[0].requests();
+    children[0].respond(request, "original output");
+    expect(request.tool.source).toBe("unknown");
+    await pending;
+  });
+
+  it.each(["find", "grep", "ls"])("preserves native %s search classification", async (toolName) => {
+    const { children, handle } = harness();
+    const pending = handle(toolEvent({ toolName, input: { pattern: "hit" } }));
+    const [request] = children[0].requests();
+    children[0].respond(request, "original output");
+    expect(request.tool.source).toBe("search");
+    await pending;
+  });
+
   it.each([
     'python -c "print(function_index)"',
     'python3 -c "print(function_index)"',

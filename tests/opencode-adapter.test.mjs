@@ -196,6 +196,49 @@ describe("OpenCode result adapter", () => {
     await dispose();
   });
 
+  it.each([
+    ...["shell", "bash", "powershell"].flatMap((tool) =>
+      ["rg -n hit .", "grep -Rn hit .", "git grep -n hit", ' \tgit\tgrep -n "a|b;<>"'].map(
+        (command) => [tool, command, "search"],
+      ),
+    ),
+    ...["find", "grep", "ls", "glob", "list"].map((tool) => [tool, "", "search"]),
+    ...[
+      "rg.exe hit",
+      "git grepping hit",
+      '"grep" -n hit .',
+      "/usr/bin/rg hit",
+      "env rg hit",
+      "git -C repo grep hit",
+      "rg hit | sort",
+      "grep hit; echo done",
+      "git grep hit && echo done",
+      'rg "$(echo hit)"',
+      "rg 'unclosed",
+    ].map((command) => ["shell", command, "unknown"]),
+  ])("classifies search events through %s: %s → %s", async (tool, command, source) => {
+    const child = new FakeChild();
+    const { handlers, cleanup } = harness({
+      executable: "outrim-test",
+      spawnProcess: () => child,
+    });
+    const dispose = await cleanup;
+    const event = {
+      status: "completed",
+      tool,
+      sessionID: "session-1",
+      id: "call-1",
+      input: { command },
+      result: { content: [{ type: "text", text: "original output" }] },
+    };
+    const pending = handlers.get("execute.after")(event);
+    const [request] = child.requests();
+    child.respond(request, "original output");
+    await pending;
+    expect(request.tool.source).toBe(source);
+    await dispose();
+  });
+
   it("changes only model-visible text and preserves structured tool data", async () => {
     const child = new FakeChild();
     const { handlers, cleanup } = harness({

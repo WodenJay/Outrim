@@ -78,10 +78,10 @@ impl Processor {
         }
         let candidates = if let Some(tail) = rules::log_tail(&request.tool, &response.text) {
             vec![("log_tail", tail)]
-        } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
-            json_candidates
         } else if let Some(grouped) = search_candidate {
             vec![("search_hit_groups", grouped)]
+        } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
+            json_candidates
         } else {
             return response;
         };
