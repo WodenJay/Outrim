@@ -7,19 +7,19 @@ import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 var TEST_COMMANDS = [
-  /^\s*cargo\s+test\b/i,
-  /^\s*(?:bun\s+(?:test|run\s+test)|npm\s+(?:test|run\s+test)|pnpm\s+(?:test|run\s+test)|yarn\s+(?:test|run\s+test))\b/i,
-  /^\s*(?:pytest|go\s+test|jest|vitest)\b/i
+  /^\s*cargo\s+test(?=\s|$)/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:test|run\s+test)(?=\s|$)/i,
+  /^\s*(?:pytest|go\s+test|jest|vitest)(?=\s|$)/i
 ];
 var BUILD_COMMANDS = [
-  /^\s*cargo\s+(?:build|check|clippy)\b/i,
-  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:build|run\s+build)\b/i,
-  /^\s*(?:go\s+build|tsc|vite\s+build|cmake\s+--build|make)\b/i
+  /^\s*cargo\s+(?:build|check|clippy)(?=\s|$)/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:build|run\s+build)(?=\s|$)/i,
+  /^\s*(?:go\s+build|tsc|vite\s+build|cmake\s+--build|make)(?=\s|$)/i
 ];
 var RUNTIME_COMMANDS = [
-  /^\s*cargo\s+run\b/i,
-  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:start|run\s+(?:dev|start))\b/i,
-  /^\s*(?:node|python(?:3(?:\.\d+)?)?|go)\s+(?:\S+|$)/i
+  /^\s*cargo\s+run(?=\s|$)/i,
+  /^\s*(?:bun|npm|pnpm|yarn)\s+(?:start|run\s+(?:dev|start))(?=\s|$)/i,
+  /^\s*gh\s+run\s+watch(?=\s|$)/i
 ];
 function matchesAny(patterns, command) {
   return patterns.some((pattern) => pattern.test(command));

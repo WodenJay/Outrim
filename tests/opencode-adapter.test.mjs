@@ -155,6 +155,47 @@ describe("OpenCode result adapter", () => {
     expect(typeof opencodePlugin.setup).toBe("function");
   });
 
+  it.each([
+    ["gh run watch", "runtime_log"],
+    ["gh run watch 123 --exit-status", "runtime_log"],
+    [" \tGH\tRUN WATCH 123", "runtime_log"],
+    ["go test --workspace", "test_log"],
+    ["go build ./...", "build_log"],
+    ["npm run test -- --watch", "test_log"],
+    ["gh run watcher", "unknown"],
+    ['python -c "print(function_index)"', "unknown"],
+    ['python3.12 -c "print(function_index)"', "unknown"],
+    ['node -e "console.log(data)"', "unknown"],
+    ["go version", "unknown"],
+    ["npm run test-unit", "unknown"],
+    ["npm run test:unit", "unknown"],
+    ["jest.config.js", "unknown"],
+    ["make-believe", "unknown"],
+    ["tsc.exe", "unknown"],
+  ])("uses the shared log allowlist: %s → %s", async (command, source) => {
+    const child = new FakeChild();
+    const { handlers, cleanup } = harness({
+      executable: "outrim-test",
+      spawnProcess: () => child,
+    });
+    const dispose = await cleanup;
+    const event = {
+      status: "completed",
+      tool: "shell",
+      sessionID: "session-1",
+      id: "call-1",
+      input: { command },
+      result: { content: [{ type: "text", text: "original output" }] },
+    };
+    const pending = handlers.get("execute.after")(event);
+    const [request] = child.requests();
+    child.respond(request, "bridge-selected output");
+    await pending;
+    expect(request.tool).toMatchObject({ source, exit_code: null });
+    expect(event.result.content[0].text).toBe("bridge-selected output");
+    await dispose();
+  });
+
   it("changes only model-visible text and preserves structured tool data", async () => {
     const child = new FakeChild();
     const { handlers, cleanup } = harness({

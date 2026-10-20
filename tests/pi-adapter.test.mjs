@@ -95,6 +95,83 @@ function toolEvent(overrides = {}) {
 }
 
 describe("Pi result adapter", () => {
+  it.each([
+    'python -c "print(function_index)"',
+    'python3 -c "print(function_index)"',
+    'python3.12 -c "print(function_index)"',
+    'node -e "console.log(data)"',
+    "go version",
+    "go run main.go",
+  ])("does not infer runtime logs from the interpreter: %s", async (command) => {
+    const { children, handle } = harness();
+    const pending = handle(toolEvent({ input: { command } }));
+    const [request] = children[0].requests();
+    children[0].respond(request, "original output", {
+      disposition: "no_match",
+      applied_rule: null,
+    });
+    expect(request.tool.source).toBe("unknown");
+    expect(await pending).toBeUndefined();
+  });
+
+  it.each([
+    ...[
+      ["test_log", ["cargo test", "pytest", "go test", "jest", "vitest"]],
+      [
+        "build_log",
+        [
+          "cargo build",
+          "cargo check",
+          "cargo clippy",
+          "go build",
+          "tsc",
+          "vite build",
+          "cmake --build",
+          "make",
+        ],
+      ],
+      [
+        "runtime_log",
+        ["cargo run", "gh run watch", "gh run watch 123", "gh run watch 123 --exit-status"],
+      ],
+      ...["bun", "npm", "pnpm", "yarn"].flatMap((manager) => [
+        ["test_log", [`${manager} test`, `${manager} run test`]],
+        ["build_log", [`${manager} build`, `${manager} run build`]],
+        ["runtime_log", [`${manager} start`, `${manager} run dev`, `${manager} run start`]],
+      ]),
+    ].flatMap(([source, commands]) =>
+      commands.flatMap((command) => [
+        [command, source],
+        [` \t${command.toUpperCase().replaceAll(" ", "\t ")} --verbose`, source],
+      ]),
+    ),
+    ...[
+      "npm run test-unit",
+      "npm run test:unit",
+      "go test-unit",
+      "jest.config.js",
+      "make-believe",
+      "gh run watcher",
+      "tsc.exe",
+      "cargo build-all",
+      "npm run dev:local",
+      "/usr/bin/pytest",
+      '"cargo" test',
+      "FOO=1 cargo test",
+      "npx vitest",
+      "npm --prefix app test",
+      "gh --repo owner/repo run watch",
+      "python -m pytest",
+    ].map((command) => [command, "unknown"]),
+  ])("classifies complete allowlist words: %s → %s", async (command, source) => {
+    const { children, handle } = harness();
+    const pending = handle(toolEvent({ input: { command } }));
+    const [request] = children[0].requests();
+    children[0].respond(request, "original output");
+    expect(request.tool.source).toBe(source);
+    expect(await pending).toBeUndefined();
+  });
+
   it("reuses the bridge and correlates concurrent results by request ID", async () => {
     const { children, handle } = harness();
     const first = handle(toolEvent());
