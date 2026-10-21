@@ -418,6 +418,29 @@ fn gain_persists_deliveries_across_bridge_restarts() {
 }
 
 #[test]
+fn retired_rules_are_hidden_without_changing_totals_or_saved_data() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = home.path().join(".outrim");
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("gain.json");
+    let mut stats = json!({
+        "outputs": 3, "before_chars": 1200, "after_chars": 400,
+        "outcomes": { "compressed": 3 },
+        "rules": {
+            "log_tail": { "count": 1, "before_chars": 400, "after_chars": 200 }
+        }
+    });
+    fs::write(&path, stats.to_string()).unwrap();
+    let expected = outrim::gain::render(home.path()).unwrap();
+    stats["rules"]["generic_line_fallback"] =
+        json!({ "count": 2, "before_chars": 800, "after_chars": 200 });
+    let saved = stats.to_string();
+    fs::write(&path, &saved).unwrap();
+    assert_eq!(outrim::gain::render(home.path()).unwrap(), expected);
+    assert_eq!(fs::read_to_string(path).unwrap(), saved);
+}
+
+#[test]
 fn gain_shows_empty_state_without_creating_data_directory() {
     let home = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_outrim"))

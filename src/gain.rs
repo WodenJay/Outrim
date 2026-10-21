@@ -342,7 +342,11 @@ fn render_stats(stats: &Stats) -> String {
         "Rule", "Count", "Before", "After", "Saved", "Rate"
     )
     .unwrap();
-    let mut rules: Vec<_> = stats.rules.iter().collect();
+    let mut rules: Vec<_> = stats
+        .rules
+        .iter()
+        .filter(|(name, _)| name.as_str() != "generic_line_fallback")
+        .collect();
     rules.sort_by(|(left_name, left), (right_name, right)| {
         saved_chars_for(right)
             .cmp(&saved_chars_for(left))
@@ -460,7 +464,6 @@ fn format_number(number: u64) -> String {
 fn rule_label(rule: &str) -> &str {
     match rule {
         "log_tail" => "Log tail",
-        "generic_line_fallback" => "Head + tail",
         "json_compact" => "JSON compact",
         "json_toon" => "JSON TOON",
         "search_hit_groups" => "Search groups",
