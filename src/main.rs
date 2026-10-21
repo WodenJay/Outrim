@@ -5,8 +5,22 @@ use std::{
     process::ExitCode,
 };
 
+mod upgrade;
+
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if matches_command(&arguments, &["upgrade"]) || matches_command(&arguments, &["update"]) {
+        let result = user_home().and_then(|home| {
+            upgrade::run(
+                &configured_pi_agent_dir(&home),
+                &configured_opencode_config_dir(&home),
+            )
+        });
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail_with_error(error),
+        };
+    }
     if matches_command(&arguments, &["bridge"]) {
         return run_bridge(None);
     }
@@ -30,7 +44,7 @@ fn main() -> ExitCode {
     if matches_command(&arguments, &["--help"]) || matches_command(&arguments, &["gain", "--help"])
     {
         println!(
-            "outrim gain [--detail [--session <session-id>]]\noutrim gain record on|off\nFull local recording is off by default. On authorizes saving complete tool arguments and texts, which may contain source code, paths and secrets. Restart hosts to apply; running instances keep their startup setting. Off does not delete historical data."
+            "outrim upgrade (alias: update)\noutrim gain [--detail [--session <session-id>]]\noutrim gain record on|off\nFull local recording is off by default. On authorizes saving complete tool arguments and texts, which may contain source code, paths and secrets. Restart hosts to apply; running instances keep their startup setting. Off does not delete historical data."
         );
         return ExitCode::SUCCESS;
     }
@@ -47,7 +61,7 @@ fn main() -> ExitCode {
         return uninstall_opencode();
     }
     eprintln!(
-        "Usage:\n  outrim bridge\n  outrim gain\n  outrim install --agent pi\n  outrim uninstall --agent pi\n  outrim install --agent opencode\n  outrim uninstall --agent opencode"
+        "Usage:\n  outrim upgrade (alias: update)\n  outrim bridge\n  outrim gain\n  outrim install --agent pi\n  outrim uninstall --agent pi\n  outrim install --agent opencode\n  outrim uninstall --agent opencode"
     );
     ExitCode::from(2)
 }

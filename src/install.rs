@@ -75,6 +75,19 @@ fn install_plugin(
     executable: &Path,
     kind: &str,
 ) -> io::Result<PathBuf> {
+    let plugin = render_plugin(template, executable, kind)?;
+    fs::create_dir_all(directory)?;
+    let path = directory.join(filename);
+
+    if read_managed_plugin(&path, marker, kind)?.as_deref() == Some(plugin.as_str()) {
+        return Ok(path);
+    }
+
+    fs::write(&path, plugin)?;
+    Ok(path)
+}
+
+fn render_plugin(template: &str, executable: &Path, kind: &str) -> io::Result<String> {
     let executable = executable
         .to_str()
         .ok_or_else(|| io::Error::other("executable path is not valid Unicode"))?;
@@ -85,16 +98,7 @@ fn install_plugin(
             "embedded {kind} has an invalid executable slot"
         )));
     }
-    let plugin = template.replace(&executable_slot, &executable);
-    fs::create_dir_all(directory)?;
-    let path = directory.join(filename);
-
-    if read_managed_plugin(&path, marker, kind)?.as_deref() == Some(plugin.as_str()) {
-        return Ok(path);
-    }
-
-    fs::write(&path, plugin)?;
-    Ok(path)
+    Ok(template.replace(&executable_slot, &executable))
 }
 
 fn uninstall_plugin(
@@ -125,6 +129,45 @@ fn read_managed_plugin(path: &Path, marker: &str, kind: &str) -> io::Result<Opti
         return Err(unmanaged_plugin_error(path, kind));
     }
     Ok(Some(existing))
+}
+
+/// The two generated integrations supported by installation and upgrade.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum Agent {
+    Pi,
+    OpenCode,
+}
+
+impl Agent {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pi => "Pi",
+            Self::OpenCode => "OpenCode",
+        }
+    }
+
+    pub fn path(self, directory: &Path) -> PathBuf {
+        directory.join(match self {
+            Self::Pi => "extensions/outrim.js",
+            Self::OpenCode => "plugins/outrim.js",
+        })
+    }
+
+    pub fn read(self, path: &Path) -> io::Result<Option<String>> {
+        let marker = match self {
+            Self::Pi => PI_EXTENSION_MARKER,
+            Self::OpenCode => OPENCODE_PLUGIN_MARKER,
+        };
+        read_managed_plugin(path, marker, self.name())
+    }
+
+    pub fn render(self, executable: &Path) -> io::Result<String> {
+        let template = match self {
+            Self::Pi => PI_EXTENSION,
+            Self::OpenCode => OPENCODE_PLUGIN,
+        };
+        render_plugin(template, executable, self.name())
+    }
 }
 
 fn unmanaged_plugin_error(path: &Path, kind: &str) -> io::Error {
