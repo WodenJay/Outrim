@@ -6,7 +6,6 @@ import {
   inputReferencesOriginals,
   processingFacts,
   type SpawnProcess,
-  shellSkipReason,
   sourceFor,
 } from "./shared";
 
@@ -29,6 +28,21 @@ interface ToolHookBeforeEvent {
   tool: string;
   sessionID: string;
   id: string;
+  agent: string;
+  input: unknown;
+}
+
+type Dialect = "bash" | "powershell" | "unknown";
+
+interface SessionContextEvent {
+  sessionID: string;
+  agent: string;
+  tools: Record<string, { description: string }>;
+}
+
+interface ShellBeforeEvent {
+  command: string;
+  shell: string;
 }
 
 export interface ToolHookEvent {
@@ -50,6 +64,18 @@ interface OpenCodeEvent {
 }
 
 export interface OpenCodePluginContext {
+  session?: {
+    hook(
+      name: "context" | "generate" | "compaction",
+      handler: (event: SessionContextEvent) => void,
+    ): Promise<ToolHookRegistration>;
+  };
+  shell?: {
+    hook(
+      name: "create.before",
+      handler: (event: ShellBeforeEvent) => void,
+    ): Promise<ToolHookRegistration>;
+  };
   tool: {
     hook(
       name: "execute.before",
@@ -82,6 +108,21 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function isShell(tool: string): boolean {
+  return ["shell", "bash", "powershell"].includes(tool);
+}
+
+function shellDialect(shell: string): Dialect {
+  const name = shell
+    .split(/[/\\\\]/)
+    .pop()
+    ?.toLowerCase()
+    .replace(/\.exe$/, "");
+  if (name === "bash") return "bash";
+  if (name === "pwsh" || name === "powershell") return "powershell";
+  return "unknown";
 }
 
 function exitCodeFrom(metadata: unknown): number | null {
@@ -149,12 +190,79 @@ export async function registerOpenCodePlugin(
   const activeCallsBySession = new Map<string, Set<AbortController>>();
   // OpenCode v2 Code Mode forwards the wrapper call ID to nested tool hooks.
   const activeCodeModeCalls = new Map<string, Map<string, number>>();
+  const dialects = new Map<string, Map<string, Dialect>>();
+  const rewrites = new Map<
+    string,
+    {
+      original: string;
+      dialect: Dialect;
+      session: string;
+      call: string;
+    }
+  >();
   const eventController = new AbortController();
   let closed = false;
 
   function abortSession(session: string): void {
     for (const controller of activeCallsBySession.get(session) ?? []) controller.abort();
     activeCodeModeCalls.delete(session);
+    dialects.delete(session);
+    for (const [command, rewrite] of rewrites) {
+      if (rewrite.session === session) rewrites.delete(command);
+    }
+  }
+
+  async function handleBefore(event: ToolHookBeforeEvent): Promise<void> {
+    if (closed) return;
+    if (event.tool === "execute") {
+      let sessionCalls = activeCodeModeCalls.get(event.sessionID);
+      if (!sessionCalls) {
+        sessionCalls = new Map();
+        activeCodeModeCalls.set(event.sessionID, sessionCalls);
+      }
+      sessionCalls.set(event.id, (sessionCalls.get(event.id) ?? 0) + 1);
+      return;
+    }
+    const input = record(event.input);
+    const dialect = dialects.get(event.sessionID)?.get(event.agent) ?? "unknown";
+    if (
+      event.tool !== "shell" ||
+      !context.shell ||
+      dialect === "unknown" ||
+      typeof input?.command !== "string" ||
+      activeCodeModeCalls.get(event.sessionID)?.has(event.id)
+    )
+      return;
+    const original = input.command;
+    const controller = new AbortController();
+    let calls = activeCallsBySession.get(event.sessionID);
+    if (!calls) {
+      calls = new Set();
+      activeCallsBySession.set(event.sessionID, calls);
+    }
+    calls.add(controller);
+    try {
+      const command = await bridge.rewrite(
+        event.sessionID,
+        event.id,
+        original,
+        dialect,
+        controller.signal,
+      );
+      if (
+        closed ||
+        controller.signal.aborted ||
+        input.command !== original ||
+        !command ||
+        command === original
+      )
+        return;
+      rewrites.set(command, { original, dialect, session: event.sessionID, call: event.id });
+      input.command = command;
+    } finally {
+      calls.delete(controller);
+      if (calls.size === 0) activeCallsBySession.delete(event.sessionID);
+    }
   }
 
   async function handleResult(event: ToolHookEvent): Promise<void> {
@@ -169,7 +277,11 @@ export async function registerOpenCodePlugin(
         codeModeSessionCalls.set(event.id, codeModeDepth - 1);
       }
     }
-    if (closed) return;
+    for (const [command, rewrite] of rewrites) {
+      if (rewrite.session === event.sessionID && rewrite.call === event.id)
+        rewrites.delete(command);
+    }
+    if (closed || isShell(event.tool)) return;
     const input = record(event.input);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
@@ -209,16 +321,6 @@ export async function registerOpenCodePlugin(
         reason: "original_directory_in_arguments",
       });
       bridge.recordDelivery(selection.texts, "recovery_skipped");
-      return;
-    }
-
-    const shellReason = shellSkipReason("opencode", event.tool, input);
-    if (shellReason) {
-      bridge.recordObservation(observation, originalText, originalText, {
-        outcome: "protected",
-        reason: shellReason,
-      });
-      bridge.recordDelivery(selection.texts, "protected");
       return;
     }
 
@@ -274,20 +376,41 @@ export async function registerOpenCodePlugin(
     }
   }
 
-  const beforeRegistration = await context.tool.hook("execute.before", (event) => {
-    if (event.tool !== "execute") return;
-    let sessionCalls = activeCodeModeCalls.get(event.sessionID);
-    if (!sessionCalls) {
-      sessionCalls = new Map();
-      activeCodeModeCalls.set(event.sessionID, sessionCalls);
-    }
-    sessionCalls.set(event.id, (sessionCalls.get(event.id) ?? 0) + 1);
-  });
-  let registration: ToolHookRegistration;
+  const registrations: ToolHookRegistration[] = [];
   try {
-    registration = await context.tool.hook("execute.after", handleResult);
+    if (context.session && context.shell) {
+      // v2.0.26 supplies the resolved agent shell in this host-generated sentence.
+      // It is only a hint: verify against the actual launch shell below.
+      const observeShell = (event: SessionContextEvent): void => {
+        const description = event.tools.shell?.description ?? "";
+        const match =
+          /(?:^| )Commands run on (?:Windows|macOS|Linux) using ([a-zA-Z0-9_-]+)\./.exec(
+            description,
+          );
+        let agents = dialects.get(event.sessionID);
+        if (!agents) {
+          agents = new Map();
+          dialects.set(event.sessionID, agents);
+        }
+        agents.set(event.agent, match?.[1] ? shellDialect(match[1]) : "unknown");
+      };
+      for (const name of ["context", "generate", "compaction"] as const) {
+        registrations.push(await context.session.hook(name, observeShell));
+      }
+      registrations.push(
+        await context.shell.hook("create.before", (event) => {
+          const rewrite = rewrites.get(event.command);
+          if (!rewrite) return;
+          rewrites.delete(event.command);
+          if (shellDialect(event.shell) !== rewrite.dialect) event.command = rewrite.original;
+        }),
+      );
+    }
+    registrations.push(await context.tool.hook("execute.before", handleBefore));
+    registrations.push(await context.tool.hook("execute.after", handleResult));
   } catch (error) {
-    await beforeRegistration.dispose();
+    for (const registration of registrations.reverse()) await registration.dispose();
+    bridge.close();
     throw error;
   }
   let eventLoop: Promise<void> | undefined;
@@ -316,8 +439,9 @@ export async function registerOpenCodePlugin(
       for (const controller of sessionCalls) controller.abort();
     }
     bridge.close();
-    await registration.dispose();
-    await beforeRegistration.dispose();
+    dialects.clear();
+    rewrites.clear();
+    for (const registration of registrations.reverse()) await registration.dispose();
     await eventLoop;
   };
 }
