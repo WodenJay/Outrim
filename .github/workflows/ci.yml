@@ -118,10 +118,8 @@ jobs:
           RELEASE_NOTES: |
             ## What's changed
 
-            - Add verified self-updates with `outrim upgrade`, refreshing installed Pi and OpenCode integrations with rollback protection and background handling for busy executables.
-            - Add complete CLI help, validate arguments before execution, and simplify command output and diagnostics.
-            - Compress shared path prefixes and group search context in order while preserving content and rejecting ambiguous path records.
-            - Improve installer messages and Windows path handling, and honor disabled PATH configuration.
+            - Hide retired `Head + tail` rule statistics from `outrim gain` while preserving historical data and cumulative savings.
+            - Add `outrim gain clear` to delete cumulative savings and diagnostic records after typing `yes` in an interactive terminal. Exit hosts using Outrim first; recovery originals and recording settings are kept.
 
             ## Installation
 
