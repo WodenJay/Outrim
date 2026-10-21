@@ -77,22 +77,32 @@ fn replacement(request: &Request, executable: &Path) -> Option<String> {
             | "jq"
             | "cat"
             | "head"
-            | "tail"
     ) {
         return None;
     }
     let argv: Vec<_> = words.iter().map(OsString::from).collect();
     let source = command::source(&argv);
-    if matches!(source, Source::Unknown)
-        && !matches!(name.as_str(), "git" | "jq" | "cat" | "head" | "tail")
+    if matches!(source, Source::Unknown) && !matches!(name.as_str(), "git" | "jq" | "cat" | "head")
     {
         return None;
     }
     if words.iter().any(|word| {
+        let flag = word.split('=').next().unwrap_or(word);
         matches!(
-            word.as_str(),
-            "-i" | "--interactive" | "-p" | "--patch" | "--watch" | "-w" | "-f" | "--follow"
-        )
+            flag,
+            "--interactive"
+                | "--patch"
+                | "--watch"
+                | "--watchAll"
+                | "--follow"
+                | "--pdb"
+                | "--trace"
+                | "--ui"
+                | "--inspect"
+                | "--inspect-brk"
+        ) || (flag.starts_with('-')
+            && !flag.starts_with("--")
+            && flag[1..].contains(['i', 'p', 'w', 'f', 'F']))
     }) {
         return None;
     }
@@ -220,6 +230,10 @@ fn literals(command: &str, powershell: bool) -> Option<Vec<String>> {
             started = true;
         } else if quote == Some('"') {
             if c == '"' {
+                // PowerShell doubled quotes vary with native argument-passing mode.
+                if powershell && chars.peek() == Some(&'"') {
+                    return None;
+                }
                 quote = None;
             } else if c == '$' || (!powershell && c == '`') {
                 return None;

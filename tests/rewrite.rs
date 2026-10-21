@@ -58,6 +58,15 @@ fn uncertain_or_ineligible_commands_are_not_rewritten() {
             "cargo test *.rs",
             "cargo test 'unclosed",
             "cargo test --watch",
+            "cargo test --watch=true",
+            "cargo test -wpkg",
+            "pytest --pdb",
+            "pytest --pdb=custom:Debugger",
+            "pytest --trace",
+            "vitest --ui",
+            "tail -F build.log",
+            "tail --follow=name build.log",
+            "tail -fn100 build.log",
             "git add --patch",
             "git commit",
             "echo hello",
@@ -74,6 +83,7 @@ fn uncertain_or_ineligible_commands_are_not_rewritten() {
         }
     }
     assert!(rewrite("cargo test", "unknown")["command"].is_null());
+    assert!(rewrite(r#"cargo test "a""b""#, "powershell")["command"].is_null());
 }
 
 fn fixture() -> &'static PathBuf {

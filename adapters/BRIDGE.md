@@ -55,8 +55,10 @@ runtime/search commands and selected read-only Git/file/JSON commands. Quotes,
 literal spaces and dialect-specific escapes are parsed, not evaluated. Expansion,
 globbing, pipelines, redirection, compound syntax, unconfirmed interactive flags,
 launchers and explicit `outrim exec` (including `--no-compress`) remain native.
+Follow commands (`tail`) and recognized watch/debug/interactive flags stay native.
 PowerShell accepts `& 'quoted executable'` as well as unquoted executable heads;
-a quoted head without `&` is an expression and is declined.
+a quoted head without `&` is an expression and is declined. Doubled double-quotes
+also stay native because their argv behavior depends on the PowerShell mode.
 
 The replacement resolves the target in the actual shell before wrapping it.
 Aliases, functions, builtins and cmdlets take the original-command branch.
