@@ -58,4 +58,4 @@ if (-not $NoPath) {
     }
 }
 Write-Output "Installed $InstalledBinary"
-if ($NeedsPath) { Write-Output 'Open a new terminal.' }
+if ($NeedsPath -and -not $NoPath) { Write-Output 'Open a new terminal.' }

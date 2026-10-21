@@ -79,5 +79,9 @@ fi
 printf 'Installed %s\n' "$bin_dir/outrim"
 case ":$PATH:" in
     *":$bin_dir:"*) ;;
-    *) printf 'Open a new terminal or run:\nexport PATH="$HOME/.outrim/bin:$PATH"\n' ;;
+    *)
+        if [ "$configure_path" = 1 ]; then
+            printf 'Open a new terminal or run:\n'
+        fi
+        printf 'export PATH="$HOME/.outrim/bin:$PATH"\n' ;;
 esac
