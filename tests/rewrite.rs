@@ -82,6 +82,23 @@ fn compound_commands_preserve_short_circuiting_and_distinct_stream_records() {
             .map(|e| e["execution"]["unit_id"].as_str().unwrap())
             .collect();
         assert_eq!(units.len(), 3);
+        let mut ordered = events.clone();
+        ordered.sort_by_key(|event| event["execution"]["unit_id"].as_str().unwrap().to_owned());
+        for (stream, expected) in [("stdout", &direct.stdout), ("stderr", &direct.stderr)] {
+            let recovered: Vec<u8> = ordered
+                .iter()
+                .filter(|event| event["execution"]["stream"] == stream)
+                .flat_map(|event| {
+                    let directory = home
+                        .path()
+                        .join(".outrim/records")
+                        .join(event["instance_id"].as_str().unwrap());
+                    fs::read(directory.join(event["content"]["original"].as_str().unwrap()))
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(&recovered, expected, "{dialect}: {stream}");
+        }
         for event in events {
             let unit = event["execution"]["unit_id"].as_str().unwrap();
             assert_eq!(
@@ -94,8 +111,14 @@ fn compound_commands_preserve_short_circuiting_and_distinct_stream_records() {
             );
             assert_eq!(event["tool_call_id"], "call-1");
             assert_eq!(event["session"], "session-1");
-            if let Some(path) = event["original_path"].as_str() {
-                assert!(!fs::read(path).unwrap().is_empty());
+            if unit.ends_with(":3") {
+                assert_eq!(event["applied_rule"], "log_tail");
+                let path = event["original_path"]
+                    .as_str()
+                    .expect("compressed stream recovery path");
+                let original = fs::read_to_string(path).unwrap();
+                assert!(original.contains("\"id\": 0"));
+                assert!(original.contains("\"id\": 99"));
             }
         }
     }
