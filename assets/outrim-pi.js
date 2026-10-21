@@ -225,14 +225,14 @@ function createBridge(host, executable, spawnProcess) {
     started.on("exit", () => fail(started));
     return started;
   }
-  function process(session, tool, text, signal) {
+  function exchange(payload, signal, timeoutMs) {
     if (closed || signal?.aborted)
       return Promise.resolve(undefined);
     const currentChild = child ?? start();
     if (!currentChild)
       return Promise.resolve(undefined);
     const id = String(++nextId);
-    const request = { version: 2, id, host, session, tool, text };
+    const request = { ...payload, version: 2, id };
     let line;
     try {
       line = `${JSON.stringify(request)}
@@ -242,23 +242,14 @@ function createBridge(host, executable, spawnProcess) {
     }
     return new Promise((resolve) => {
       let settled = false;
+      let timer;
       const finish = (response) => {
         if (settled)
           return;
         settled = true;
+        clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
-        if (response && typeof response.text === "string" && typeof response.disposition === "string" && (response.applied_rule === null || typeof response.applied_rule === "string")) {
-          resolve({
-            text: response.text,
-            disposition: response.disposition,
-            appliedRule: response.applied_rule,
-            originalPath: typeof response.original_path === "string" ? response.original_path : null,
-            candidates: Array.isArray(response.candidates) ? response.candidates : [],
-            reason: typeof response.reason === "string" ? response.reason : null
-          });
-        } else {
-          resolve(undefined);
-        }
+        resolve(response);
       };
       const abort = () => finish(undefined);
       pending.set(id, { finish });
@@ -268,6 +259,8 @@ function createBridge(host, executable, spawnProcess) {
         finish(undefined);
         return;
       }
+      if (timeoutMs !== undefined)
+        timer = setTimeout(() => fail(currentChild), timeoutMs);
       try {
         currentChild.stdin.write(line, (error) => {
           if (error)
@@ -277,6 +270,33 @@ function createBridge(host, executable, spawnProcess) {
         fail(currentChild);
       }
     });
+  }
+  async function process(session, tool, text, signal) {
+    const payload = { version: 2, id: "", host, session, tool, text };
+    const response = await exchange({ ...payload }, signal);
+    if (!response || typeof response.text !== "string" || typeof response.disposition !== "string" || !(response.applied_rule === null || typeof response.applied_rule === "string"))
+      return;
+    return {
+      text: response.text,
+      disposition: response.disposition,
+      appliedRule: response.applied_rule,
+      originalPath: typeof response.original_path === "string" ? response.original_path : null,
+      candidates: Array.isArray(response.candidates) ? response.candidates : [],
+      reason: typeof response.reason === "string" ? response.reason : null
+    };
+  }
+  async function rewrite(session, toolCallId, command, dialect, signal) {
+    const response = await exchange({
+      type: "rewrite",
+      host,
+      session,
+      tool_call_id: toolCallId,
+      unit_id: `${toolCallId}:0`,
+      recording,
+      dialect,
+      command
+    }, signal, 5000);
+    return typeof response?.command === "string" ? response.command : undefined;
   }
   function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
@@ -373,7 +393,7 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { process, recordDelivery, recordObservation, close };
+  return { rewrite, process, recordDelivery, recordObservation, close };
 }
 
 // adapters/pi.ts
@@ -385,10 +405,46 @@ function exitCodeFrom(structuredContent) {
   const value = structuredContent.exit_code;
   return typeof value === "number" && Number.isInteger(value) && value >= -2147483648 && value <= 2147483647 ? value : null;
 }
+function isShell2(name) {
+  return ["bash", "powershell", "shell"].includes(name);
+}
+async function shellDialect(pi, name) {
+  try {
+    const tool = pi.getAllTools?.().find((tool) => tool.name === name);
+    if (name !== "bash" || tool?.sourceInfo.source !== "builtin" || tool.sourceInfo.path !== "builtin:bash")
+      return "unknown";
+    const settings = pi.getSettings?.();
+    if (!settings || settings.shellCommandPrefix)
+      return "unknown";
+    const packageName = "@earendil-works/pi-coding-agent";
+    const sdk = await import(packageName);
+    const path = sdk.SettingsManager.inMemory(settings).getShellPath();
+    const shell = sdk.getShellConfig(path).shell;
+    return /(?:^|[/\\\\])bash(?:\.exe)?$/i.test(shell) ? "bash" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 var defaultSpawn = (executable, args, options) => nodeSpawn(executable, args, options);
 function registerPiExtension(pi, options = {}) {
   const bridge = createBridge("pi", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
+  pi.on("tool_call", async (event, context) => {
+    if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string")
+      return;
+    const original = event.input.command;
+    try {
+      const dialect = options.dialect ?? await shellDialect(pi, event.toolName);
+      if (dialect === "unknown")
+        return;
+      const command = await bridge.rewrite(context.sessionManager.getSessionId(), event.toolCallId, original, dialect, context.signal);
+      if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
+        event.input.command = command;
+      }
+    } catch {}
+  });
   pi.on("tool_result", async (event, context) => {
+    if (isShell2(event.toolName))
+      return;
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,
@@ -418,15 +474,6 @@ function registerPiExtension(pi, options = {}) {
         reason: "original_directory_in_arguments"
       });
       bridge.recordDelivery(text, "recovery_skipped", context.signal);
-      return;
-    }
-    const shellReason = shellSkipReason("pi", event.toolName, event.input);
-    if (shellReason) {
-      bridge.recordObservation(observation, text, text, {
-        outcome: context.signal?.aborted ? "cancelled" : "protected",
-        reason: shellReason
-      });
-      bridge.recordDelivery(text, "protected", context.signal);
       return;
     }
     const processed = await bridge.process(observation.session, observation.tool, text, context.signal);

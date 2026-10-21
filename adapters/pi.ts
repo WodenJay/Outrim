@@ -6,7 +6,6 @@ import {
   inputReferencesOriginals,
   processingFacts,
   type SpawnProcess,
-  shellSkipReason,
   sourceFor,
 } from "./shared";
 
@@ -45,7 +44,20 @@ interface ToolResultEventResult {
   usage: unknown;
 }
 
+interface ToolCallEvent {
+  toolName: string;
+  toolCallId: string;
+  parentToolCallId?: string;
+  input: Record<string, unknown>;
+}
+
 interface PiApi {
+  getSettings?(): { shellPath?: string; shellCommandPrefix?: string };
+  getAllTools?(): Array<{ name: string; sourceInfo: { source: string; path?: string } }>;
+  on(
+    event: "tool_call",
+    handler: (event: ToolCallEvent, context: ToolResultContext) => Promise<void>,
+  ): unknown;
   on(
     event: "tool_result",
     handler: (
@@ -57,6 +69,7 @@ interface PiApi {
 }
 
 interface PiOptions {
+  dialect?: "bash" | "powershell" | "unknown";
   executable?: string;
   spawnProcess?: SpawnProcess;
 }
@@ -72,6 +85,32 @@ function exitCodeFrom(structuredContent: unknown): number | null {
     : null;
 }
 
+function isShell(name: string): boolean {
+  return ["bash", "powershell", "shell"].includes(name);
+}
+
+async function shellDialect(pi: PiApi, name: string): Promise<"bash" | "unknown"> {
+  try {
+    const tool = pi.getAllTools?.().find((tool) => tool.name === name);
+    if (
+      name !== "bash" ||
+      tool?.sourceInfo.source !== "builtin" ||
+      tool.sourceInfo.path !== "builtin:bash"
+    )
+      return "unknown";
+    const settings = pi.getSettings?.();
+    if (!settings || settings.shellCommandPrefix) return "unknown";
+    // Use the host's own resolver and effective settings, not a second settings-file loader.
+    const packageName = "@earendil-works/pi-coding-agent";
+    const sdk = await import(packageName);
+    const path = sdk.SettingsManager.inMemory(settings).getShellPath();
+    const shell = sdk.getShellConfig(path).shell as string;
+    return /(?:^|[/\\\\])bash(?:\.exe)?$/i.test(shell) ? "bash" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 const defaultSpawn: SpawnProcess = (executable, args, options) =>
   nodeSpawn(executable, args, options) as unknown as BridgeChild;
 
@@ -82,7 +121,34 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     options.spawnProcess ?? defaultSpawn,
   );
 
+  pi.on("tool_call", async (event, context) => {
+    if (
+      !isShell(event.toolName) ||
+      event.parentToolCallId ||
+      typeof event.input.command !== "string"
+    )
+      return;
+    const original = event.input.command;
+    try {
+      const dialect = options.dialect ?? (await shellDialect(pi, event.toolName));
+      if (dialect === "unknown") return;
+      const command = await bridge.rewrite(
+        context.sessionManager.getSessionId(),
+        event.toolCallId,
+        original,
+        dialect,
+        context.signal,
+      );
+      if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
+        event.input.command = command;
+      }
+    } catch {
+      // Failure to optimize must not prevent native execution.
+    }
+  });
+
   pi.on("tool_result", async (event, context) => {
+    if (isShell(event.toolName)) return undefined;
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,
@@ -119,16 +185,6 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
         reason: "original_directory_in_arguments",
       });
       bridge.recordDelivery(text, "recovery_skipped", context.signal);
-      return undefined;
-    }
-
-    const shellReason = shellSkipReason("pi", event.toolName, event.input);
-    if (shellReason) {
-      bridge.recordObservation(observation, text, text, {
-        outcome: context.signal?.aborted ? "cancelled" : "protected",
-        reason: shellReason,
-      });
-      bridge.recordDelivery(text, "protected", context.signal);
       return undefined;
     }
 

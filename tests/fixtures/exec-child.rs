@@ -3,7 +3,7 @@ use std::{io::{self, Read, Write}, process::ExitCode};
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args[0].as_str() {
-        "echo" => {
+        "echo" | "test" => {
             let mut input = Vec::new();
             io::stdin().read_to_end(&mut input).unwrap();
             io::stdout().write_all(&input).unwrap();
@@ -17,7 +17,7 @@ fn main() -> ExitCode {
             io::stdout().write_all(&std::fs::read(&args[1]).unwrap()).unwrap();
             ExitCode::SUCCESS
         }
-        "json" => {
+        "json" | "build" => {
             std::fs::OpenOptions::new().create(true).append(true).open("executed").unwrap().write_all(b"once").unwrap();
             let value = format!("{{\n  \"items\": [\n{}\n  ]\n}}\n", (0..100).map(|n| format!("    {{ \"id\": {n}, \"name\": \"item\" }}")).collect::<Vec<_>>().join(",\n"));
             print!("{value}");

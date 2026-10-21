@@ -189,6 +189,7 @@ interface CoreResponse {
   version: number;
   id: string;
   text?: string;
+  command?: string | null;
   disposition?: Disposition;
   applied_rule?: string | null;
   original_path?: string | null;
@@ -309,6 +310,13 @@ export function createBridge(
   executable: string,
   spawnProcess: SpawnProcess,
 ): {
+  rewrite(
+    session: string,
+    toolCallId: string,
+    command: string,
+    dialect: "bash" | "powershell" | "unknown",
+    signal?: AbortSignalLike,
+  ): Promise<string | undefined>;
   process(
     session: string,
     tool: ToolInput,
@@ -401,18 +409,17 @@ export function createBridge(
     return started;
   }
 
-  function process(
-    session: string,
-    tool: ToolInput,
-    text: string,
+  function exchange(
+    payload: Record<string, unknown>,
     signal?: AbortSignalLike,
-  ): Promise<ProcessedResult | undefined> {
+    timeoutMs?: number,
+  ): Promise<CoreResponse | undefined> {
     if (closed || signal?.aborted) return Promise.resolve(undefined);
     const currentChild = child ?? start();
     if (!currentChild) return Promise.resolve(undefined);
 
     const id = String(++nextId);
-    const request: CoreRequest = { version: 2, id, host, session, tool, text };
+    const request = { ...payload, version: 2, id };
     let line: string;
     try {
       line = `${JSON.stringify(request)}\n`;
@@ -422,28 +429,13 @@ export function createBridge(
 
     return new Promise((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = (response: CoreResponse | undefined) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
-        if (
-          response &&
-          typeof response.text === "string" &&
-          typeof response.disposition === "string" &&
-          (response.applied_rule === null || typeof response.applied_rule === "string")
-        ) {
-          resolve({
-            text: response.text,
-            disposition: response.disposition as Disposition,
-            appliedRule: response.applied_rule,
-            originalPath:
-              typeof response.original_path === "string" ? response.original_path : null,
-            candidates: Array.isArray(response.candidates) ? response.candidates : [],
-            reason: typeof response.reason === "string" ? response.reason : null,
-          });
-        } else {
-          resolve(undefined);
-        }
+        resolve(response);
       };
       const abort = () => finish(undefined);
       pending.set(id, { finish });
@@ -453,6 +445,7 @@ export function createBridge(
         finish(undefined);
         return;
       }
+      if (timeoutMs !== undefined) timer = setTimeout(() => fail(currentChild), timeoutMs);
       try {
         currentChild.stdin.write(line, (error) => {
           if (error) fail(currentChild);
@@ -461,6 +454,55 @@ export function createBridge(
         fail(currentChild);
       }
     });
+  }
+
+  async function process(
+    session: string,
+    tool: ToolInput,
+    text: string,
+    signal?: AbortSignalLike,
+  ): Promise<ProcessedResult | undefined> {
+    const payload: CoreRequest = { version: 2, id: "", host, session, tool, text };
+    const response = await exchange({ ...payload }, signal);
+    if (
+      !response ||
+      typeof response.text !== "string" ||
+      typeof response.disposition !== "string" ||
+      !(response.applied_rule === null || typeof response.applied_rule === "string")
+    )
+      return undefined;
+    return {
+      text: response.text,
+      disposition: response.disposition as Disposition,
+      appliedRule: response.applied_rule,
+      originalPath: typeof response.original_path === "string" ? response.original_path : null,
+      candidates: Array.isArray(response.candidates) ? response.candidates : [],
+      reason: typeof response.reason === "string" ? response.reason : null,
+    };
+  }
+
+  async function rewrite(
+    session: string,
+    toolCallId: string,
+    command: string,
+    dialect: "bash" | "powershell" | "unknown",
+    signal?: AbortSignalLike,
+  ): Promise<string | undefined> {
+    const response = await exchange(
+      {
+        type: "rewrite",
+        host,
+        session,
+        tool_call_id: toolCallId,
+        unit_id: `${toolCallId}:0`,
+        recording,
+        dialect,
+        command,
+      },
+      signal,
+      5_000,
+    );
+    return typeof response?.command === "string" ? response.command : undefined;
   }
 
   // Called only when the host adopts the result. An absent outcome records fail-open;
@@ -569,5 +611,5 @@ export function createBridge(
     }
   }
 
-  return { process, recordDelivery, recordObservation, close };
+  return { rewrite, process, recordDelivery, recordObservation, close };
 }

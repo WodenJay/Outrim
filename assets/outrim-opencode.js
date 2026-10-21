@@ -225,14 +225,14 @@ function createBridge(host, executable, spawnProcess) {
     started.on("exit", () => fail(started));
     return started;
   }
-  function process(session, tool, text, signal) {
+  function exchange(payload, signal, timeoutMs) {
     if (closed || signal?.aborted)
       return Promise.resolve(undefined);
     const currentChild = child ?? start();
     if (!currentChild)
       return Promise.resolve(undefined);
     const id = String(++nextId);
-    const request = { version: 2, id, host, session, tool, text };
+    const request = { ...payload, version: 2, id };
     let line;
     try {
       line = `${JSON.stringify(request)}
@@ -242,23 +242,14 @@ function createBridge(host, executable, spawnProcess) {
     }
     return new Promise((resolve) => {
       let settled = false;
+      let timer;
       const finish = (response) => {
         if (settled)
           return;
         settled = true;
+        clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
-        if (response && typeof response.text === "string" && typeof response.disposition === "string" && (response.applied_rule === null || typeof response.applied_rule === "string")) {
-          resolve({
-            text: response.text,
-            disposition: response.disposition,
-            appliedRule: response.applied_rule,
-            originalPath: typeof response.original_path === "string" ? response.original_path : null,
-            candidates: Array.isArray(response.candidates) ? response.candidates : [],
-            reason: typeof response.reason === "string" ? response.reason : null
-          });
-        } else {
-          resolve(undefined);
-        }
+        resolve(response);
       };
       const abort = () => finish(undefined);
       pending.set(id, { finish });
@@ -268,6 +259,8 @@ function createBridge(host, executable, spawnProcess) {
         finish(undefined);
         return;
       }
+      if (timeoutMs !== undefined)
+        timer = setTimeout(() => fail(currentChild), timeoutMs);
       try {
         currentChild.stdin.write(line, (error) => {
           if (error)
@@ -277,6 +270,33 @@ function createBridge(host, executable, spawnProcess) {
         fail(currentChild);
       }
     });
+  }
+  async function process(session, tool, text, signal) {
+    const payload = { version: 2, id: "", host, session, tool, text };
+    const response = await exchange({ ...payload }, signal);
+    if (!response || typeof response.text !== "string" || typeof response.disposition !== "string" || !(response.applied_rule === null || typeof response.applied_rule === "string"))
+      return;
+    return {
+      text: response.text,
+      disposition: response.disposition,
+      appliedRule: response.applied_rule,
+      originalPath: typeof response.original_path === "string" ? response.original_path : null,
+      candidates: Array.isArray(response.candidates) ? response.candidates : [],
+      reason: typeof response.reason === "string" ? response.reason : null
+    };
+  }
+  async function rewrite(session, toolCallId, command, dialect, signal) {
+    const response = await exchange({
+      type: "rewrite",
+      host,
+      session,
+      tool_call_id: toolCallId,
+      unit_id: `${toolCallId}:0`,
+      recording,
+      dialect,
+      command
+    }, signal, 5000);
+    return typeof response?.command === "string" ? response.command : undefined;
   }
   function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
@@ -373,7 +393,7 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { process, recordDelivery, recordObservation, close };
+  return { rewrite, process, recordDelivery, recordObservation, close };
 }
 
 // adapters/opencode.ts

@@ -32,46 +32,13 @@ const passthroughCases = [
 ];
 const passthroughChars = passthroughCases.reduce((total, [, text]) => total + chars(text), 0);
 
-async function checkHost(host) {
+async function checkHost() {
   const handlers = new Map();
   let handle;
   let close;
   let unsupported;
   let multipart;
-  if (host === "pi") {
-    const { default: setup } = await import(
-      pathToFileURL(join(process.env.PI_CODING_AGENT_DIR, "extensions/outrim.js")).href
-    );
-    setup({ on: (name, handler) => handlers.set(name, handler) });
-    handle = async (text, input) => {
-      const event = {
-        toolName: "bash",
-        toolCallId: "call",
-        input,
-        content: [{ type: "text", text }],
-        structuredContent: { exit_code: 0 },
-        isError: false,
-      };
-      const result = await handlers.get("tool_result")(event, {
-        sessionManager: { getSessionId: () => "roundtrip" },
-      });
-      return (result ?? event).content[0].text;
-    };
-    unsupported = () =>
-      handlers.get("tool_result")(
-        {
-          toolName: "bash",
-          toolCallId: "unsupported",
-          input: { command: "echo hello" },
-          content: [
-            { type: "text", text: "visible 🦀" },
-            { type: "image", data: "not retained" },
-          ],
-        },
-        { sessionManager: { getSessionId: () => "roundtrip" } },
-      );
-    close = () => handlers.get("session_shutdown")();
-  } else {
+  {
     const { default: plugin } = await import(
       pathToFileURL(join(process.env.XDG_CONFIG_HOME, "opencode/plugins/outrim.js")).href
     );
@@ -163,7 +130,7 @@ async function checkHost(host) {
 if (process.argv[2] === "--host") {
   // The parent waits for this process (including the real bridge) to exit.
   // Closing stdin drains delivery records; no sleep or acknowledgement assumption is needed.
-  console.log(JSON.stringify(await checkHost(process.argv[3])));
+  console.log(JSON.stringify(await checkHost()));
 } else {
   const build = execFileSync("cargo", ["build", "--locked", "--message-format=json"], {
     cwd: root,
@@ -177,7 +144,11 @@ if (process.argv[2] === "--host") {
     .find((message) => message.target?.name === "outrim" && message.executable);
   assert.ok(artifact?.executable, "Cargo must produce the outrim executable");
 
-  for (const host of ["pi", "opencode"]) {
+  execFileSync(process.execPath, [join(root, "scripts/check-pi.mjs"), artifact.executable], {
+    stdio: "inherit",
+  });
+
+  for (const host of ["opencode"]) {
     const home = mkdtempSync(join(tmpdir(), `outrim-${host}-roundtrip-`));
     const env = {
       ...process.env,
@@ -222,7 +193,7 @@ if (process.argv[2] === "--host") {
           .split("\n")
           .map((line) => ({ ...JSON.parse(line), directory }));
       });
-      assert.equal(events.length, (host === "pi" ? 4 : 6) + passthroughCases.length);
+      assert.equal(events.length, 6 + passthroughCases.length);
       for (const [index, event] of events.slice(-passthroughCases.length).entries()) {
         const [, text] = passthroughCases[index];
         assert.equal(event.outcome, "protected");

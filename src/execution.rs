@@ -7,6 +7,8 @@ use std::{
 };
 
 /// Facts supplied by a host. Absent session/call/source facts stay absent.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Context {
     pub unit_id: String,
     pub host: Host,
@@ -14,6 +16,28 @@ pub struct Context {
     pub tool_call_id: Option<String>,
     pub source: Option<Source>,
     pub recording: Option<bool>,
+}
+
+impl Context {
+    /// A shell-neutral transport: legacy PowerShell strips quotes in native arguments.
+    pub fn encode(&self) -> String {
+        serde_json::to_vec(self)
+            .expect("serializable execution context")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    pub fn decode(value: &str) -> Option<Self> {
+        if !value.len().is_multiple_of(2) || !value.is_ascii() {
+            return None;
+        }
+        let bytes: Option<Vec<u8>> = (0..value.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
+            .collect();
+        serde_json::from_slice(&bytes?).ok()
+    }
 }
 
 pub struct Execution {

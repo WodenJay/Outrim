@@ -34,6 +34,10 @@ pub fn run(
         };
 
         match message {
+            Message::Rewrite(request) => {
+                let executable = std::env::current_exe()?;
+                write_response(&mut output, &crate::rewrite::rewrite(request, &executable))?;
+            }
             Message::Process(request) => {
                 let response = processor.process(request);
                 write_response(&mut output, &response)?;
@@ -66,6 +70,7 @@ fn write_response(output: &mut impl Write, response: &impl serde::Serialize) -> 
 }
 
 enum Message {
+    Rewrite(crate::rewrite::Request),
     Process(Request),
     RecordDelivery(RecordDeliveryRequest),
     RecordObservation(RecordObservationRequest),
@@ -88,6 +93,13 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
     match value.get("type") {
         None => serde_json::from_value(value)
             .map(Message::Process)
+            .map_err(|error| ParseFailure {
+                id,
+                error: ProtocolError::InvalidRequest,
+                details: error.to_string(),
+            }),
+        Some(Value::String(kind)) if kind == "rewrite" => serde_json::from_value(value)
+            .map(Message::Rewrite)
             .map_err(|error| ParseFailure {
                 id,
                 error: ProtocolError::InvalidRequest,

@@ -12,6 +12,7 @@ pub(crate) enum Command {
     Bridge(Option<bool>),
     Exec {
         no_compress: bool,
+        context: Option<outrim::execution::Context>,
         timeout: Option<std::time::Duration>,
         arguments: Vec<OsString>,
     },
@@ -133,12 +134,23 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
             let usage =
                 "Usage: outrim exec [--no-compress] [--timeout-ms <ms>] -- <program> [args...]";
             let mut no_compress = false;
+            let mut context = None;
             let mut timeout = None;
             let mut rest = rest;
             while let Some(option) = rest.first().filter(|arg| *arg != "--") {
                 if option == "--no-compress" && !no_compress {
                     no_compress = true;
                     rest = &rest[1..];
+                } else if option == "--context" && context.is_none() {
+                    context = Some(
+                        outrim::execution::Context::decode(
+                            value(rest.get(1), "--context", usage)?
+                                .to_str()
+                                .ok_or_else(|| error("invalid execution context", usage))?,
+                        )
+                        .ok_or_else(|| error("invalid execution context", usage))?,
+                    );
+                    rest = &rest[2..];
                 } else if option == "--timeout-ms" && timeout.is_none() {
                     let milliseconds = value(rest.get(1), "--timeout-ms", usage)?
                         .to_str()
@@ -158,6 +170,7 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
             }
             Ok(Command::Exec {
                 no_compress,
+                context,
                 timeout,
                 arguments: rest[1..].to_vec(),
             })

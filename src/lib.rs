@@ -11,6 +11,7 @@ mod path_list;
 mod protection;
 pub mod protocol;
 mod recording;
+pub mod rewrite;
 mod rules;
 mod search;
 mod storage;

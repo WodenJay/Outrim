@@ -25,6 +25,7 @@ pub(crate) fn run(
     arguments: &[OsString],
     no_compress: bool,
     timeout: Option<Duration>,
+    context: Option<Context>,
 ) -> io::Result<ExitStatus> {
     let mut command = Command::new(&arguments[0]);
     command.args(&arguments[1..]).stdin(Stdio::inherit());
@@ -46,14 +47,14 @@ pub(crate) fn run(
         Execution::new(
             &home,
             arguments,
-            Context {
+            context.unwrap_or(Context {
                 unit_id: identity,
                 host: Host::Exec,
                 session: None,
                 tool_call_id: None,
                 source: None,
                 recording: None,
-            },
+            }),
         )
     });
     command.stdout(Stdio::piped()).stderr(Stdio::piped());

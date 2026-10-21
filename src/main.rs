@@ -46,9 +46,10 @@ fn main() -> ExitCode {
         cli::Command::Bridge(recording) => finish(run_bridge(recording)),
         cli::Command::Exec {
             no_compress,
+            context,
             timeout,
             arguments,
-        } => match exec::run(&arguments, no_compress, timeout) {
+        } => match exec::run(&arguments, no_compress, timeout, context) {
             Ok(status) => exec::exit(status),
             Err(error) => finish(Err(error)),
         },
