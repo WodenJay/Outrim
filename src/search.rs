@@ -7,17 +7,97 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
         .rev()
         .take_while(|record| matches!(**record, "\n" | "\r\n"))
         .count();
-    let hit_record_count = records.len() - trailing_blank_count;
-    let hits: Vec<_> = records[..hit_record_count]
+    let record_count = records.len() - trailing_blank_count;
+    let parsed: Vec<_> = records[..record_count]
         .iter()
-        .map(|record| parse_search_hit(record))
+        .map(|record| parse_search_record(record))
         .collect::<Option<_>>()?;
-    let hit_count = hits.len();
+    let mut has_hit = false;
+    let mut ordered = false;
+    for (index, record) in parsed.iter().enumerate() {
+        match record {
+            SearchRecord::Line(line) => {
+                has_hit |= !line.context;
+                ordered |= line.context;
+            }
+            SearchRecord::Separator(_) => {
+                if index == 0
+                    || !matches!(parsed[index - 1], SearchRecord::Line(_))
+                    || !matches!(parsed.get(index + 1), Some(SearchRecord::Line(_)))
+                {
+                    return None;
+                }
+                ordered = true;
+            }
+            SearchRecord::Limit(_) => {
+                if index + 1 != parsed.len() {
+                    return None;
+                }
+                ordered = true;
+            }
+        }
+    }
+    if !has_hit {
+        return None;
+    }
+
+    let mut grouped = if ordered {
+        group_in_order(&parsed)?
+    } else {
+        group_by_path(parsed)?
+    };
+    for record in &records[record_count..] {
+        grouped.push_str(record);
+    }
+    Some(grouped)
+}
+
+// Extended results preserve global order, including separators and notices.
+fn group_in_order(records: &[SearchRecord<'_>]) -> Option<String> {
+    let mut grouped = String::new();
+    let mut previous_path = None;
+    let mut repeated_path = false;
+    for (index, record) in records.iter().enumerate() {
+        match record {
+            SearchRecord::Line(line) => {
+                if previous_path == Some(line.path) {
+                    repeated_path = true;
+                } else {
+                    grouped.push_str(line.path);
+                    grouped.push(':');
+                    grouped.push_str(line.line_ending.unwrap_or("\n"));
+                }
+                grouped.push_str("  ");
+                grouped.push_str(line.line_number_text);
+                grouped.push_str(line.suffix_after_line);
+                grouped.push_str(line.line_ending.unwrap_or(""));
+                previous_path = Some(line.path);
+            }
+            SearchRecord::Separator(raw) => {
+                if let Some(SearchRecord::Line(next)) = records.get(index + 1)
+                    && previous_path == Some(next.path)
+                {
+                    grouped.push_str("  ");
+                }
+                grouped.push_str(raw);
+            }
+            SearchRecord::Limit(raw) => grouped.push_str(raw),
+        }
+    }
+    repeated_path.then_some(grouped)
+}
+
+// Pure hit results retain their original cross-file grouping behavior.
+fn group_by_path(records: Vec<SearchRecord<'_>>) -> Option<String> {
+    let hit_count = records.len();
     let mut groups: Vec<SearchGroup<'_>> = Vec::new();
     let mut group_by_path = HashMap::new();
     let mut repeated_path = false;
 
-    for hit in hits {
+    for record in records {
+        let SearchRecord::Line(hit) = record else {
+            unreachable!("pure hit results contain only lines");
+        };
         let group_index = if let Some(index) = group_by_path.get(hit.path) {
             repeated_path = true;
             *index
@@ -37,7 +117,7 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
         return None;
     }
 
-    let mut grouped = String::with_capacity(text.len());
+    let mut grouped = String::new();
     let mut emitted_hits = 0;
     for group in groups {
         grouped.push_str(group.path);
@@ -55,44 +135,66 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
             emitted_hits += 1;
         }
     }
-    for record in &records[hit_record_count..] {
-        grouped.push_str(record);
-    }
     Some(grouped)
+}
+
+enum SearchRecord<'a> {
+    Line(SearchLine<'a>),
+    Separator(&'a str),
+    Limit(&'a str),
 }
 
 struct SearchGroup<'a> {
     path: &'a str,
-    hits: Vec<SearchHit<'a>>,
+    hits: Vec<SearchLine<'a>>,
 }
 
-struct SearchHit<'a> {
+struct SearchLine<'a> {
     path: &'a str,
     line_number_text: &'a str,
-    // Optional column and hit content stay attached to the validated line number.
+    // Optional column and content stay attached to the validated line number.
     suffix_after_line: &'a str,
     line_ending: Option<&'a str>,
+    context: bool,
 }
 
-fn parse_search_hit(record: &str) -> Option<SearchHit<'_>> {
-    let (record, line_ending) = match record.strip_suffix('\n') {
+fn parse_search_record(raw: &str) -> Option<SearchRecord<'_>> {
+    let (record, line_ending) = match raw.strip_suffix('\n') {
         Some(record) => match record.strip_suffix('\r') {
             Some(record) => (record, Some("\r\n")),
             None => (record, Some("\n")),
         },
-        None => (record, None),
+        None => (raw, None),
     };
+    if record == "--" {
+        return Some(SearchRecord::Separator(raw));
+    }
+    if let Some(count) = record
+        .strip_prefix('[')
+        .and_then(|text| text.strip_suffix(" matches limit reached.]"))
+        && !count.is_empty()
+        && count.bytes().all(|byte| byte.is_ascii_digit())
+        && count.bytes().any(|byte| byte != b'0')
+    {
+        return Some(SearchRecord::Limit(raw));
+    }
 
-    let mut hit = None;
+    let mut line = None;
     for (separator, character) in record.char_indices() {
-        if character != ':' {
+        if !matches!(character, ':' | '-') {
             continue;
         }
+        let context = character == '-';
         let number_start = separator + 1;
         let Some(number_end) = digit_run_end(record, number_start) else {
             continue;
         };
-        if number_end != record.len() && record.as_bytes().get(number_end) != Some(&b':') {
+        let suffix_delimiter = record.as_bytes().get(number_end).copied();
+        if if context {
+            suffix_delimiter != Some(b'-')
+        } else {
+            number_end != record.len() && suffix_delimiter != Some(b':')
+        } {
             continue;
         }
 
@@ -104,17 +206,18 @@ fn parse_search_hit(record: &str) -> Option<SearchHit<'_>> {
         if !valid_search_path(path) || line_number == 0 {
             continue;
         }
-        if hit.is_some() {
+        if line.is_some() {
             return None;
         }
-        hit = Some(SearchHit {
+        line = Some(SearchLine {
             path,
             line_number_text,
             suffix_after_line: &record[number_end..],
             line_ending,
+            context,
         });
     }
-    hit
+    line.map(SearchRecord::Line)
 }
 
 fn digit_run_end(text: &str, start: usize) -> Option<usize> {

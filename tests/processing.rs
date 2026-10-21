@@ -507,7 +507,28 @@ fn unstructured_search_text_for_a_source_path_remains_protected() {
 }
 
 #[test]
-fn search_output_with_context_records_is_left_unchanged() {
+fn context_search_groups_blocks_without_losing_records_or_limit_notice() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/client.rs", "network-component/".repeat(8));
+    let text = format!(
+        "{file}-41- const retries = 3;\n{file}:42: const timeout = 5000;\n{file}-43- connect(retries, timeout);\n--\n{file}-88- const config = {{\n{file}:89:   timeout: 10000,\n{file}-90- }};\n[100 matches limit reached.]\n"
+    );
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{file}:\n  41- const retries = 3;\n  42: const timeout = 5000;\n  43- connect(retries, timeout);\n  --\n  88- const config = {{\n  89:   timeout: 10000,\n  90- }};\n[100 matches limit reached.]\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn search_output_with_mixed_context_delimiters_is_left_unchanged() {
     let home = tempfile::tempdir().unwrap();
     let path = "workspace/deeply/nested/source-file.rs";
     let text =
