@@ -9,14 +9,12 @@ pub(crate) fn protected(tool: &Tool) -> bool {
             .first()
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
-        if matches!(
-            program.trim_end_matches(".exe"),
-            "cat" | "head" | "tail" | "type"
-        ) && argv[1..]
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .any(protected_path)
+        let program = crate::command::program_name(program);
+        if matches!(program.as_str(), "cat" | "head" | "tail" | "type")
+            && argv[1..]
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(protected_path)
         {
             return true;
         }

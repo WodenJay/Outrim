@@ -10,11 +10,7 @@ pub fn source(arguments: &[OsString]) -> Source {
     let Some(program) = words.first() else {
         return Source::Unknown;
     };
-    let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
-    let program = program
-        .strip_suffix(".exe")
-        .unwrap_or(program)
-        .to_ascii_lowercase();
+    let program = program_name(program);
     let rest = &words[1..];
     let first = rest.first().copied().unwrap_or("");
     match program.as_str() {
@@ -43,14 +39,11 @@ pub fn source(arguments: &[OsString]) -> Source {
     }
 }
 
-/// Interpreter names alone cannot establish the source of their output.
-pub fn uncertain_shell(arguments: &[OsString]) -> bool {
-    arguments.first().is_some_and(|program| {
-        let program = program.to_string_lossy();
-        let name = program.rsplit(['/', '\\']).next().unwrap_or(&program);
-        matches!(
-            name.trim_end_matches(".exe").to_ascii_lowercase().as_str(),
-            "sh" | "bash" | "zsh" | "dash" | "fish" | "ksh" | "cmd" | "pwsh" | "powershell"
-        )
-    })
+pub(crate) fn program_name(program: &str) -> String {
+    let name = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    name.strip_suffix(".exe").unwrap_or(&name).to_owned()
 }

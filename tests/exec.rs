@@ -187,6 +187,68 @@ fn storage_and_diagnostic_failures_never_replace_the_child_result() {
 }
 
 #[test]
+fn shared_execution_keeps_unknown_json_eligible_and_honors_host_source() {
+    use outrim::{
+        execution::{Context, Execution},
+        protocol::{Host, OutputStream, Source},
+    };
+    for source in [None, Some(Source::TestLog)] {
+        let home = tempfile::tempdir().unwrap();
+        let text = if source.is_none() {
+            String::from_utf8(raw_json().stdout).unwrap()
+        } else {
+            (0..100).map(|line| format!("log line {line}\n")).collect()
+        };
+        let execution = Execution::new(
+            home.path(),
+            &["bash".into(), "-c".into(), "opaque script".into()],
+            Context {
+                unit_id: "provided-unit".into(),
+                host: Host::Pi,
+                session: Some("real-session".into()),
+                tool_call_id: Some("real-call".into()),
+                source,
+                recording: Some(true),
+            },
+        );
+        let mut output = Vec::new();
+        execution
+            .deliver(OutputStream::Stdout, text.clone(), Some(0), &mut output)
+            .unwrap();
+        assert!(output.len() < text.len());
+        assert_eq!(fs::read_to_string(original(&output)).unwrap(), text);
+        let detail = wrapper(home.path())
+            .args(["gain", "--detail", "--session", "real-session"])
+            .output()
+            .unwrap();
+        let detail = String::from_utf8(detail.stdout).unwrap();
+        assert!(detail.contains("real-call"), "{detail}");
+        assert!(
+            detail.contains("provided-unit · stdout · recording true"),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn shared_source_classification_uses_complete_argv_words() {
+    use outrim::command::source;
+    for (argv, expected) in [
+        (vec!["CARGO.EXE", "test"], "test_log"),
+        (vec!["/usr/bin/cargo", "build"], "build_log"),
+        (vec!["gh", "run", "watch", "123"], "runtime_log"),
+        (vec!["rg", "--files"], "search"),
+        (vec!["git", "ls-files"], "search"),
+        (vec!["npm", "run", "test:unit"], "unknown"),
+        (vec!["node", "-e", "anything"], "unknown"),
+        (vec!["bash", "-c", "cargo test"], "unknown"),
+    ] {
+        let argv: Vec<_> = argv.into_iter().map(Into::into).collect();
+        assert_eq!(serde_json::to_value(source(&argv)).unwrap(), expected);
+    }
+}
+
+#[test]
 fn closed_stdout_does_not_hide_stderr_or_replace_the_child_status() {
     let home = tempfile::tempdir().unwrap();
     let expected = raw_json();

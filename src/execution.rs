@@ -21,7 +21,6 @@ pub struct Execution {
     context: Context,
     tool: Tool,
     recording: bool,
-    uncertain: bool,
 }
 
 impl Execution {
@@ -40,7 +39,6 @@ impl Execution {
             context,
             tool,
             recording,
-            uncertain: command::uncertain_shell(arguments),
         }
     }
 
@@ -86,31 +84,18 @@ impl Execution {
         let mut tool = self.tool.clone();
         tool.exit_code = exit_code;
         let id = format!("{}-{stream:?}", self.context.unit_id);
-        let response = if self.uncertain {
-            Response {
-                version: VERSION,
-                id: id.clone(),
-                text: text.clone(),
-                disposition: Disposition::Protected,
-                applied_rule: None,
-                original_path: None,
-                candidates: vec![],
-                reason: Some("uncertain_shell_source".into()),
-            }
-        } else {
-            self.processor.process(Request {
-                version: VERSION,
-                id: id.clone(),
-                host: self.context.host,
-                session: self
-                    .context
-                    .session
-                    .clone()
-                    .unwrap_or_else(|| self.context.unit_id.clone()),
-                tool: tool.clone(),
-                text: text.clone(),
-            })
-        };
+        let response = self.processor.process(Request {
+            version: VERSION,
+            id: id.clone(),
+            host: self.context.host,
+            session: self
+                .context
+                .session
+                .clone()
+                .unwrap_or_else(|| self.context.unit_id.clone()),
+            tool: tool.clone(),
+            text: text.clone(),
+        });
         output.write_all(response.text.as_bytes())?;
         output.flush()?;
         self.processor.record_delivery(RecordDeliveryRequest {
