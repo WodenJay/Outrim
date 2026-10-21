@@ -41,7 +41,7 @@ fn main() -> ExitCode {
                 &configured_opencode_config_dir(&home),
             )
         })),
-        cli::Command::Gain => finish(run_gain(&arguments[1..])),
+        cli::Command::Gain(operation) => finish(run_gain(operation)),
         cli::Command::Bridge(recording) => finish(run_bridge(recording)),
     }
 }
@@ -102,14 +102,12 @@ fn run_install(agent: cli::Agent, remove: bool) -> io::Result<()> {
     Ok(())
 }
 
-fn run_gain(arguments: &[std::ffi::OsString]) -> io::Result<()> {
+fn run_gain(operation: cli::Gain) -> io::Result<()> {
     let home = user_home()?;
-    let report = if arguments.first().is_some_and(|arg| arg == "record") {
-        outrim::gain::set_recording(&home, arguments[1] == "on")
-    } else if arguments.first().is_some_and(|arg| arg == "--detail") {
-        outrim::gain::render_detail(&home, arguments.get(2).and_then(|s| s.to_str()))
-    } else {
-        outrim::gain::render(&home)
+    let report = match operation {
+        cli::Gain::Summary => outrim::gain::render(&home),
+        cli::Gain::Detail(session) => outrim::gain::render_detail(&home, session.as_deref()),
+        cli::Gain::Record(enabled) => outrim::gain::set_recording(&home, enabled),
     }?;
     print!("{report}");
     Ok(())

@@ -5,8 +5,14 @@ pub(crate) enum Command {
     Version,
     Install { agent: Agent, remove: bool },
     Upgrade,
-    Gain,
+    Gain(Gain),
     Bridge(Option<bool>),
+}
+
+pub(crate) enum Gain {
+    Summary,
+    Detail(Option<String>),
+    Record(bool),
 }
 
 pub(crate) enum Agent {
@@ -67,22 +73,29 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
             Ok(Command::Upgrade)
         }
         Some("gain") => {
-            match rest.first().and_then(|arg| arg.to_str()) {
-                None if rest.is_empty() => (),
+            let operation = match rest.first().and_then(|arg| arg.to_str()) {
+                None if rest.is_empty() => Gain::Summary,
                 Some("record") => {
                     let Some(setting) = rest.get(1) else {
                         return Err(error("expected on or off", RECORD));
                     };
-                    recording(setting, RECORD)?;
+                    let enabled = recording(setting, RECORD)?;
                     no_extra(&rest[2..], RECORD)?;
+                    Gain::Record(enabled)
                 }
                 Some("--detail") => {
                     if let Some(option) = rest.get(1) {
                         if option != "--session" {
                             return Err(unexpected(option, DETAIL));
                         }
-                        value(rest.get(2), "--session", DETAIL)?;
+                        let session = value(rest.get(2), "--session", DETAIL)?;
+                        let session = session
+                            .to_str()
+                            .ok_or_else(|| unexpected(session, DETAIL))?;
                         no_extra(&rest[3..], DETAIL)?;
+                        Gain::Detail(Some(session.to_owned()))
+                    } else {
+                        Gain::Detail(None)
                     }
                 }
                 Some("--session") => {
@@ -100,8 +113,8 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
                         )
                     });
                 }
-            }
-            Ok(Command::Gain)
+            };
+            Ok(Command::Gain(operation))
         }
         Some("bridge") => {
             if rest.first().is_some_and(|arg| arg == "--recording") {

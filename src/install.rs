@@ -43,7 +43,6 @@ pub fn uninstall_pi_extension(agent_dir: &Path) -> io::Result<Option<PathBuf>> {
         &agent_dir.join("extensions"),
         PI_EXTENSION_NAME,
         PI_EXTENSION_MARKER,
-        "Pi",
     )
 }
 
@@ -63,7 +62,6 @@ pub fn uninstall_opencode_plugin(config_dir: &Path) -> io::Result<Option<PathBuf
         &config_dir.join("plugins"),
         OPENCODE_PLUGIN_NAME,
         OPENCODE_PLUGIN_MARKER,
-        "OpenCode",
     )
 }
 
@@ -79,7 +77,7 @@ fn install_plugin(
     fs::create_dir_all(directory)?;
     let path = directory.join(filename);
 
-    if read_managed_plugin(&path, marker, kind)?.as_deref() == Some(plugin.as_str()) {
+    if read_managed_plugin(&path, marker)?.as_deref() == Some(plugin.as_str()) {
         return Ok(path);
     }
 
@@ -101,32 +99,27 @@ fn render_plugin(template: &str, executable: &Path, kind: &str) -> io::Result<St
     Ok(template.replace(&executable_slot, &executable))
 }
 
-fn uninstall_plugin(
-    directory: &Path,
-    filename: &str,
-    marker: &str,
-    kind: &str,
-) -> io::Result<Option<PathBuf>> {
+fn uninstall_plugin(directory: &Path, filename: &str, marker: &str) -> io::Result<Option<PathBuf>> {
     let path = directory.join(filename);
-    if read_managed_plugin(&path, marker, kind)?.is_none() {
+    if read_managed_plugin(&path, marker)?.is_none() {
         return Ok(None);
     }
     fs::remove_file(&path)?;
     Ok(Some(path))
 }
 
-fn read_managed_plugin(path: &Path, marker: &str, kind: &str) -> io::Result<Option<String>> {
+fn read_managed_plugin(path: &Path, marker: &str) -> io::Result<Option<String>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     if !metadata.file_type().is_file() {
-        return Err(unmanaged_plugin_error(path, kind));
+        return Err(unmanaged_plugin_error(path));
     }
     let existing = fs::read_to_string(path)?;
     if !existing.contains(marker) {
-        return Err(unmanaged_plugin_error(path, kind));
+        return Err(unmanaged_plugin_error(path));
     }
     Ok(Some(existing))
 }
@@ -158,7 +151,7 @@ impl Agent {
             Self::Pi => PI_EXTENSION_MARKER,
             Self::OpenCode => OPENCODE_PLUGIN_MARKER,
         };
-        read_managed_plugin(path, marker, self.name())
+        read_managed_plugin(path, marker)
     }
 
     pub fn render(self, executable: &Path) -> io::Result<String> {
@@ -170,7 +163,7 @@ impl Agent {
     }
 }
 
-fn unmanaged_plugin_error(path: &Path, _kind: &str) -> io::Error {
+fn unmanaged_plugin_error(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
         format!("Not managed by outrim: {}", path.display()),
