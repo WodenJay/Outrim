@@ -26,6 +26,219 @@ fn log() -> String {
 }
 
 #[test]
+fn path_lists_group_contiguous_prefixes_and_save_the_original() {
+    let home = tempfile::tempdir().unwrap();
+    let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
+    let text = format!("{prefix}client.rs\n{prefix}server.rs\n{prefix}server.rs\nother.txt\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("path_prefix_groups"));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{prefix}\n  client.rs\n  server.rs\n  server.rs\nother.txt\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn path_lists_reject_the_whole_list_when_any_record_is_unsupported() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
+    for invalid in [
+        "bare",
+        "space name.rs",
+        "tab\tname.rs",
+        "bad\0name.rs",
+        "bad\rname.rs",
+        "src/a:b.rs",
+        "1:src/a.rs",
+        "C:src/a:b.rs",
+        "unknown notice",
+        "42 files found",
+        "\nother.rs",
+        "\r\nother.rs",
+        "src/a.rs:1:hit",
+        "[12 matches limit reached.]",
+    ] {
+        let text = format!("{prefix}a.rs\n{prefix}b.rs\n{invalid}\n");
+        let response = processor.process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::NoMatch, "{invalid:?}");
+        assert_eq!(response.text, text);
+        assert!(response.original_path.is_none());
+        assert!(response.candidates.is_empty());
+    }
+    let text = format!("{prefix}a.rs-1-context\n{prefix}a.rs-2-context\n");
+    let response = processor.process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn path_lists_keep_greedy_blocks_order_and_explicit_directory_entries() {
+    let home = tempfile::tempdir().unwrap();
+    let prefix = format!("{}/", "long-directory".repeat(24));
+    let text = format!(
+        "{prefix}\n{prefix}deep/a.rs\n{prefix}deep/b.rs\n{prefix}other.rs\nelsewhere.txt\n{prefix}deep/a.rs\n{prefix}deep/a.rs\n{prefix}child/\na/one\na/{prefix}b\na/{prefix}c\n"
+    );
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.applied_rule.as_deref(), Some("path_prefix_groups"));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{prefix}\n{prefix}deep/\n  a.rs\n  b.rs\n{prefix}other.rs\nelsewhere.txt\n{prefix}deep/\n  a.rs\n  a.rs\n{prefix}child/\na/one\na/{prefix}\n  b\n  c\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn path_lists_preserve_literal_paths_and_each_record_ending() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    for prefix in [
+        format!("Src/{}/.././dir//", "long-directory/".repeat(24)),
+        format!(r"C:\Work\{}\.\..\\", "long-directory\\".repeat(24)),
+        format!(r"C:Work\{}/Mixed\\", "long-directory/".repeat(24)),
+    ] {
+        for (first, second, tail) in [
+            ("\n", "\n", ""),
+            ("\r\n", "\r\n", "\r\n\r\n"),
+            ("\r\n", "\n", "\n\r\n"),
+            ("\n", "", ""),
+        ] {
+            let text = format!("{prefix}a.rs{first}{prefix}B/{second}{tail}");
+            let response = processor.process(request(&text, Source::Search));
+            assert_eq!(response.applied_rule.as_deref(), Some("path_prefix_groups"));
+            let original_path = response.original_path.unwrap();
+            assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+            let separator = if second.is_empty() { "\n" } else { "" };
+            assert_eq!(
+                response.text,
+                format!(
+                    "{prefix}{first}  a.rs{first}  B/{second}{tail}{separator}[outrim]: The full output is available at {original_path}"
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn path_lists_do_not_group_similar_names_or_locally_unprofitable_blocks() {
+    let home = tempfile::tempdir().unwrap();
+    let prefix = format!("{}/", "long-directory".repeat(24));
+    let unchanged = format!(
+        "a/one\na/two\n🦀🦀🦀🦀/a\n🦀🦀🦀🦀/b\n{prefix}first.rs\nelsewhere.txt\n{prefix}second.rs\n{}a.rs\n{}b.rs\n",
+        "similar-name".repeat(24),
+        "similar-name".repeat(24)
+    );
+    let text = format!("{unchanged}{prefix}a.rs\n{prefix}b.rs\n");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(
+        response.text,
+        format!(
+            "{unchanged}{prefix}\n  a.rs\n  b.rs\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn path_lists_require_strict_unicode_savings_after_the_recovery_hint() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let probe_text = format!("{0}/a.rs\n{0}/b.rs", "long-directory".repeat(40));
+    let probe = processor.process(request(&probe_text, Source::Search));
+    let hint_length = format!(
+        "\n[outrim]: The full output is available at {}",
+        probe.original_path.unwrap()
+    )
+    .chars()
+    .count();
+    // Two paths save prefix length minus the header newline and four spaces.
+    for (prefix_length, expected) in [
+        (hint_length + 4, Disposition::NotShorter),
+        (hint_length + 5, Disposition::NotShorter),
+        (hint_length + 6, Disposition::Compressed),
+    ] {
+        let prefix = format!("{}/", "🦀".repeat(prefix_length - 1));
+        let text = format!("{prefix}a.rs\n{prefix}b.rs");
+        let response = processor.process(request(&text, Source::Search));
+        assert_eq!(response.disposition, expected);
+        assert_eq!(response.candidates[0].rule, "path_prefix_groups");
+        assert_eq!(
+            response.candidates[0].final_chars.unwrap() as usize,
+            text.chars().count() + hint_length + 5 - prefix_length
+        );
+        if expected == Disposition::NotShorter {
+            assert_eq!(response.text, text);
+            assert!(response.applied_rule.is_none());
+            assert!(response.original_path.is_none());
+        } else {
+            assert_eq!(response.text.chars().count() + 1, text.chars().count());
+        }
+    }
+    let text = "src/network/a.rs\nsrc/network/b.rs\n";
+    let response = processor.process(request(text, Source::Search));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert_eq!(response.text, text);
+    assert!(response.original_path.is_none());
+    let text = "a/one\na/two\n";
+    let response = processor.process(request(text, Source::Search));
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+}
+
+#[test]
+fn path_lists_respect_source_protection_and_storage_failure() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let prefix = format!("{}/", "long-directory".repeat(40));
+    let text = format!("{prefix}a.rs\n{prefix}b.rs\n");
+    for source in [
+        Source::Unknown,
+        Source::SourceCode,
+        Source::Configuration,
+        Source::BuildLog,
+        Source::TestLog,
+        Source::RuntimeLog,
+    ] {
+        let response = processor.process(request(&text, source));
+        assert_eq!(response.text, text);
+        assert!(
+            response
+                .candidates
+                .iter()
+                .all(|candidate| candidate.rule != "path_prefix_groups")
+        );
+        assert!(response.original_path.is_none());
+    }
+    for key in ["path", "file_path", "filePath"] {
+        for path in ["src/main.rs", "config/settings.json"] {
+            let mut input = request(&text, Source::Search);
+            input.tool.input = json!({key: path});
+            let response = processor.process(input);
+            assert_eq!(response.disposition, Disposition::Protected);
+            assert_eq!(response.text, text);
+            assert!(response.candidates.is_empty());
+        }
+    }
+    fs::write(home.path().join(".outrim"), "blocked").unwrap();
+    let response = processor.process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::FailedOpen);
+    assert_eq!(response.text, text);
+    assert!(response.original_path.is_none());
+    assert!(response.applied_rule.is_none());
+    assert_eq!(response.candidates[0].reason, "storage_failed");
+}
+
+#[test]
 fn source_and_configuration_are_protected_before_content_routing() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
@@ -815,12 +1028,12 @@ fn paths_without_repeated_hits_are_left_unchanged() {
 }
 
 #[test]
-fn path_only_search_output_is_left_unchanged() {
+fn short_path_only_search_output_is_not_shorter_with_hint() {
     let home = tempfile::tempdir().unwrap();
     let text = "src/main.rs\nsrc/lib.rs\nsrc/main.rs\n";
     let response = Processor::new(home.path()).process(request(text, Source::Search));
 
-    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.disposition, Disposition::NotShorter);
     assert_eq!(response.text, text);
 }
 

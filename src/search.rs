@@ -158,6 +158,10 @@ struct SearchLine<'a> {
     context: bool,
 }
 
+pub(crate) fn is_search_record(raw: &str) -> bool {
+    parse_search_record(raw).is_some()
+}
+
 fn parse_search_record(raw: &str) -> Option<SearchRecord<'_>> {
     let (record, line_ending) = match raw.strip_suffix('\n') {
         Some(record) => match record.strip_suffix('\r') {
@@ -227,7 +231,7 @@ fn digit_run_end(text: &str, start: usize) -> Option<usize> {
     (end > start).then_some(end)
 }
 
-fn valid_search_path(path: &str) -> bool {
+pub(crate) fn valid_search_path(path: &str) -> bool {
     // Separator or extension distinguishes paths from prose and diagnostics.
     let has_directory_separator = path.contains('/') || path.contains('\\');
     let path_like = has_directory_separator || path.contains('.');

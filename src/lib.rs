@@ -5,6 +5,7 @@ pub mod bridge;
 pub mod gain;
 pub mod install;
 mod json;
+mod path_list;
 mod protection;
 pub mod protocol;
 mod recording;
@@ -80,6 +81,11 @@ impl Processor {
             vec![("log_tail", tail)]
         } else if let Some(grouped) = search_candidate {
             vec![("search_hit_groups", grouped)]
+        } else if let Some(grouped) = matches!(request.tool.source, Source::Search)
+            .then(|| path_list::group_prefixes(&response.text))
+            .flatten()
+        {
+            vec![("path_prefix_groups", grouped)]
         } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
             json_candidates
         } else {
