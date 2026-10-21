@@ -44,16 +44,245 @@ fn bridge_rewrites_simple_commands_with_execution_context() {
 }
 
 #[test]
+fn compound_commands_preserve_short_circuiting_and_distinct_stream_records() {
+    for dialect in if cfg!(windows) {
+        vec!["bash", "powershell"]
+    } else {
+        vec!["bash"]
+    } {
+        let home = tempfile::tempdir().unwrap();
+        let program = program(dialect);
+        let command = format!(
+            "{program} test 'a; b && c' && {program} build; {program} build || {program} test 'fallback'"
+        );
+        let direct = shell(&command, dialect, home.path());
+        assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
+        fs::remove_file(home.path().join("executed")).unwrap();
+        let rewritten = rewrite(&command, dialect);
+        let output = shell(
+            rewritten["command"].as_str().expect("compound rewrite"),
+            dialect,
+            home.path(),
+        );
+        assert_eq!(
+            output.status.code(),
+            direct.status.code(),
+            "{dialect}: {output:?}"
+        );
+        assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("fallback"));
+        let gain: Value =
+            serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap())
+                .unwrap();
+        assert_eq!(gain["outputs"], 6);
+        let events = events(home.path());
+        assert_eq!(events.len(), 6);
+        let units: std::collections::HashSet<_> = events
+            .iter()
+            .map(|e| e["execution"]["unit_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(units.len(), 3);
+        let mut ordered = events.clone();
+        ordered.sort_by_key(|event| event["execution"]["unit_id"].as_str().unwrap().to_owned());
+        for (stream, expected) in [("stdout", &direct.stdout), ("stderr", &direct.stderr)] {
+            let recovered: Vec<u8> = ordered
+                .iter()
+                .filter(|event| event["execution"]["stream"] == stream)
+                .flat_map(|event| {
+                    let directory = home
+                        .path()
+                        .join(".outrim/records")
+                        .join(event["instance_id"].as_str().unwrap());
+                    fs::read(directory.join(event["content"]["original"].as_str().unwrap()))
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(&recovered, expected, "{dialect}: {stream}");
+        }
+        for event in events {
+            let unit = event["execution"]["unit_id"].as_str().unwrap();
+            assert_eq!(
+                event["source"],
+                if unit.ends_with(":3") {
+                    "build_log"
+                } else {
+                    "test_log"
+                }
+            );
+            assert_eq!(event["tool_call_id"], "call-1");
+            assert_eq!(event["session"], "session-1");
+            if unit.ends_with(":3") {
+                assert_eq!(event["applied_rule"], "log_tail");
+                let path = event["original_path"]
+                    .as_str()
+                    .expect("compressed stream recovery path");
+                let original = fs::read_to_string(path).unwrap();
+                assert!(original.contains("\"id\": 0"));
+                assert!(original.contains("\"id\": 99"));
+            }
+        }
+    }
+}
+
+#[test]
+fn conditional_continuations_keep_their_branch() {
+    for dialect in if cfg!(windows) {
+        vec!["bash", "powershell"]
+    } else {
+        vec!["bash"]
+    } {
+        let home = tempfile::tempdir().unwrap();
+        let p = program(dialect);
+        let command = format!("{p} test &&\n {p} build; {p} build ||\n {p} test");
+        let original = shell(&command, dialect, home.path());
+        fs::remove_file(home.path().join("executed")).unwrap();
+        let rewritten = rewrite(&command, dialect);
+        let output = shell(rewritten["command"].as_str().unwrap(), dialect, home.path());
+        assert_eq!(output.status.code(), original.status.code());
+        assert_eq!(
+            fs::read(home.path().join("executed")).unwrap(),
+            b"once",
+            "{dialect}: {output:?}"
+        );
+        assert_eq!(events(home.path()).len(), 6);
+    }
+}
+
+#[test]
+fn machine_consumers_keep_original_data_while_other_units_are_wrapped() {
+    for dialect in if cfg!(windows) {
+        vec!["bash", "powershell"]
+    } else {
+        vec!["bash"]
+    } {
+        let home = tempfile::tempdir().unwrap();
+        let p = program(dialect);
+        let command = format!(
+            "{p} build > raw; {p} build | {p} test 'pipe' > piped; {p} test \"$({p} build)\" > substituted; {p} build"
+        );
+        let original = shell(&command, dialect, home.path());
+        let files =
+            ["raw", "piped", "substituted"].map(|name| fs::read(home.path().join(name)).unwrap());
+        fs::remove_file(home.path().join("executed")).unwrap();
+        let rewritten = rewrite(&command, dialect);
+        let output = shell(
+            rewritten["command"]
+                .as_str()
+                .expect("last unit remains eligible"),
+            dialect,
+            home.path(),
+        );
+        assert_eq!(
+            output.status.code(),
+            original.status.code(),
+            "{dialect}: {output:?}"
+        );
+        for (name, expected) in ["raw", "piped", "substituted"].into_iter().zip(files) {
+            assert_eq!(
+                fs::read(home.path().join(name)).unwrap(),
+                expected,
+                "{dialect}: {name}"
+            );
+        }
+        assert_eq!(
+            fs::read(home.path().join("executed")).unwrap(),
+            b"onceonceonceonce"
+        );
+        assert_eq!(events(home.path()).len(), 2);
+    }
+}
+
+#[test]
+fn successful_branches_and_explicit_bypass_remain_native() {
+    for dialect in if cfg!(windows) {
+        vec!["bash", "powershell"]
+    } else {
+        vec!["bash"]
+    } {
+        let home = tempfile::tempdir().unwrap();
+        let p = program(dialect);
+        let wrapper = env!("CARGO_BIN_EXE_outrim").replace('\\', "/");
+        let call = if dialect == "bash" { "" } else { "& " };
+        let command = format!(
+            "{p} check || {p} build && {p} test; {call}'{wrapper}' exec --no-compress -- {p} build; {p} check"
+        );
+        // The nested call operator is not an argv token for explicit exec.
+        let command = command.replace("-- & ", "-- ");
+        let direct = shell(&command, dialect, home.path());
+        assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
+        fs::remove_file(home.path().join("executed")).unwrap();
+        let rewritten = rewrite(&command, dialect);
+        let output = shell(rewritten["command"].as_str().unwrap(), dialect, home.path());
+        assert_eq!(output.status.code(), direct.status.code());
+        assert_eq!(output.stdout, direct.stdout);
+        assert_eq!(output.stderr, direct.stderr);
+        assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
+        assert_eq!(events(home.path()).len(), 6); // three automatic units, not the bypass
+    }
+}
+
+#[test]
+fn unfamiliar_grammar_declines_the_entire_call() {
+    for (dialect, command) in [
+        ("bash", "cargo build; if true; then cargo test; fi"),
+        ("bash", "cargo build; cat <<EOF\n; cargo test\nEOF"),
+        ("bash", "cargo build; echo $'a\\'; cargo test; b'"),
+        ("bash", "cargo build; (cargo test)"),
+        ("bash", "cargo build & cargo test"),
+        ("powershell", "cargo build; @'\n'; cargo test; '\n'@"),
+        ("powershell", "cargo build; Write-Output “a; cargo test; b”"),
+        ("powershell", "$data = cargo build && cargo test"),
+        ("powershell", "cargo build; cargo test --% x; cargo build"),
+    ] {
+        assert!(
+            rewrite(command, dialect)["command"].is_null(),
+            "{dialect}: {command}"
+        );
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_powershell_sequences_and_cmdlet_aliases_keep_native_behavior() {
+    let home = tempfile::tempdir().unwrap();
+    fs::write(home.path().join("input.txt"), "native cmdlet data").unwrap();
+    let command = format!(
+        "cat 'input.txt'; Get-Content 'input.txt'; {} check",
+        program("powershell")
+    );
+    let rewritten = rewrite(&command, "powershell");
+    for dialect in ["powershell", "powershell-legacy"] {
+        let direct = shell(&command, dialect, home.path());
+        let output = shell(rewritten["command"].as_str().unwrap(), dialect, home.path());
+        assert_eq!(output.stdout, direct.stdout, "{dialect}: {output:?}");
+        assert_eq!(output.stderr, direct.stderr);
+        assert_eq!(output.status.code(), direct.status.code());
+    }
+    assert_eq!(events(home.path()).len(), 4); // only the external check, twice
+}
+
+fn events(home: &Path) -> Vec<Value> {
+    fs::read_dir(home.join(".outrim/records"))
+        .unwrap()
+        .flat_map(|entry| {
+            fs::read_to_string(entry.unwrap().path().join("events.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<Value>>()
+        })
+        .collect()
+}
+
+#[test]
 fn uncertain_or_ineligible_commands_are_not_rewritten() {
     for dialect in ["bash", "powershell"] {
         for command in [
             "outrim exec -- cargo test",
             "outrim exec --no-compress -- cargo test",
-            "cargo test && git diff",
             "cargo test | sort",
             "cargo test > out",
             "cargo test $(git diff)",
-            "cargo test\ngit diff",
             "cargo test $value",
             "cargo test *.rs",
             "cargo test 'unclosed",
@@ -114,7 +343,11 @@ fn shell(command: &str, dialect: &str, home: &Path) -> Output {
         shell.args(["--noprofile", "--norc", "-c"]);
         shell
     } else {
-        let mut shell = Command::new("powershell");
+        let mut shell = Command::new(if dialect == "powershell-legacy" {
+            "powershell"
+        } else {
+            "pwsh"
+        });
         shell.args(["-NoProfile", "-NonInteractive", "-Command"]);
         shell
     };
@@ -250,7 +483,7 @@ fn actual_shell_aliases_and_functions_remain_native() {
         #[cfg(windows)]
         ("powershell", "function cargo { 'native function' }; "),
     ] {
-        let rewritten = rewrite("cargo test", dialect);
+        let rewritten = rewrite("cargo test; cargo build", dialect);
         let output = shell(
             &format!("{setup}{}", rewritten["command"].as_str().unwrap()),
             dialect,

@@ -1,4 +1,5 @@
-//! Conservative literal simple-command rewriting. Resolution remains in the actual shell.
+//! Conservative flat-list rewriting. Resolution remains in the actual shell.
+mod segments;
 use crate::{
     command,
     execution::Context,
@@ -48,7 +49,58 @@ fn replacement(request: &Request, executable: &Path) -> Option<String> {
         "powershell" => true,
         _ => return None,
     };
-    let words = literals(&request.command, powershell)?;
+    let segments = segments::segments(&request.command, powershell)?;
+    let compound = segments.len() > 1;
+    let mut output = String::new();
+    let mut end = 0;
+    let mut changed = false;
+    for (index, segment) in segments.into_iter().enumerate() {
+        let separator = &request.command[end..segment.range.start];
+        // PowerShell chain operands must be pipelines, not `if` statements. Flat
+        // chains are left-associative; `if` preserves $? when its branch is skipped.
+        let conditional = powershell && matches!(separator, "&&" | "||");
+        if conditional {
+            output.push_str(if separator == "&&" {
+                "; if ($?) { "
+            } else {
+                "; if (-not $?) { "
+            });
+        } else {
+            output.push_str(separator);
+        }
+        let original = &request.command[segment.range.clone()];
+        let unit_id = if compound {
+            format!("{}:{}", request.unit_id, index + 1)
+        } else {
+            request.unit_id.clone()
+        };
+        if let Some(replacement) = segment
+            .host_output
+            .then(|| simple(request, original, &unit_id, executable, powershell))
+            .flatten()
+        {
+            output.push_str(&replacement);
+            changed = true;
+        } else {
+            output.push_str(original);
+        }
+        if conditional {
+            output.push_str(" }");
+        }
+        end = segment.range.end;
+    }
+    output.push_str(&request.command[end..]);
+    changed.then_some(output)
+}
+
+fn simple(
+    request: &Request,
+    original: &str,
+    unit_id: &str,
+    executable: &Path,
+    powershell: bool,
+) -> Option<String> {
+    let words = literals(original.trim(), powershell)?;
     let program = words.first()?;
     let name = command::program_name(program);
     // Bound capture eligibility as well as grammar: no shells, launchers, REPLs or editors.
@@ -130,7 +182,7 @@ fn replacement(request: &Request, executable: &Path) -> Option<String> {
         host: request.host,
         session: Some(request.session.clone()),
         tool_call_id: Some(request.tool_call_id.clone()),
-        unit_id: request.unit_id.clone(),
+        unit_id: unit_id.to_owned(),
         source: Some(source),
         recording: Some(request.recording),
     };
@@ -162,8 +214,7 @@ fn replacement(request: &Request, executable: &Path) -> Option<String> {
             String::new()
         };
         Some(format!(
-            "if (({resolve}).CommandType -eq 'Application'{platform_guard}) {{ & {executable} exec --context {context} -- ({resolve}).Source {args} }} else {{ {} }}",
-            request.command
+            "if (({resolve}).CommandType -eq 'Application'{platform_guard}) {{ & {executable} exec --context {context} -- ({resolve}).Source {args} }} else {{ {original} }}"
         ))
     } else {
         // Resolve again only after proving this is a file, not a builtin, alias or function.
@@ -177,8 +228,7 @@ fn replacement(request: &Request, executable: &Path) -> Option<String> {
             String::new()
         };
         Some(format!(
-            "if [[ $(builtin type -t -- {target}) == file{platform_guard} ]]; then {executable} exec --context {context} -- \"$(builtin command -v -- {target})\" {args}; else {}; fi",
-            request.command
+            "if [[ $(builtin type -t -- {target}) == file{platform_guard} ]]; then {executable} exec --context {context} -- \"$(builtin command -v -- {target})\" {args}; else {original}; fi"
         ))
     }
 }

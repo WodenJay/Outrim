@@ -13,6 +13,11 @@ fn main() -> ExitCode {
             eprintln!("separate stderr");
             ExitCode::from(37)
         }
+        "check" => {
+            println!("successful check");
+            eprintln!("check stderr");
+            ExitCode::SUCCESS
+        }
         "read" => {
             io::stdout().write_all(&std::fs::read(&args[1]).unwrap()).unwrap();
             ExitCode::SUCCESS
