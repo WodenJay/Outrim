@@ -61,7 +61,8 @@ impl Target {
     }
 
     fn validate(&self) -> io::Result<()> {
-        if !fs::symlink_metadata(&self.path)?.is_file() {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if !metadata.is_file() || metadata.permissions().readonly() {
             return Err(io::Error::other(format!(
                 "target is no longer a regular file: {}",
                 self.path.display()
@@ -109,10 +110,19 @@ impl Plan {
                 for &previous in committed.iter().rev() {
                     let target = &self.targets[previous];
                     // Preserve the new payload for a possible sharing-violation retry.
-                    let recovery = fs::rename(&target.path, target.staged.as_ref().unwrap())
-                        .and_then(|()| {
-                            fs::copy(target.backup.as_ref().unwrap(), &target.path).map(|_| ())
-                        });
+                    let recovery = (|| {
+                        let mut restored =
+                            tempfile::NamedTempFile::new_in(target.path.parent().unwrap())?;
+                        let backup = target.backup.as_ref().unwrap();
+                        io::copy(&mut File::open(backup)?, &mut restored)?;
+                        restored.as_file().sync_all()?;
+                        fs::set_permissions(restored.path(), fs::metadata(backup)?.permissions())?;
+                        fs::rename(&target.path, target.staged.as_ref().unwrap())?;
+                        restored
+                            .persist(&target.path)
+                            .map_err(|error| error.error)?;
+                        Ok::<(), io::Error>(())
+                    })();
                     if let Err(rollback) = recovery {
                         failures.push(format!("{}: {rollback}", target.path.display()));
                     }

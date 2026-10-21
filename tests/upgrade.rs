@@ -109,16 +109,20 @@ impl Installation {
         Self { home, binary }
     }
 
-    fn run(&self, args: &[&str], release: &Release) -> Output {
-        Command::new(&self.binary)
+    fn command(&self, args: &[&str], release: &Release) -> Command {
+        let mut command = Command::new(&self.binary);
+        command
             .args(args)
             .env("HOME", self.home.path())
             .env("USERPROFILE", self.home.path())
             .env_remove("PI_CODING_AGENT_DIR")
             .env_remove("XDG_CONFIG_HOME")
-            .env("OUTRIM_RELEASE_API", &release.url)
-            .output()
-            .unwrap()
+            .env("OUTRIM_RELEASE_API", &release.url);
+        command
+    }
+
+    fn run(&self, args: &[&str], release: &Release) -> Output {
+        self.command(args, release).output().unwrap()
     }
 
     fn pi(&self) -> PathBuf {
@@ -333,6 +337,185 @@ fn background_respects_removed_or_unmanaged_integrations_and_reports_failure_nex
             assert!(!install.pi().exists());
         }
     }
+}
+
+#[test]
+fn only_current_config_directories_and_existing_agents_are_updated_without_downgrading() {
+    let release = Release::serve(
+        "0.0.1",
+        Some(b"must not install older release".to_vec()),
+        false,
+    );
+    for custom in [false, true] {
+        for mask in 0..4 {
+            let install = Installation::new();
+            let pi_dir = if custom {
+                install.home.path().join("custom-pi")
+            } else {
+                install.home.path().join(".pi/agent")
+            };
+            let config = if custom {
+                install.home.path().join("custom-config")
+            } else {
+                install.home.path().join(".config")
+            };
+            let pi = pi_dir.join("extensions/outrim.js");
+            let opencode = config.join("opencode/plugins/outrim.js");
+            if mask & 1 != 0 {
+                put(&pi, "// outrim-managed: pi-extension\nold");
+            }
+            if mask & 2 != 0 {
+                put(&opencode, "// outrim-managed: opencode-plugin\nold");
+            }
+            let historical = install.home.path().join("historical/extensions/outrim.js");
+            put(&historical, "// outrim-managed: pi-extension\nhistorical");
+            if custom {
+                put(
+                    &install.pi(),
+                    "// outrim-managed: pi-extension\ndefault unchanged",
+                );
+            }
+            let before = fs::read(&install.binary).unwrap();
+            let mut command = install.command(&["update"], &release);
+            if custom {
+                command
+                    .env("PI_CODING_AGENT_DIR", &pi_dir)
+                    .env("XDG_CONFIG_HOME", &config);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read(&install.binary).unwrap(), before);
+            assert_eq!(pi.exists(), mask & 1 != 0);
+            assert_eq!(opencode.exists(), mask & 2 != 0);
+            if pi.exists() {
+                assert!(
+                    fs::read_to_string(&pi)
+                        .unwrap()
+                        .contains("BRIDGE_EXECUTABLE")
+                );
+            }
+            if opencode.exists() {
+                assert!(
+                    fs::read_to_string(&opencode)
+                        .unwrap()
+                        .contains("BRIDGE_EXECUTABLE")
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(historical).unwrap(),
+                "// outrim-managed: pi-extension\nhistorical"
+            );
+            if custom {
+                assert_eq!(
+                    fs::read_to_string(install.pi()).unwrap(),
+                    "// outrim-managed: pi-extension\ndefault unchanged"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn preflight_conflict_and_download_failure_preserve_the_whole_installation() {
+    let release = Release::current();
+    for alias in ["upgrade", "update"] {
+        let install = Installation::new();
+        let before = fs::read(&install.binary).unwrap();
+        put(&install.pi(), "// outrim-managed: pi-extension\nold");
+        put(&install.opencode(), "my plugin");
+        let output = install
+            .command(&[alias], &release)
+            .env("OUTRIM_RELEASE_API", "http://127.0.0.1:1")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unmanaged"));
+        assert_eq!(fs::read(&install.binary).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(install.pi()).unwrap(),
+            "// outrim-managed: pi-extension\nold"
+        );
+        assert_eq!(fs::read_to_string(install.opencode()).unwrap(), "my plugin");
+        fs::remove_file(install.opencode()).unwrap();
+        let output = install
+            .command(&[alias], &release)
+            .env("OUTRIM_RELEASE_API", "http://127.0.0.1:1")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("NOT complete"));
+        assert_eq!(fs::read(&install.binary).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(install.pi()).unwrap(),
+            "// outrim-managed: pi-extension\nold"
+        );
+    }
+}
+
+#[test]
+fn readonly_target_is_not_reported_as_background_waiting() {
+    let install = Installation::new();
+    let release = Release::current();
+    put(&install.pi(), "// outrim-managed: pi-extension\nold");
+    let original = fs::metadata(install.pi()).unwrap().permissions();
+    let mut readonly = original.clone();
+    readonly.set_readonly(true);
+    fs::set_permissions(install.pi(), readonly).unwrap();
+    let output = install.run(&["upgrade"], &release);
+    fs::set_permissions(install.pi(), original).unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("NOT complete"));
+    assert_eq!(
+        fs::read_to_string(install.pi()).unwrap(),
+        "// outrim-managed: pi-extension\nold"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_integrations_are_never_followed() {
+    let install = Installation::new();
+    let release = Release::current();
+    let user_file = install.home.path().join("user.js");
+    put(&user_file, "// outrim-managed: pi-extension\nuser file");
+    fs::create_dir_all(install.pi().parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&user_file, install.pi()).unwrap();
+    let output = install.run(&["upgrade"], &release);
+    assert!(!output.status.success());
+    assert_eq!(
+        fs::read_to_string(user_file).unwrap(),
+        "// outrim-managed: pi-extension\nuser file"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn old_bridge_keeps_running_while_new_processes_use_updated_disk_binary() {
+    let install = Installation::new();
+    let binary = release_binary();
+    let release = Release::serve("999.0.0", Some(binary.clone()), false);
+    let mut bridge = Command::new(&install.binary)
+        .arg("bridge")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .env("HOME", install.home.path())
+        .spawn()
+        .unwrap();
+    let output = install.run(&["upgrade"], &release);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("NOT complete"));
+    assert_eq!(fs::read(&install.binary).unwrap(), binary);
+    assert!(bridge.try_wait().unwrap().is_none());
+    drop(bridge.stdin.take());
+    bridge.wait().unwrap();
 }
 
 fn put(path: &Path, content: &str) {
