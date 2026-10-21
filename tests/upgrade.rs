@@ -19,11 +19,18 @@ struct Release {
 
 impl Release {
     fn current() -> Self {
+        Self::serve(env!("CARGO_PKG_VERSION"), None, false)
+    }
+
+    fn serve(version: &str, binary: Option<Vec<u8>>, corrupt: bool) -> Self {
+        use sha2::{Digest, Sha256};
+        let version = version.to_string();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
+        let base = url.clone();
         let worker = thread::spawn(move || {
             while !done.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -37,16 +44,33 @@ impl Release {
                             }
                             request.push(byte[0]);
                         }
-                        let body = format!(
-                            r#"{{"tag_name":"v{}","prerelease":false,"draft":false,"assets":[]}}"#,
-                            env!("CARGO_PKG_VERSION")
-                        );
+                        let asset = asset_name();
+                        let request = String::from_utf8_lossy(&request);
+                        let body = if request.starts_with("GET /download/") {
+                            if request.contains("/SHA256SUMS ") {
+                                let hash = if corrupt {
+                                    "bad".to_string()
+                                } else {
+                                    Sha256::digest(binary.as_deref().unwrap_or_default())
+                                        .iter()
+                                        .map(|byte| format!("{byte:02x}"))
+                                        .collect::<String>()
+                                };
+                                format!("{hash}  {asset}\n").into_bytes()
+                            } else {
+                                binary.clone().unwrap_or_default()
+                            }
+                        } else {
+                            serde_json::to_vec(&serde_json::json!({"tag_name": format!("v{version}"), "prerelease": false, "draft": false,
+                                "assets": [{"name": asset, "browser_download_url": format!("{base}/download/v{version}/{asset}")},
+                                {"name": "SHA256SUMS", "browser_download_url": format!("{base}/download/v{version}/SHA256SUMS")}]})).unwrap()
+                        };
                         let _ = write!(
                             stream,
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
                         );
+                        let _ = stream.write_all(&body);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::yield_now()
@@ -102,6 +126,40 @@ impl Installation {
     }
     fn opencode(&self) -> PathBuf {
         self.home.path().join(".config/opencode/plugins/outrim.js")
+    }
+}
+
+fn asset_name() -> String {
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc.exe",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        _ => panic!("unsupported test platform"),
+    };
+    format!("outrim-{target}")
+}
+
+#[test]
+fn checksum_failure_preserves_every_formal_target() {
+    let release = Release::serve("999.0.0", Some(b"invalid binary".to_vec()), true);
+    for alias in ["upgrade", "update"] {
+        let install = Installation::new();
+        put(&install.pi(), "// outrim-managed: pi-extension\nold");
+        let before = fs::read(&install.binary).unwrap();
+        let output = install.run(&[alias], &release);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("SHA256"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&install.binary).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(install.pi()).unwrap(),
+            "// outrim-managed: pi-extension\nold"
+        );
+        assert!(!install.opencode().exists());
     }
 }
 

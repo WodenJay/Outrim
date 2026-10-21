@@ -9,6 +9,16 @@ mod upgrade;
 
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.len() == 2 && arguments[0] == "__upgrade-render" {
+        return match upgrade::render(Path::new(&arguments[1])) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail_with_error(error),
+        };
+    }
+    if matches_command(&arguments, &["--version"]) {
+        println!("outrim {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if matches_command(&arguments, &["upgrade"]) || matches_command(&arguments, &["update"]) {
         let result = user_home().and_then(|home| {
             upgrade::run(

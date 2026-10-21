@@ -1,66 +1,73 @@
-use outrim::install::Agent;
-use serde::Deserialize;
-use std::{
-    fs,
-    io::{self, Read, Write},
-    path::Path,
-};
+mod release;
+mod transaction;
 
-#[derive(Deserialize)]
-struct Release {
-    tag_name: String,
-    prerelease: bool,
-    draft: bool,
+use outrim::install::Agent;
+use std::{fs, io, path::Path, process::Command};
+use transaction::{Plan, Target};
+
+pub fn render(executable: &Path) -> io::Result<()> {
+    let templates = [
+        Agent::Pi.render(executable)?,
+        Agent::OpenCode.render(executable)?,
+    ];
+    println!(
+        "{}",
+        serde_json::to_string(&templates).map_err(io::Error::other)?
+    );
+    Ok(())
 }
 
 pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
     let executable = std::env::current_exe()?;
-    let mut installed = Vec::new();
+    println!("Checking binary: {}", executable.display());
+    let mut plan = Plan::default();
+    plan.targets
+        .push(Target::inspect(executable.clone(), None)?);
     for (agent, directory) in [(Agent::Pi, pi), (Agent::OpenCode, opencode)] {
         let path = agent.path(directory);
         println!("Checking {}: {}", agent.name(), path.display());
-        if let Some(current) = agent.read(&path)? {
-            installed.push((agent, path, current));
+        if agent.read(&path)?.is_some() {
+            plan.targets.push(Target::inspect(path, Some(agent))?);
         }
     }
-    let api = std::env::var("OUTRIM_RELEASE_API")
-        .unwrap_or_else(|_| "https://api.github.com/repos/WodenJay/Outrim/releases/latest".into());
-    let mut response = ureq::get(&api)
-        .header("User-Agent", "outrim-upgrade")
-        .call()
-        .map_err(io::Error::other)?;
-    let mut body = Vec::new();
-    response
-        .body_mut()
-        .as_reader()
-        .take(1024 * 1024)
-        .read_to_end(&mut body)?;
-    let release: Release = serde_json::from_slice(&body).map_err(io::Error::other)?;
-    if release.prerelease || release.draft {
-        return Err(io::Error::other("release is not stable"));
-    }
-    let _version = semver::Version::parse(release.tag_name.trim_start_matches('v'))
-        .map_err(io::Error::other)?;
-    let mut changed = false;
-    for (agent, path, current) in installed {
-        let rendered = agent.render(&executable)?;
-        if current == rendered {
-            continue;
+    let work = tempfile::tempdir_in(executable.parent().unwrap())?;
+    let result = (|| {
+        let downloaded = release::prepare(work.path(), &executable)?;
+        let templates: [String; 2] = if let Some(binary) = &downloaded {
+            let output = Command::new(binary)
+                .arg("__upgrade-render")
+                .arg(&executable)
+                .output()?;
+            if !output.status.success() {
+                return Err(io::Error::other(
+                    "target binary could not render integrations",
+                ));
+            }
+            serde_json::from_slice(&output.stdout).map_err(io::Error::other)?
+        } else {
+            [
+                Agent::Pi.render(&executable)?,
+                Agent::OpenCode.render(&executable)?,
+            ]
+        };
+        if let Some(binary) = &downloaded {
+            plan.targets[0].stage(&fs::read(binary)?)?;
         }
-        let mut staged = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-        staged.write_all(rendered.as_bytes())?;
-        staged.as_file().sync_all()?;
-        staged.persist(&path).map_err(|error| error.error)?;
-        println!(
-            "Updated {}. Restart {} to activate; running sessions keep loaded code.",
-            path.display(),
-            agent.name()
-        );
-        changed = true;
-    }
-    if !changed {
-        println!("No changes needed.");
-    }
-    let _ = fs::metadata(&executable)?;
-    Ok(())
+        for target in plan.targets.iter_mut().skip(1) {
+            let index = match target.agent.unwrap() {
+                Agent::Pi => 0,
+                Agent::OpenCode => 1,
+            };
+            target.stage(templates[index].as_bytes())?;
+        }
+        if !plan.changed() {
+            println!("No changes needed.");
+            return Ok(());
+        }
+        plan.commit()?;
+        plan.report();
+        Ok(())
+    })();
+    plan.cleanup();
+    result
 }
