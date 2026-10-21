@@ -16,6 +16,7 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
     let mut ordered = false;
     for (index, record) in parsed.iter().enumerate() {
         match record {
+            SearchRecord::Ambiguous => return None,
             SearchRecord::Line(line) => {
                 has_hit |= !line.context;
                 ordered |= line.context;
@@ -59,6 +60,7 @@ fn group_in_order(records: &[SearchRecord<'_>]) -> Option<String> {
     let mut repeated_path = false;
     for (index, record) in records.iter().enumerate() {
         match record {
+            SearchRecord::Ambiguous => return None,
             SearchRecord::Line(line) => {
                 if previous_path == Some(line.path) {
                     repeated_path = true;
@@ -139,6 +141,8 @@ fn group_by_path(records: Vec<SearchRecord<'_>>) -> Option<String> {
 }
 
 enum SearchRecord<'a> {
+    // Retain ambiguity so other rules cannot mistake rejected records for paths.
+    Ambiguous,
     Line(SearchLine<'a>),
     Separator(&'a str),
     Limit(&'a str),
@@ -211,7 +215,7 @@ fn parse_search_record(raw: &str) -> Option<SearchRecord<'_>> {
             continue;
         }
         if line.is_some() {
-            return None;
+            return Some(SearchRecord::Ambiguous);
         }
         line = Some(SearchLine {
             path,

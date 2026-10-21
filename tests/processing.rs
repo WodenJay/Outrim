@@ -72,10 +72,13 @@ fn path_lists_reject_the_whole_list_when_any_record_is_unsupported() {
         assert!(response.original_path.is_none());
         assert!(response.candidates.is_empty());
     }
-    let text = format!("{prefix}a.rs-1-context\n{prefix}a.rs-2-context\n");
-    let response = processor.process(request(&text, Source::Search));
-    assert_eq!(response.disposition, Disposition::NoMatch);
-    assert_eq!(response.text, text);
+    for suffix in ["-1-context", "-1-context-2-more"] {
+        let text = format!("{prefix}a.rs{suffix}\n{prefix}b.rs{suffix}\n");
+        let response = processor.process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::NoMatch, "{suffix}");
+        assert_eq!(response.text, text);
+        assert!(response.candidates.is_empty());
+    }
     assert!(!home.path().join(".outrim").exists());
 }
 
