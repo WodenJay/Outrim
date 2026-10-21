@@ -36,6 +36,7 @@ pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
         }
     }
     let work = task.workspace()?;
+    let mut prepared = false;
     let result = (|| {
         let downloaded = release::prepare(work.path(), &executable)?;
         let templates: [String; 2] = if let Some(binary) = &downloaded {
@@ -69,11 +70,12 @@ pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
             println!("No changes needed.");
             return Ok(());
         }
+        prepared = true;
         plan.commit()?;
         plan.report();
         Ok(())
     })();
-    if result.as_ref().is_err_and(transaction::busy) {
+    if prepared && result.as_ref().is_err_and(transaction::busy) {
         let handed_off = task.handoff(&executable, work, &plan);
         if handed_off.is_err() {
             plan.cleanup();

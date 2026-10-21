@@ -457,6 +457,81 @@ fn preflight_conflict_and_download_failure_preserve_the_whole_installation() {
 }
 
 #[test]
+fn stale_task_with_reused_pid_does_not_block_the_next_update() {
+    let install = Installation::new();
+    let release = Release::current();
+    let root = install.binary.with_file_name(format!(
+        ".{}.outrim-update",
+        install.binary.file_name().unwrap().to_string_lossy()
+    ));
+    let work = root.join("interrupted");
+    put(
+        &work.join(format!("helper{}", std::env::consts::EXE_SUFFIX)),
+        "not the running process",
+    );
+    fs::write(
+        root.join("active.json"),
+        serde_json::to_vec(&serde_json::json!({"pid": std::process::id(), "work": work})).unwrap(),
+    )
+    .unwrap();
+    put(&install.pi(), "// outrim-managed: pi-extension\nold");
+    let output = install.run(&["upgrade"], &release);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("NOT complete"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("interrupted"));
+    assert!(
+        fs::read_to_string(install.pi())
+            .unwrap()
+            .contains("BRIDGE_EXECUTABLE")
+    );
+    assert!(!root.join("active.json").exists());
+    assert!(
+        work.exists(),
+        "interrupted recovery files must not be discarded"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn background_waits_for_an_ordinary_integration_handle_without_upgrading_the_binary() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let install = Installation::new();
+    let release = Release::current();
+    put(&install.pi(), "// outrim-managed: pi-extension\nold");
+    let original_binary = fs::read(&install.binary).unwrap();
+    let handle = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(install.pi())
+        .unwrap();
+    let output = install.run(&["upgrade"], &release);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("NOT complete"));
+    assert_eq!(
+        fs::read_to_string(install.pi()).unwrap(),
+        "// outrim-managed: pi-extension\nold"
+    );
+    drop(handle);
+    wait_until(|| {
+        fs::read_to_string(install.pi()).is_ok_and(|text| text.contains("BRIDGE_EXECUTABLE"))
+    });
+    assert_eq!(fs::read(&install.binary).unwrap(), original_binary);
+    wait_until(|| {
+        let output = install.run(&["update"], &release);
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stderr).contains("completed on disk")
+    });
+}
+
+#[test]
 fn readonly_target_is_not_reported_as_background_waiting() {
     let install = Installation::new();
     let release = Release::current();

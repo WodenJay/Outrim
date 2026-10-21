@@ -54,14 +54,24 @@ impl Task {
         if let Ok(bytes) = fs::read(root.join("active.json")) {
             let active: Active = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
             // Covers the short lock hand-off between the preparing process and helper.
-            if alive(active.pid) {
+            let helper = active
+                .work
+                .join(format!("helper{}", std::env::consts::EXE_SUFFIX));
+            if process_executable(active.pid)
+                .and_then(|path| fs::canonicalize(path).ok())
+                .is_some_and(|path| fs::canonicalize(&helper).is_ok_and(|helper| helper == path))
+            {
                 pending();
                 return Ok(None);
             }
             if !root.join("result.txt").exists() {
-                eprintln!("Previous update was interrupted; checking the installation again.");
+                eprintln!(
+                    "Previous update was interrupted; checking the installation again. Recovery files retained at {}",
+                    active.work.display()
+                );
+            } else {
+                cleanup_work(&active.work);
             }
-            cleanup_work(&active.work);
             fs::remove_file(root.join("active.json"))?;
         }
         let result_path = root.join("result.txt");
@@ -146,6 +156,8 @@ pub fn apply(root: &Path, work: &Path) -> io::Result<()> {
         Ok(()) => "completed on disk; restart the affected Agents to activate".to_string(),
         Err(error) => format!("FAILED: {error}"),
     };
+    // Persist rollback state before the result permits later workspace cleanup.
+    write_json(&work.join("plan.json"), &plan)?;
     fs::write(root.join("result.txt"), message)?;
     plan.cleanup();
     // On Windows the helper itself can only be removed on the next invocation.
@@ -305,28 +317,49 @@ fn spawn(helper: &Path, root: &Path, work: &Path) -> io::Result<std::process::Ch
 }
 
 #[cfg(windows)]
-fn alive(pid: u32) -> bool {
+fn process_executable(pid: u32) -> Option<PathBuf> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, WAIT_TIMEOUT},
-        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+        Foundation::CloseHandle,
+        System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        },
     };
-    // SAFETY: the process handle is checked and closed exactly once.
+    // SAFETY: the process handle is checked and closed exactly once; buffer length
+    // is passed in UTF-16 units and checked before constructing the path.
     unsafe {
-        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if process.is_null() {
-            return io::Error::last_os_error().raw_os_error() == Some(5);
+            return None;
         }
-        let running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+        let mut buffer = vec![0u16; 32768];
+        let mut length = buffer.len() as u32;
+        let found = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
         CloseHandle(process);
-        running
+        (found != 0).then(|| PathBuf::from(OsString::from_wide(&buffer[..length as usize])))
     }
 }
 
-#[cfg(unix)]
-fn alive(pid: u32) -> bool {
-    // SAFETY: signal zero only checks whether the process exists.
-    unsafe {
-        libc::kill(pid as i32, 0) == 0
-            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+#[cfg(target_os = "linux")]
+fn process_executable(pid: u32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn process_executable(pid: u32) -> Option<PathBuf> {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: buffer is valid for its full reported length; proc_pidpath only queries.
+    let length =
+        unsafe { libc::proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if length <= 0 {
+        return None;
     }
+    let length = buffer.iter().position(|&byte| byte == 0)?;
+    Some(PathBuf::from(OsStr::from_bytes(&buffer[..length])))
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn process_executable(_: u32) -> Option<PathBuf> {
+    None
 }

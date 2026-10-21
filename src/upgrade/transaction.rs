@@ -19,6 +19,7 @@ pub(super) struct Target {
 #[derive(Serialize, Deserialize, Default)]
 pub(super) struct Plan {
     pub targets: Vec<Target>,
+    recovery_required: bool,
 }
 
 impl Target {
@@ -117,17 +118,22 @@ impl Plan {
                         io::copy(&mut File::open(backup)?, &mut restored)?;
                         restored.as_file().sync_all()?;
                         fs::set_permissions(restored.path(), fs::metadata(backup)?.permissions())?;
-                        fs::rename(&target.path, target.staged.as_ref().unwrap())?;
+                        fs::copy(&target.path, target.staged.as_ref().unwrap())?;
                         restored
                             .persist(&target.path)
                             .map_err(|error| error.error)?;
                         Ok::<(), io::Error>(())
                     })();
                     if let Err(rollback) = recovery {
-                        failures.push(format!("{}: {rollback}", target.path.display()));
+                        failures.push(format!(
+                            "{}: {rollback}; original retained at {}",
+                            target.path.display(),
+                            target.backup.as_ref().unwrap().display()
+                        ));
                     }
                 }
                 if !failures.is_empty() {
+                    self.recovery_required = true;
                     return Err(io::Error::other(format!(
                         "{error}; rollback failed: {}",
                         failures.join("; ")
@@ -156,6 +162,9 @@ impl Plan {
     }
 
     pub fn cleanup(&self) {
+        if self.recovery_required {
+            return;
+        }
         for target in &self.targets {
             for path in [target.staged.as_ref(), target.backup.as_ref()]
                 .into_iter()
