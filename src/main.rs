@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -108,9 +108,39 @@ fn run_gain(operation: cli::Gain) -> io::Result<()> {
         cli::Gain::Summary => outrim::gain::render(&home),
         cli::Gain::Detail(session) => outrim::gain::render_detail(&home, session.as_deref()),
         cli::Gain::Record(enabled) => outrim::gain::set_recording(&home, enabled),
+        cli::Gain::Clear => {
+            if !io::stdin().is_terminal() {
+                return Err(io::Error::other(
+                    "gain clear requires an interactive terminal",
+                ));
+            }
+            if confirm_gain_clear(&home, io::stdin().lock(), io::stderr().lock())? {
+                outrim::gain::clear(&home)?;
+                Ok("Savings and diagnostic records cleared.\n".into())
+            } else {
+                Ok("Cancelled.\n".into())
+            }
+        }
     }?;
     print!("{report}");
     Ok(())
+}
+
+fn confirm_gain_clear(
+    home: &Path,
+    mut input: impl BufRead,
+    mut output: impl Write,
+) -> io::Result<bool> {
+    writeln!(output, "Exit hosts using Outrim before clearing.")?;
+    writeln!(output, "Delete cumulative savings and diagnostic records:")?;
+    writeln!(output, "  {}", home.join(".outrim/gain.json").display())?;
+    writeln!(output, "  {}", home.join(".outrim/records").display())?;
+    writeln!(output, "Keep recovery originals and recording settings.")?;
+    write!(output, "Type yes to clear: ")?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    Ok(answer.trim_end_matches(['\r', '\n']) == "yes")
 }
 
 fn run_bridge(recording: Option<bool>) -> io::Result<()> {
@@ -133,6 +163,30 @@ fn finish(result: io::Result<()>) -> ExitCode {
         Err(error) => {
             eprintln!("outrim: {error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::confirm_gain_clear;
+    use std::{io::Cursor, path::Path};
+
+    #[test]
+    fn clear_requires_explicit_yes() {
+        for (answer, expected) in [
+            ("yes\n", true),
+            ("yes\r\n", true),
+            ("\n", false),
+            ("", false),
+            ("y\n", false),
+            ("YES\n", false),
+            ("no\n", false),
+        ] {
+            assert_eq!(
+                confirm_gain_clear(Path::new("home"), Cursor::new(answer), Vec::new()).unwrap(),
+                expected
+            );
         }
     }
 }

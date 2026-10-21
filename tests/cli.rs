@@ -20,6 +20,8 @@ fn invalid_input_never_runs_an_operation() {
         vec!["gain", "record"],
         vec!["gain", "record", "invalid"],
         vec!["gain", "record", "on", "extra"],
+        vec!["gain", "clear", "extra"],
+        vec!["gain", "clear", "--yes"],
         vec!["gain", "--unknown", "--help"],
         vec!["bridge", "--recording"],
         vec!["bridge", "--recording", "invalid"],
@@ -55,6 +57,7 @@ fn inspection_succeeds_without_a_usable_home() {
         vec!["update"],
         vec!["gain"],
         vec!["gain", "record"],
+        vec!["gain", "clear"],
         vec!["bridge"],
     ] {
         for help in ["-h", "--help"] {

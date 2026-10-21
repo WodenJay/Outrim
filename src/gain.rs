@@ -301,6 +301,31 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
     Ok(report)
 }
 
+pub fn clear(home: &Path) -> io::Result<()> {
+    let store = Store::new(home);
+    if !exists(&store.directory)? {
+        return Ok(());
+    }
+    // Keep the lock file in place so all writers use the same lock.
+    let _lock = store.lock()?;
+    for (path, directory) in [(store.path, false), (store.directory.join("records"), true)] {
+        let result = if directory {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+        if let Err(error) = result
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("Clear incomplete: {}: {error}", path.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn render(home: &Path) -> io::Result<String> {
     Ok(render_stats(&Store::new(home).read_for_render()?))
 }

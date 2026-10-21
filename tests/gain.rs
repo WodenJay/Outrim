@@ -418,6 +418,97 @@ fn gain_persists_deliveries_across_bridge_restarts() {
 }
 
 #[test]
+fn clear_removes_statistics_but_preserves_recovery_and_settings() {
+    let home = tempfile::tempdir().unwrap();
+    outrim::gain::clear(home.path()).unwrap();
+    assert!(!home.path().join(".outrim").exists());
+    outrim::gain::set_recording(home.path(), true).unwrap();
+    let directory = home.path().join(".outrim");
+    fs::create_dir_all(directory.join("records/instance")).unwrap();
+    fs::write(directory.join("records/instance/events.jsonl"), "event").unwrap();
+    fs::write(directory.join("records/instance/original.txt"), "recorded").unwrap();
+    fs::create_dir(directory.join("outputs")).unwrap();
+    let original = directory.join("outputs/original.txt");
+    fs::write(&original, "recoverable").unwrap();
+    fs::write(directory.join("gain.json"), "old statistics").unwrap();
+    let settings = fs::read(directory.join("recording.json")).unwrap();
+
+    outrim::gain::clear(home.path()).unwrap();
+    assert!(!directory.join("gain.json").exists());
+    assert!(!directory.join("records").exists());
+    assert_eq!(fs::read_to_string(original).unwrap(), "recoverable");
+    assert_eq!(
+        fs::read(directory.join("recording.json")).unwrap(),
+        settings
+    );
+    outrim::gain::clear(home.path()).unwrap();
+
+    let mut bridge = Bridge::start(home.path());
+    assert_eq!(
+        bridge.exchange(&delivery_request(
+            "new",
+            "compressed",
+            Some("log_tail"),
+            100,
+            50
+        ))["acknowledged"],
+        true
+    );
+    let text = "new output";
+    let acknowledgement = bridge.exchange(&json!({
+        "type": "record_observation", "version": 2, "id": "new-observation",
+        "host": "pi", "session": "after-clear", "tool": tool_request("unused", text)["tool"],
+        "original_text": text, "final_text": text, "outcome": "no_match", "candidates": []
+    }));
+    assert_eq!(acknowledgement["acknowledged"], true);
+    bridge.stop();
+    let stats: Value =
+        serde_json::from_slice(&fs::read(directory.join("gain.json")).unwrap()).unwrap();
+    assert_eq!(stats["outputs"], 1);
+    assert_eq!(stats["before_chars"], 100);
+    assert_eq!(fs::read_dir(directory.join("records")).unwrap().count(), 1);
+}
+
+#[test]
+fn clear_reports_deletion_failure() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = home.path().join(".outrim");
+    fs::create_dir(&directory).unwrap();
+    // A file where the records directory belongs cannot be cleared as a directory.
+    fs::write(directory.join("records"), "unchanged").unwrap();
+    assert!(outrim::gain::clear(home.path()).is_err());
+    assert_eq!(
+        fs::read_to_string(directory.join("records")).unwrap(),
+        "unchanged"
+    );
+}
+
+#[test]
+fn clear_rejects_piped_confirmation_without_deleting_data() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = home.path().join(".outrim");
+    fs::create_dir_all(directory.join("records")).unwrap();
+    fs::write(directory.join("gain.json"), "unchanged").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_outrim"))
+        .args(["gain", "clear"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The process may reject the pipe before the write reaches it.
+    let _ = child.stdin.take().unwrap().write_all(b"yes\n");
+    assert!(!child.wait_with_output().unwrap().status.success());
+    assert_eq!(
+        fs::read_to_string(directory.join("gain.json")).unwrap(),
+        "unchanged"
+    );
+    assert!(directory.join("records").is_dir());
+}
+
+#[test]
 fn retired_rules_are_hidden_without_changing_totals_or_saved_data() {
     let home = tempfile::tempdir().unwrap();
     let directory = home.path().join(".outrim");

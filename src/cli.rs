@@ -13,6 +13,7 @@ pub(crate) enum Gain {
     Summary,
     Detail(Option<String>),
     Record(bool),
+    Clear,
 }
 
 pub(crate) enum Agent {
@@ -24,10 +25,10 @@ const TOP: &str = "Usage: outrim <command>";
 const INSTALL: &str = "Usage: outrim install --agent <pi|opencode>";
 const UNINSTALL: &str = "Usage: outrim uninstall --agent <pi|opencode>";
 const UPGRADE: &str = "Usage: outrim upgrade";
-const GAIN: &str =
-    "Usage:\n  outrim gain\n  outrim gain --detail [--session <id>]\n  outrim gain record <on|off>";
+const GAIN: &str = "Usage:\n  outrim gain\n  outrim gain --detail [--session <id>]\n  outrim gain record <on|off>\n  outrim gain clear";
 const DETAIL: &str = "Usage: outrim gain --detail [--session <id>]";
 const RECORD: &str = "Usage: outrim gain record <on|off>";
+const CLEAR: &str = "Usage: outrim gain clear";
 const BRIDGE: &str = "Usage: outrim bridge";
 const RECORDING: &str = "Usage: outrim bridge [--recording <on|off>]";
 
@@ -75,6 +76,10 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
         Some("gain") => {
             let operation = match rest.first().and_then(|arg| arg.to_str()) {
                 None if rest.is_empty() => Gain::Summary,
+                Some("clear") => {
+                    no_extra(&rest[1..], CLEAR)?;
+                    Gain::Clear
+                }
                 Some("record") => {
                     let Some(setting) = rest.get(1) else {
                         return Err(error("expected on or off", RECORD));
@@ -109,7 +114,7 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
                     } else {
                         error(
                             format!("unknown command '{}'", token.to_string_lossy()),
-                            RECORD,
+                            GAIN,
                         )
                     });
                 }
@@ -216,10 +221,13 @@ fn help(args: &[OsString]) -> Option<&'static str> {
             Some("Update outrim and installed integrations.\n\nUsage: outrim upgrade")
         }
         [Some("gain")] => Some(
-            "Show compression savings.\n\nUsage:\n  outrim gain\n  outrim gain --detail [--session <id>]\n  outrim gain record <on|off>\n\nOptions:\n  --detail        Show recorded sessions\n  --session <id>  Show session records",
+            "Show compression savings.\n\nUsage:\n  outrim gain\n  outrim gain --detail [--session <id>]\n  outrim gain record <on|off>\n  outrim gain clear\n\nCommands:\n  record <on|off>  Toggle diagnostic recording\n  clear           Clear savings and diagnostic records\n\nOptions:\n  --detail        Show recorded sessions\n  --session <id>  Show session records",
         ),
         [Some("gain"), Some("record")] => Some(
             "Save tool arguments and full output locally.\n\nUsage: outrim gain record <on|off>",
+        ),
+        [Some("gain"), Some("clear")] => Some(
+            "Clear cumulative savings and diagnostic records.\n\nUsage: outrim gain clear\n\nRequires interactive confirmation. Exit hosts using Outrim first.\nKeeps recovery originals and recording settings.",
         ),
         [Some("bridge")] => Some("Run the agent bridge over stdin/stdout.\n\nUsage: outrim bridge"),
         _ => None,
