@@ -358,12 +358,20 @@ fn captured_streams_have_independent_recovery_and_gain() {
     }
     assert_ne!(paths[0], paths[1]);
     assert_ne!(fs::read(&paths[0]).unwrap(), fs::read(&paths[1]).unwrap());
+    let recovered = wrapper(home.path())
+        .args(["exec", "--"])
+        .arg(fixture())
+        .arg("read")
+        .arg(&paths[0])
+        .output()
+        .unwrap();
+    assert!(recovered.status.success());
+    assert_eq!(recovered.stdout, fs::read(&paths[0]).unwrap());
+    assert!(recovered.stderr.is_empty());
     let gain = wrapper(home.path()).arg("gain").output().unwrap();
-    assert!(
-        String::from_utf8(gain.stdout)
-            .unwrap()
-            .contains("Outputs: 2")
-    );
+    let gain = String::from_utf8(gain.stdout).unwrap();
+    assert!(gain.contains("Outputs: 3"));
+    assert!(gain.contains("Recovery skipped: 1"), "{gain}");
     assert_eq!(
         fs::read_to_string(home.path().join("executed")).unwrap(),
         "once"
@@ -375,7 +383,7 @@ fn captured_streams_have_independent_recovery_and_gain() {
     assert!(
         String::from_utf8(detail.stdout)
             .unwrap()
-            .contains("2 records")
+            .contains("3 records")
     );
 }
 

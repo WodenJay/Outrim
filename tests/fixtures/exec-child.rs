@@ -13,6 +13,10 @@ fn main() -> ExitCode {
             eprintln!("separate stderr");
             ExitCode::from(37)
         }
+        "read" => {
+            io::stdout().write_all(&std::fs::read(&args[1]).unwrap()).unwrap();
+            ExitCode::SUCCESS
+        }
         "json" => {
             std::fs::OpenOptions::new().create(true).append(true).open("executed").unwrap().write_all(b"once").unwrap();
             let value = format!("{{\n  \"items\": [\n{}\n  ]\n}}\n", (0..100).map(|n| format!("    {{ \"id\": {n}, \"name\": \"item\" }}")).collect::<Vec<_>>().join(",\n"));
