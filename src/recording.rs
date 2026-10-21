@@ -163,7 +163,7 @@ impl Recorder {
 
 impl Instance {
     fn new(home: &Path) -> io::Result<Self> {
-        let root = home.join(".outrim/records");
+        let root = home.join(".outrim").join("records");
         storage::private_directory(&home.join(".outrim"))?;
         storage::private_directory(&root)?;
         let directory = tempfile::Builder::new()
@@ -199,7 +199,7 @@ impl Instance {
 }
 
 pub(crate) fn events(home: &Path) -> io::Result<Vec<(PathBuf, Event)>> {
-    let root = home.join(".outrim/records");
+    let root = home.join(".outrim").join("records");
     let instances = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),

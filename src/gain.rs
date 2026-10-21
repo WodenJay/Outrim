@@ -212,7 +212,7 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
         } else {
             "off"
         },
-        home.join(".outrim/records").display()
+        home.join(".outrim").join("records").display()
     );
     let events = crate::recording::events(home)?;
     if let Some(session) = session {

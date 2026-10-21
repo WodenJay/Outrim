@@ -16,7 +16,7 @@ pub fn pi_agent_dir(user_home: &Path, configured_dir: Option<&OsStr>) -> PathBuf
     configured_dir
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| user_home.join(".pi/agent"))
+        .unwrap_or_else(|| user_home.join(".pi").join("agent"))
 }
 
 pub fn opencode_config_dir(user_home: &Path, configured_home: Option<&OsStr>) -> PathBuf {

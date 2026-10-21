@@ -63,6 +63,10 @@ fn recording_is_explicit_persistent_and_detail_is_read_only() {
     let report = String::from_utf8(detail.stdout).unwrap();
     assert!(report.contains("off"));
     assert!(report.contains("No recorded sessions"));
+    assert!(report.contains(&format!(
+        "Data directory: {}",
+        home.path().join(".outrim").join("records").display()
+    )));
     assert!(!home.path().join(".outrim").exists());
 
     let enabled = gain_command(home.path(), &["record", "on"]);
@@ -184,6 +188,22 @@ fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
     assert!(report.contains("host-call"));
     assert!(report.contains("chars 500 → "));
     assert!(!report.contains("Some("));
+    let native_instance = home
+        .path()
+        .join(".outrim")
+        .join("records")
+        .join(instance.file_name().unwrap());
+    for (label, filename) in [
+        ("Events", "events.jsonl"),
+        ("Arguments", event["content"]["arguments"].as_str().unwrap()),
+        ("Original", event["content"]["original"].as_str().unwrap()),
+        ("Final", event["content"]["final"].as_str().unwrap()),
+    ] {
+        assert!(report.contains(&format!(
+            "  {label}: {}",
+            native_instance.join(filename).display()
+        )));
+    }
     let mut restarted = Bridge::start(home.path());
     restarted.exchange(&observation);
     restarted.stop();

@@ -112,5 +112,20 @@ fn install_defaults_to_the_current_users_pi_agent_directory() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(extension_path(&home.path().join(".pi/agent")).is_file());
+    let installed_path = home
+        .path()
+        .join(".pi")
+        .join("agent")
+        .join("extensions")
+        .join("outrim.js");
+    assert!(installed_path.is_file());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(&installed_path.display().to_string())
+    );
+
+    let removed = run_with_default_agent_dir(home.path(), &["uninstall", "--agent", "pi"]);
+    assert!(removed.status.success());
+    assert!(
+        String::from_utf8_lossy(&removed.stdout).contains(&installed_path.display().to_string())
+    );
 }
