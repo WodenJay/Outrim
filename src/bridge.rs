@@ -110,12 +110,12 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
         Some(Value::String(kind)) => Err(ParseFailure {
             id,
             error: ProtocolError::InvalidRequest,
-            details: format!("unsupported message type {kind}"),
+            details: format!("Unsupported message type '{kind}'"),
         }),
         Some(_) => Err(ParseFailure {
             id,
             error: ProtocolError::InvalidRequest,
-            details: "message type must be a string".into(),
+            details: "Message type must be a string".into(),
         }),
     }
 }

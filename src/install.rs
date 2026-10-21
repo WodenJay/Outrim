@@ -34,7 +34,7 @@ pub fn install_pi_extension(agent_dir: &Path, executable: &Path) -> io::Result<P
         PI_EXTENSION_MARKER,
         PI_EXTENSION,
         executable,
-        "Pi extension",
+        "Pi",
     )
 }
 
@@ -43,7 +43,7 @@ pub fn uninstall_pi_extension(agent_dir: &Path) -> io::Result<Option<PathBuf>> {
         &agent_dir.join("extensions"),
         PI_EXTENSION_NAME,
         PI_EXTENSION_MARKER,
-        "Pi extension",
+        "Pi",
     )
 }
 
@@ -54,7 +54,7 @@ pub fn install_opencode_plugin(config_dir: &Path, executable: &Path) -> io::Resu
         OPENCODE_PLUGIN_MARKER,
         OPENCODE_PLUGIN,
         executable,
-        "OpenCode plugin",
+        "OpenCode",
     )
 }
 
@@ -63,7 +63,7 @@ pub fn uninstall_opencode_plugin(config_dir: &Path) -> io::Result<Option<PathBuf
         &config_dir.join("plugins"),
         OPENCODE_PLUGIN_NAME,
         OPENCODE_PLUGIN_MARKER,
-        "OpenCode plugin",
+        "OpenCode",
     )
 }
 
@@ -90,12 +90,12 @@ fn install_plugin(
 fn render_plugin(template: &str, executable: &Path, kind: &str) -> io::Result<String> {
     let executable = executable
         .to_str()
-        .ok_or_else(|| io::Error::other("executable path is not valid Unicode"))?;
+        .ok_or_else(|| io::Error::other("Invalid executable path encoding"))?;
     let executable = serde_json::to_string(executable).map_err(io::Error::other)?;
     let executable_slot = format!("\"{EXECUTABLE_PLACEHOLDER}\"");
     if template.matches(&executable_slot).count() != 1 {
         return Err(io::Error::other(format!(
-            "embedded {kind} has an invalid executable slot"
+            "Invalid {kind} integration template"
         )));
     }
     Ok(template.replace(&executable_slot, &executable))
@@ -170,12 +170,9 @@ impl Agent {
     }
 }
 
-fn unmanaged_plugin_error(path: &Path, kind: &str) -> io::Error {
+fn unmanaged_plugin_error(path: &Path, _kind: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!(
-            "refusing to replace or remove unmanaged {kind} at {}",
-            path.display()
-        ),
+        format!("Not managed by outrim: {}", path.display()),
     )
 }
