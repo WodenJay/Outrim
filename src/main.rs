@@ -9,6 +9,10 @@ mod upgrade;
 
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(help) = help(&arguments) {
+        println!("{help}");
+        return ExitCode::SUCCESS;
+    }
     if arguments.len() == 3 && arguments[0] == "__upgrade-apply" {
         return match upgrade::apply(Path::new(&arguments[1]), Path::new(&arguments[2])) {
             Ok(()) => ExitCode::SUCCESS,
@@ -80,6 +84,33 @@ fn main() -> ExitCode {
         "Usage:\n  outrim upgrade (alias: update)\n  outrim bridge\n  outrim gain\n  outrim install --agent pi\n  outrim uninstall --agent pi\n  outrim install --agent opencode\n  outrim uninstall --agent opencode"
     );
     ExitCode::from(2)
+}
+
+fn help(arguments: &[std::ffi::OsString]) -> Option<&'static str> {
+    let level = if arguments.is_empty() {
+        arguments
+    } else if arguments.last().is_some_and(|arg| arg == "-h" || arg == "--help") {
+        &arguments[..arguments.len() - 1]
+    } else {
+        return None;
+    };
+    if level.is_empty() {
+        Some("Usage: outrim <command>\n\nCommands:\n  install    Install an agent integration\n  uninstall  Remove an agent integration\n  upgrade    Update outrim and integrations (alias: update)\n  gain       Show compression savings\n  bridge     Run the agent bridge\n\nOptions:\n  -h, --help  Show help\n  --version   Show version")
+    } else if matches_command(level, &["install"]) {
+        Some("Install an agent integration.\n\nUsage: outrim install --agent <pi|opencode>")
+    } else if matches_command(level, &["uninstall"]) {
+        Some("Remove an agent integration.\n\nUsage: outrim uninstall --agent <pi|opencode>")
+    } else if matches_command(level, &["upgrade"]) || matches_command(level, &["update"]) {
+        Some("Update outrim and installed integrations.\n\nUsage: outrim upgrade")
+    } else if matches_command(level, &["gain"]) {
+        Some("Show compression savings.\n\nUsage:\n  outrim gain\n  outrim gain --detail [--session <id>]\n  outrim gain record <on|off>\n\nOptions:\n  --detail        Show recorded sessions\n  --session <id>  Show session records")
+    } else if matches_command(level, &["gain", "record"]) {
+        Some("Save tool arguments and full output locally.\n\nUsage: outrim gain record <on|off>")
+    } else if matches_command(level, &["bridge"]) {
+        Some("Run the agent bridge over stdin/stdout.\n\nUsage: outrim bridge")
+    } else {
+        None
+    }
 }
 
 fn matches_command(arguments: &[std::ffi::OsString], expected: &[&str]) -> bool {
