@@ -42,7 +42,8 @@ Pi tool_result (shell) → unchanged, no second accounting
 Pi tool_result (non-shell) → existing result adapter
 ```
 
-Rust owns literal parsing, eligibility, source classification and shell quoting.
+Rust owns flat-list segmentation, literal parsing, eligibility, per-unit source
+classification and shell quoting.
 The adapter supplies host facts and changes only the command string; it does not
 register a replacement execution tool. Pi's effective shell settings and built-in
 tool provenance determine its dialect. A custom tool, unknown shell or command
@@ -52,15 +53,38 @@ reliably identify PowerShell. OpenCode keeps its existing result-stage behavior.
 
 Only bounded, literal external commands are candidates: recognized build/test/
 runtime/search commands and selected read-only Git/file/JSON commands. Quotes,
-literal spaces and dialect-specific escapes are parsed, not evaluated. Expansion,
-globbing, pipelines, redirection, compound syntax, unconfirmed interactive flags,
-launchers and explicit `outrim exec` (including `--no-compress`) remain native.
+literal spaces and dialect-specific escapes are parsed, not evaluated. Flat lists
+support `;`, newlines, `&&` and `||` in Bash and PowerShell (conditional chains
+require PowerShell 7 in the original command). Each eligible execution unit is
+wrapped independently; ineligible units do not prevent safe siblings from being
+wrapped. A compound unit uses `<supplied-unit-id>:<1-based-segment-index>`;
+stdout/stderr share that unit identity but remain separate samples. Host, session,
+tool-call and recording facts remain common; source is derived from each unit's
+own argv, never from a sibling.
+
+Expansion, globbing, unconfirmed interactive flags, launchers and explicit
+`outrim exec` (including `--no-compress`) remain native. All members of a pipeline
+stay native: no terminal command is currently independently proven safe for
+capture. A redirected unit and an entire command-substitution consumer also stay
+native, with their original bytes and consumer data intact. These do not prevent
+safe units outside that pipeline/consumer from being wrapped. Unknown/non-flat
+grammar declines the entire call: blocks, subshells, background jobs, comments,
+here-documents/strings, ANSI-C/locale/typographic quotes, backtick substitutions,
+PowerShell assignments and stop-parsing syntax, for example. This is deliberately
+not a general shell parser.
 Follow commands (`tail`) and recognized watch/debug/interactive flags stay native.
 PowerShell accepts `& 'quoted executable'` as well as unquoted executable heads;
 a quoted head without `&` is an expression and is declined. Doubled double-quotes
 also stay native because their argv behavior depends on the PowerShell mode.
 
-The replacement resolves the target in the actual shell before wrapping it.
+Bash retains its original list operators. PowerShell chain operands cannot be
+`if` statements, so flat, left-associative `A && B || C` chains are lowered to
+`A; if ($?) { B }; if (-not $?) { C }` in the shared rewriter. Skipped branches
+preserve `$?`; no scriptblock invocation (which would mask native failure), new
+scope, temporary shell variables, or second execution service is introduced.
+Assignments are declined because they can capture a whole chain's output.
+
+The replacement resolves each target in the actual shell before wrapping it.
 Aliases, functions, builtins and cmdlets take the original-command branch.
 Windows wrapping additionally requires a native `.exe`; MSYS extensionless
 resolution is accepted only when it identifies the same `.exe` file. Scripts and
@@ -78,8 +102,10 @@ the execution boundary's existing bypass semantics.
 
 ## Verification seams
 
-- `tests/rewrite.rs`: real bridge plus Bash/PowerShell execution, literal argv,
-  actual function/alias resolution, per-stream originals and correlation.
+- `tests/rewrite.rs`: real bridge plus Bash/PowerShell 7 execution, literal argv,
+  actual function/alias resolution, sequence/conditional branches and continuation
+  lines, machine consumer files, explicit bypass, per-stream originals, source
+  attribution and distinct unit identities within one tool call.
 - `tests/pi-adapter.test.mjs`: pre-call mutation, fail-open/cancellation/deadline,
   no shell-result work, and non-shell adaptation.
 - `scripts/check-pi.mjs`: installed bundle → real bridge → native shell, recording
