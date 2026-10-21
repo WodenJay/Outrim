@@ -14,11 +14,11 @@ while [ "$#" -gt 0 ]; do
             case "$1" in --version) version=$2;; --from-file) source_file=$2;; esac
             shift 2 ;;
         --no-path) configure_path=0; shift ;;
-        *) echo "Usage: sh install.sh [--version vX.Y.Z] [--from-file binary] [--no-path]" >&2; exit 1 ;;
+        *) printf 'Unknown option: %s\nUsage: sh install.sh [--version <version>] [--from-file <binary>] [--no-path]\n' "$1" >&2; exit 1 ;;
     esac
 done
-case "$version" in *[!A-Za-z0-9._-]*|'') echo "Invalid version" >&2; exit 1;; esac
-: "${HOME:?HOME must be set}"
+case "$version" in *[!A-Za-z0-9._-]*|'') echo "Invalid version: $version" >&2; exit 1;; esac
+[ -n "${HOME:-}" ] || { echo "HOME is not set" >&2; exit 1; }
 os=$(uname -s)
 arch=$(uname -m)
 case "$os/$arch" in
@@ -48,7 +48,7 @@ else
         actual=$(shasum -a 256 "$staging/outrim" | awk '{print $1}')
     fi
     if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
-        echo "Checksum mismatch for $asset" >&2
+        echo "Checksum mismatch: $asset" >&2
         exit 1
     fi
 fi
@@ -76,4 +76,8 @@ if [ "$configure_path" = 1 ]; then
             printf '%s\n' 'fish_add_path "$HOME/.outrim/bin"' > "$HOME/.config/fish/conf.d/outrim.fish" ;;
     esac
 fi
-printf 'Installed %s\nOpen a new terminal or run: export PATH="$HOME/.outrim/bin:$PATH"\n' "$bin_dir/outrim"
+printf 'Installed %s\n' "$bin_dir/outrim"
+case ":$PATH:" in
+    *":$bin_dir:"*) ;;
+    *) printf 'Open a new terminal or run:\nexport PATH="$HOME/.outrim/bin:$PATH"\n' ;;
+esac

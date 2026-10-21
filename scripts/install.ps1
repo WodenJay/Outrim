@@ -1,17 +1,19 @@
 # Install the core only; never register an Agent or install a JS runtime.
 [CmdletBinding()]
 param(
-    [ValidatePattern('^[A-Za-z0-9._-]+$')][string]$Version = 'latest',
+    [string]$Version = 'latest',
     [string]$FromFile,
     [switch]$NoPath
 )
 $ErrorActionPreference = 'Stop'
 
+if ($Version -cnotmatch '^[A-Za-z0-9._-]+$') { throw "Invalid version: $Version" }
+
 if (-not [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows) -or
     [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) {
-    throw 'Unsupported platform: this installer requires Windows x64.'
+    throw 'Windows x64 required'
 }
-if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE must be set.' }
+if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE is not set' }
 $BinDir = Join-Path $env:USERPROFILE '.outrim/bin'
 $InstalledBinary = Join-Path $BinDir 'outrim.exe'
 $Asset = 'outrim-x86_64-pc-windows-msvc.exe'
@@ -34,7 +36,7 @@ try {
             if ($_ -cmatch ('^([a-fA-F0-9]{64})\s+' + [regex]::Escape($Asset) + '$')) { $Matches[1] }
         })
         if ($Expected.Count -ne 1 -or (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash -ne $Expected[0]) {
-            throw "Checksum mismatch for $Asset"
+            throw "Checksum mismatch: $Asset"
         }
     }
     if ((Get-Item -LiteralPath $Binary).Length -eq 0) { throw 'Empty binary' }
@@ -43,6 +45,7 @@ try {
     Remove-Item -LiteralPath $Staging -Recurse -Force
 }
 
+$NeedsPath = -not (($env:Path -split ';') | Where-Object { $_.TrimEnd('\', '/') -ieq $BinDir.TrimEnd('\', '/') })
 if (-not $NoPath) {
     $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $Entries = @($UserPath -split ';' | Where-Object { $_ })
@@ -54,4 +57,5 @@ if (-not $NoPath) {
         $env:Path = "$BinDir;$env:Path"
     }
 }
-Write-Output "Installed $InstalledBinary. Open a new terminal to use outrim."
+Write-Output "Installed $InstalledBinary"
+if ($NeedsPath) { Write-Output 'Open a new terminal.' }
