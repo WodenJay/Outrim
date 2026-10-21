@@ -83,7 +83,7 @@ impl Recorder {
         if request.version != VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "unsupported observation version",
+                "Unsupported observation version",
             ));
         }
         if !self.enabled {
@@ -92,7 +92,7 @@ impl Recorder {
         let mut guard = self
             .instance
             .lock()
-            .map_err(|_| io::Error::other("recording lock poisoned"))?;
+            .map_err(|_| io::Error::other("Recording lock poisoned"))?;
         if guard.is_none() {
             *guard = Some(Instance::new(&self.home)?);
         }
@@ -226,7 +226,7 @@ pub(crate) fn events(home: &Path) -> io::Result<Vec<(PathBuf, Event)>> {
         {
             let event: Event = serde_json::from_str(line)?;
             if event.format_version != 1 {
-                return Err(io::Error::other("unsupported recording format"));
+                return Err(io::Error::other("Unsupported recording format"));
             }
             result.push((directory.clone(), event));
         }

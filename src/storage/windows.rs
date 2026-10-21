@@ -39,7 +39,7 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
     if path_wide[..path_wide.len() - 1].contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "NUL in original path",
+            "Original path contains NUL",
         ));
     }
     // A protected DACL with inheritable owner-only full access. Supplying it at
@@ -81,9 +81,10 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
         .open(path)?;
     let metadata = directory.metadata()?;
     if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(io::Error::other(
-            "original directory is not a plain directory",
-        ));
+        return Err(io::Error::other(format!(
+            "Not a plain directory: {}",
+            path.display()
+        )));
     }
     let mut flags = 0;
     // SAFETY: directory owns a valid handle; unused outputs are null.
@@ -103,9 +104,10 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     if flags & FILE_PERSISTENT_ACLS == 0 {
-        return Err(io::Error::other(
-            "original volume does not support access control",
-        ));
+        return Err(io::Error::other(format!(
+            "Volume does not support access control: {}",
+            path.display()
+        )));
     }
     let mut present = 0;
     let mut defaulted = 0;

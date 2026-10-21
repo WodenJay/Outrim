@@ -40,7 +40,7 @@ impl Store {
         if !valid_delivery(&delivery) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "invalid delivery statistics",
+                "Invalid delivery statistics",
             ));
         }
         storage::private_directory(&self.directory)?;
@@ -187,7 +187,7 @@ pub fn set_recording(home: &Path, enabled: bool) -> io::Result<String> {
     #[cfg(not(windows))]
     file.persist(path).map_err(|error| error.error)?;
     Ok(format!(
-        "Full local recording is {}. Restart hosts to apply; running instances keep their startup setting. Historical data is not deleted.\nFull content includes tool arguments, source code, paths and secrets.\n",
+        "Recording {}. Restart hosts to apply.\n",
         if enabled { "on" } else { "off" }
     ))
 }
@@ -206,7 +206,7 @@ pub(crate) fn recording_enabled(home: &Path) -> io::Result<bool> {
 
 pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
     let mut report = format!(
-        "Outrim Gain · Local records\nSaved recording setting: {}\nRestart hosts to apply; running instances keep their startup setting.\nData directory: {}\nOrder is per instance, not global causal order. Final text is the adapter's returned representation, not proof of model consumption.\n",
+        "Recording: {}\nDirectory: {}\n\n",
         if recording_enabled(home)? {
             "on"
         } else {
@@ -216,7 +216,7 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
     );
     let events = crate::recording::events(home)?;
     if let Some(session) = session {
-        writeln!(report, "\nSession: {session}").unwrap();
+        writeln!(report, "Session: {session}").unwrap();
         let mut found = false;
         for (directory, event) in events
             .iter()
@@ -229,13 +229,15 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
                 event.instance_id,
                 event.sequence,
                 event.tool_name,
-                event.tool_call_id.as_deref().unwrap_or("(unknown)")
+                event.tool_call_id.as_deref().unwrap_or("unknown")
             )
             .unwrap();
             writeln!(
                 report,
                 "  Outcome: {} · rule {} · chars {} → {}",
-                serde_json::to_value(&event.outcome)?,
+                serde_json::to_value(&event.outcome)?
+                    .as_str()
+                    .unwrap_or("unknown"),
                 event.applied_rule.as_deref().unwrap_or("none"),
                 event
                     .before_chars
@@ -251,7 +253,7 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
             for reference in &event.original_references {
                 writeln!(
                     report,
-                    "  Original reference: {} · record {} (direct argument reference only)",
+                    "  Original reference: {} · record {}",
                     reference.original_path,
                     reference.record_id.as_deref().unwrap_or("unavailable")
                 )
@@ -291,7 +293,7 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
             writeln!(
                 report,
                 "Session: {} · {count} records",
-                session.unwrap_or("(unknown)")
+                session.unwrap_or("unknown")
             )
             .unwrap();
         }
@@ -305,7 +307,7 @@ pub fn render(home: &Path) -> io::Result<String> {
 
 fn render_stats(stats: &Stats) -> String {
     if stats.outputs == 0 {
-        return "Outrim Gain · Global\nNo gain data yet.\n".into();
+        return "No gain data.\n".into();
     }
 
     let before_tokens = estimate_tokens(stats.before_chars);
@@ -315,7 +317,7 @@ fn render_stats(stats: &Stats) -> String {
     let savings_rate = percentage(saved_chars, stats.before_chars);
     let mut report = String::new();
 
-    writeln!(report, "Outrim Gain · Global\n").unwrap();
+    writeln!(report, "Gain\n").unwrap();
     writeln!(report, "Outputs: {}", format_number(stats.outputs)).unwrap();
     writeln!(report, "Tokens (est.)").unwrap();
     writeln!(report, "  Before: {}", format_number(before_tokens)).unwrap();
@@ -328,12 +330,12 @@ fn render_stats(stats: &Stats) -> String {
     .unwrap();
     writeln!(
         report,
-        "\nSavings: {} {savings_rate:.1}%",
+        "\nSavings: {}",
         bar(saved_chars, stats.before_chars, SAVINGS_BAR_WIDTH)
     )
     .unwrap();
 
-    writeln!(report, "\nBy Rule").unwrap();
+    writeln!(report, "\nBy rule").unwrap();
     writeln!(
         report,
         "{:<22} {:>7} {:>10} {:>10} {:>10} {:>7}  Impact",
@@ -347,7 +349,7 @@ fn render_stats(stats: &Stats) -> String {
             .then_with(|| left_name.cmp(right_name))
     });
     if rules.is_empty() {
-        writeln!(report, "(no compressed results yet)").unwrap();
+        writeln!(report, "No compressed outputs.").unwrap();
     }
     let largest_saving = rules.first().map_or(0, |(_, rule)| saved_chars_for(rule));
     for (name, rule) in rules {

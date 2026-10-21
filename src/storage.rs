@@ -37,7 +37,7 @@ impl Originals {
         let root = std::path::absolute(&self.root)?;
         let base = root
             .parent()
-            .ok_or_else(|| io::Error::other("invalid output root"))?;
+            .ok_or_else(|| io::Error::other("Invalid output root"))?;
         for dir in [
             base.to_path_buf(),
             root.clone(),
@@ -60,7 +60,7 @@ pub(crate) fn commit(mut file: NamedTempFile, text: &str) -> io::Result<PathBuf>
     #[cfg(unix)]
     fs::File::open(
         path.parent()
-            .ok_or_else(|| io::Error::other("invalid original path"))?,
+            .ok_or_else(|| io::Error::other("Invalid original path"))?,
     )?
     .sync_all()?;
     Ok(path)
@@ -80,7 +80,10 @@ pub(crate) fn private_directory(path: &Path) -> io::Result<()> {
         Err(error) => return Err(error),
     }
     if !fs::symlink_metadata(path)?.is_dir() {
-        return Err(io::Error::other("original directory is not a directory"));
+        return Err(io::Error::other(format!(
+            "Not a directory: {}",
+            path.display()
+        )));
     }
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())

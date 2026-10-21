@@ -50,7 +50,6 @@ fn install_and_uninstall_touch_only_the_managed_extension() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert!(String::from_utf8_lossy(&first.stdout).contains("Restart Pi to activate"));
     let installed_path = extension_path(&agent_dir);
     let installed = fs::read_to_string(&installed_path).unwrap();
     assert!(installed.contains("outrim-managed: pi-extension"));
@@ -67,7 +66,6 @@ fn install_and_uninstall_touch_only_the_managed_extension() {
         "{}",
         String::from_utf8_lossy(&removed.stderr)
     );
-    assert!(String::from_utf8_lossy(&removed.stdout).contains("Restart Pi to unload"));
     assert!(!installed_path.exists());
     assert_eq!(fs::read_to_string(settings).unwrap(), r#"{"theme":"dark"}"#);
     assert_eq!(

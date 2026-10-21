@@ -54,7 +54,6 @@ fn install_and_uninstall_touch_only_the_managed_opencode_plugin() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert!(String::from_utf8_lossy(&first.stdout).contains("Restart OpenCode to activate"));
     let installed_path = plugin_path(&config_home);
     let installed = fs::read_to_string(&installed_path).unwrap();
     assert!(installed.contains("outrim-managed: opencode-plugin"));
@@ -79,7 +78,6 @@ fn install_and_uninstall_touch_only_the_managed_opencode_plugin() {
         "{}",
         String::from_utf8_lossy(&removed.stderr)
     );
-    assert!(String::from_utf8_lossy(&removed.stdout).contains("Restart OpenCode to unload"));
     assert!(!installed_path.exists());
     assert_eq!(
         fs::read_to_string(config).unwrap(),

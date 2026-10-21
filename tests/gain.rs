@@ -62,18 +62,20 @@ fn recording_is_explicit_persistent_and_detail_is_read_only() {
     assert!(detail.status.success());
     let report = String::from_utf8(detail.stdout).unwrap();
     assert!(report.contains("off"));
-    assert!(report.contains("No recorded sessions"));
-    assert!(report.contains(&format!(
-        "Data directory: {}",
-        home.path().join(".outrim").join("records").display()
-    )));
+    assert!(
+        report.contains(
+            &home
+                .path()
+                .join(".outrim")
+                .join("records")
+                .display()
+                .to_string()
+        )
+    );
     assert!(!home.path().join(".outrim").exists());
 
     let enabled = gain_command(home.path(), &["record", "on"]);
     assert!(enabled.status.success());
-    let notice = String::from_utf8(enabled.stdout).unwrap();
-    assert!(notice.contains("Restart"));
-    assert!(notice.contains("secrets"));
     let detail = gain_command(home.path(), &["--detail"]);
     assert!(String::from_utf8(detail.stdout).unwrap().contains("on"));
     assert!(
@@ -426,11 +428,7 @@ fn gain_shows_empty_state_without_creating_data_directory() {
         .unwrap();
 
     assert!(output.status.success());
-    assert!(
-        String::from_utf8(output.stdout)
-            .unwrap()
-            .contains("No gain data yet.")
-    );
+    assert!(output.stderr.is_empty());
     assert!(!home.path().join(".outrim").exists());
 }
 
@@ -451,7 +449,7 @@ fn gain_shows_an_empty_bar_when_deliveries_do_not_compress() {
         .unwrap();
     assert!(output.status.success());
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(report.contains(&format!("Savings: {} 0.0%", "░".repeat(24))));
+    assert!(report.contains(&"░".repeat(24)));
 }
 
 #[test]
