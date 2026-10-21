@@ -543,6 +543,223 @@ fn search_output_with_mixed_context_delimiters_is_left_unchanged() {
 }
 
 #[test]
+fn extended_search_keeps_interleaved_paths_and_cross_file_separators_in_order() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/a.rs", "long-component/".repeat(12));
+    // Each new record type independently opts into order-preserving grouping.
+    for (middle, expected_middle, ending) in [
+        (format!("{file}-3-context\n"), "  3-context\n", ""),
+        (String::new(), "", "[0007 matches limit reached.]\n"),
+        ("--\n".into(), "--\n", ""),
+    ] {
+        let text = format!(
+            "{file}:9:first\n{file}:9:duplicate\n{middle}other.rs:2:other\n--\n{file}:1:last\n{file}:1:last\n{ending}"
+        );
+        let response = Processor::new(home.path()).process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::Compressed);
+        let original_path = response.original_path.unwrap();
+        assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+        assert_eq!(
+            response.text,
+            format!(
+                "{file}:\n  9:first\n  9:duplicate\n{expected_middle}other.rs:\n  2:other\n--\n{file}:\n  1:last\n  1:last\n{ending}[outrim]: The full output is available at {original_path}"
+            )
+        );
+    }
+}
+
+#[test]
+fn context_search_preserves_positions_body_and_windows_paths() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!(
+        r"C:\workspace\{}\module-name.rs",
+        "long-directory\\".repeat(8)
+    );
+    let text = format!(
+        "{file}-0009-\n{file}:0008:03: body:7:value -8- -- [12 matches limit reached.]\n{file}-9- body:8:value -9- -- [13 matches limit reached.]\n{file}:8\n{file}:8:\n"
+    );
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::Compressed);
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{file}:\n  0009-\n  0008:03: body:7:value -8- -- [12 matches limit reached.]\n  9- body:8:value -9- -- [13 matches limit reached.]\n  8\n  8:\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn context_search_preserves_record_endings_and_terminal_blank_lines() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/module.rs", "long-component/".repeat(12));
+    for (first_ending, second_ending, tail) in [
+        ("\n", "\n", ""),
+        ("\r\n", "\r\n", "\r\n\r\n"),
+        ("\r\n", "\n", "\n\r\n"),
+        ("\n", "", ""),
+    ] {
+        let text = format!(
+            "{file}:18446744073709551615:hit{first_ending}{file}-0001-context{second_ending}{tail}"
+        );
+        let response = Processor::new(home.path()).process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::Compressed);
+        let original_path = response.original_path.unwrap();
+        assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+        let separator = if second_ending.is_empty() { "\n" } else { "" };
+        assert_eq!(
+            response.text,
+            format!(
+                "{file}:{first_ending}  18446744073709551615:hit{first_ending}  0001-context{second_ending}{tail}{separator}[outrim]: The full output is available at {original_path}"
+            )
+        );
+    }
+    // A final notice also keeps its terminator and any following blank records.
+    for ending in ["", "\n", "\r\n\r\n"] {
+        let text = format!(
+            "{file}:1:hit\n{file}:2:hit\n[999999999999999999999999 matches limit reached.]{ending}"
+        );
+        let response = Processor::new(home.path()).process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::Compressed);
+        let original_path = response.original_path.unwrap();
+        assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+        let separator = if ending.is_empty() { "\n" } else { "" };
+        assert_eq!(
+            response.text,
+            format!(
+                "{file}:\n  1:hit\n  2:hit\n[999999999999999999999999 matches limit reached.]{ending}{separator}[outrim]: The full output is available at {original_path}"
+            )
+        );
+    }
+}
+
+#[test]
+fn malformed_context_search_results_are_not_partially_grouped() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/module.rs", "long-component/".repeat(10));
+    let valid = format!("{file}:1:hit\n{file}-2-context\n{file}:3:hit\n");
+    for invalid in [
+        "FILE-4:mixed\n",
+        "FILE-4\n",
+        "FILE-0-context\n",
+        "FILE-18446744073709551616-context\n",
+        "FILE-四-context\n",
+        "FILE-4-body-5-ambiguous\n",
+        "FILE-4-body.rs:5:ambiguous\n",
+        "unknown line\n",
+        "\nFILE:4:hit\n",
+        "--\n",
+        "--\n--\nFILE:4:hit\n",
+        "[1 matches limit reached.]\nFILE:4:hit\n",
+        "[1 matches limit reached.]\n[2 matches limit reached.]\n",
+        "[0 matches limit reached.]\n",
+        "[000 matches limit reached.]\n",
+        "[1.5 matches limit reached.]\n",
+        "[-1 matches limit reached.]\n",
+        "[１ matches limit reached.]\n",
+        "[ matches limit reached.]\n",
+        "[2 matches limit reached]\n",
+        "[2 matches truncated.]\n",
+    ] {
+        let text = format!("{valid}{}", invalid.replace("FILE", &file));
+        let response = Processor::new(home.path()).process(request(&text, Source::Search));
+        assert_eq!(response.disposition, Disposition::NoMatch, "{invalid}");
+        assert_eq!(response.text, text);
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    for text in [
+        format!("--\n{valid}"),
+        format!("{file}-1-context\n{file}-2-context\n"),
+        format!("{file}-1-context\n--\n{file}-2-context\n[2 matches limit reached.]\n"),
+        "[2 matches limit reached.]\n".into(),
+        "--\n".into(),
+    ] {
+        let response = Processor::new(home.path()).process(request(&text, Source::Search));
+        // A lone bracketed notice can still reach the independent JSON rule.
+        assert!(matches!(
+            response.disposition,
+            Disposition::NoMatch | Disposition::NotShorter
+        ));
+        assert!(
+            response
+                .candidates
+                .iter()
+                .all(|candidate| candidate.rule != "search_hit_groups")
+        );
+        assert_eq!(response.text, text);
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn context_search_requires_strict_final_unicode_savings_including_hint_separator() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let file = format!("workspace/{}/a.rs", "long-component/".repeat(12));
+    let probe = processor.process(request(
+        &format!("{file}:1:hit\n{file}-2-context"),
+        Source::Search,
+    ));
+    let hint_length = format!(
+        "\n[outrim]: The full output is available at {}",
+        probe.original_path.unwrap()
+    )
+    .chars()
+    .count();
+    // Two records save path length minus four header/indentation characters.
+    // Vary Unicode path length to land below, on, and above the final hint cost.
+    for (path_length, expected) in [
+        (hint_length + 3, Disposition::NotShorter),
+        (hint_length + 4, Disposition::NotShorter),
+        (hint_length + 5, Disposition::Compressed),
+    ] {
+        let file = format!("{}.rs", "🦀".repeat(path_length - 3));
+        let text = format!("{file}:1:hit\n{file}-2-context");
+        let response = processor.process(request(&text, Source::Search));
+        assert_eq!(response.disposition, expected);
+        if expected == Disposition::Compressed {
+            assert_eq!(response.text.chars().count() + 1, text.chars().count());
+            assert_eq!(
+                fs::read_to_string(response.original_path.unwrap()).unwrap(),
+                text
+            );
+        } else {
+            assert_eq!(response.text, text);
+            assert!(response.original_path.is_none());
+            assert!(response.applied_rule.is_none());
+            assert!(response.candidates[0].body_chars < text.chars().count() as u64);
+        }
+    }
+}
+
+#[test]
+fn context_search_keeps_source_gate_protection_and_storage_failure_behavior() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/module.rs", "long-component/".repeat(12));
+    let text = format!("{file}:1:hit\n{file}-2-context\n");
+    let processor = Processor::new(home.path());
+    for source in [Source::Unknown, Source::SourceCode, Source::Configuration] {
+        let response = processor.process(request(&text, source));
+        assert_eq!(response.text, text);
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    assert!(!home.path().join(".outrim").exists());
+    fs::write(home.path().join(".outrim"), "blocked").unwrap();
+    let mut input = request(&text, Source::Search);
+    input.tool.input = json!({"path": "src/module.rs"});
+    let response = processor.process(input);
+    assert_eq!(response.disposition, Disposition::FailedOpen);
+    assert_eq!(response.text, text);
+    assert!(response.applied_rule.is_none());
+    assert!(response.original_path.is_none());
+}
+
+#[test]
 fn prose_prefixes_are_not_mistaken_for_search_paths() {
     let home = tempfile::tempdir().unwrap();
     for text in [
