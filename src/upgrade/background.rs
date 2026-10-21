@@ -35,9 +35,7 @@ impl Task {
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 if !fs::symlink_metadata(&root)?.file_type().is_dir() {
-                    return Err(io::Error::other(
-                        "update workspace is not a regular directory",
-                    ));
+                    return Err(io::Error::other("Invalid update directory"));
                 }
             }
             Err(error) => return Err(error),
@@ -66,7 +64,7 @@ impl Task {
             }
             if !root.join("result.txt").exists() {
                 eprintln!(
-                    "Previous update was interrupted; checking the installation again. Recovery files retained at {}",
+                    "Previous update interrupted.\nRecovery files: {}",
                     active.work.display()
                 );
             } else {
@@ -76,7 +74,7 @@ impl Task {
         }
         let result_path = root.join("result.txt");
         if let Ok(result) = fs::read_to_string(&result_path) {
-            eprintln!("Previous background update: {result}");
+            eprintln!("Previous update: {result}");
             fs::remove_file(result_path)?;
         }
         Ok(Some(Self { root, lock }))
@@ -116,28 +114,18 @@ impl Task {
         while !work.join("ready").exists() {
             if let Some(status) = child.try_wait()? {
                 return Err(io::Error::other(format!(
-                    "update helper exited before accepting the task: {status}"
+                    "Background update failed to start: {status}"
                 )));
             }
             thread::sleep(Duration::from_millis(10));
         }
         pending();
-        for target in &plan.targets {
-            if let Some(agent) = target.agent {
-                println!(
-                    "After completion, restart {} to activate the updated integration.",
-                    agent.name()
-                );
-            }
-        }
         Ok(())
     }
 }
 
 fn pending() {
-    println!(
-        "Update prepared; a background helper is waiting for files to be released. Update is NOT complete. Existing sessions will not be stopped."
-    );
+    println!("Update pending; waiting for files in use.");
 }
 
 pub fn apply(root: &Path, work: &Path) -> io::Result<()> {
@@ -153,8 +141,11 @@ pub fn apply(root: &Path, work: &Path) -> io::Result<()> {
         }
     };
     let message = match &result {
-        Ok(()) => "completed on disk; restart the affected Agents to activate".to_string(),
-        Err(error) => format!("FAILED: {error}"),
+        Ok(()) => match plan.restart() {
+            Some(restart) => format!("Updated.\n{restart}"),
+            None => "Updated.".to_owned(),
+        },
+        Err(error) => format!("Failed: {error}"),
     };
     // Persist rollback state before the result permits later workspace cleanup.
     write_json(&work.join("plan.json"), &plan)?;
@@ -170,7 +161,7 @@ fn open_lock(root: &Path) -> io::Result<File> {
     if let Ok(metadata) = fs::symlink_metadata(&path)
         && !metadata.is_file()
     {
-        return Err(io::Error::other("update lock is not a regular file"));
+        return Err(io::Error::other("Invalid update lock file"));
     }
     OpenOptions::new()
         .create(true)

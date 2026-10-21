@@ -24,13 +24,11 @@ pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
     let Some(task) = background::Task::acquire(&executable)? else {
         return Ok(());
     };
-    println!("Checking binary: {}", executable.display());
     let mut plan = Plan::default();
     plan.targets
         .push(Target::inspect(executable.clone(), None)?);
     for (agent, directory) in [(Agent::Pi, pi), (Agent::OpenCode, opencode)] {
         let path = agent.path(directory);
-        println!("Checking {}: {}", agent.name(), path.display());
         if agent.read(&path)?.is_some() {
             plan.targets.push(Target::inspect(path, Some(agent))?);
         }
@@ -45,9 +43,7 @@ pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
                 .arg(&executable)
                 .output()?;
             if !output.status.success() {
-                return Err(io::Error::other(
-                    "target binary could not render integrations",
-                ));
+                return Err(io::Error::other("Cannot prepare integrations"));
             }
             serde_json::from_slice(&output.stdout).map_err(io::Error::other)?
         } else {
@@ -67,7 +63,7 @@ pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
             target.stage(templates[index].as_bytes())?;
         }
         if !plan.changed() {
-            println!("No changes needed.");
+            println!("Already up to date.");
             return Ok(());
         }
         prepared = true;

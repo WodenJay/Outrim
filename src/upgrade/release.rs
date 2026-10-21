@@ -45,7 +45,7 @@ fn fetch(url: &str, limit: u64) -> io::Result<Vec<u8>> {
         .take(limit + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
-        return Err(io::Error::other("release response is too large"));
+        return Err(io::Error::other("Release response too large"));
     }
     Ok(bytes)
 }
@@ -56,7 +56,7 @@ fn asset_name() -> io::Result<String> {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        _ => return Err(io::Error::other("no release asset for this platform")),
+        _ => return Err(io::Error::other("Unsupported platform")),
     };
     Ok(format!("outrim-{target}"))
 }
@@ -75,11 +75,13 @@ pub(super) fn prepare(work: &Path, executable: &Path) -> io::Result<Option<PathB
     )
     .map_err(io::Error::other)?;
     if release.prerelease || release.draft || !version.pre.is_empty() {
-        return Err(io::Error::other("release is not stable"));
+        return Err(io::Error::other("Not a stable release"));
     }
     let current = semver::Version::parse(env!("CARGO_PKG_VERSION")).map_err(io::Error::other)?;
     if version <= current {
-        println!("Keeping binary {current}; latest stable is {version} (no downgrade).");
+        if version < current {
+            println!("Keeping {current}; latest release is {version}.");
+        }
         return Ok(None);
     }
     let name = asset_name()?;
@@ -88,22 +90,15 @@ pub(super) fn prepare(work: &Path, executable: &Path) -> io::Result<Option<PathB
             .assets
             .iter()
             .find(|asset| asset.name == name)
-            .ok_or_else(|| io::Error::other(format!("release has no {name}")))?;
+            .ok_or_else(|| io::Error::other(format!("Missing release asset: {name}")))?;
         if !asset
             .browser_download_url
             .contains(&format!("/download/{}/", release.tag_name))
         {
-            return Err(io::Error::other(
-                "release asset URL is not pinned to the selected tag",
-            ));
+            return Err(io::Error::other("Release asset version mismatch"));
         }
         Ok(&asset.browser_download_url)
     };
-    println!(
-        "Preparing stable release {} for {}",
-        release.tag_name,
-        executable.display()
-    );
     let sums =
         String::from_utf8(fetch(url("SHA256SUMS")?, 1024 * 1024)?).map_err(io::Error::other)?;
     let expected = sums
@@ -113,12 +108,10 @@ pub(super) fn prepare(work: &Path, executable: &Path) -> io::Result<Option<PathB
             let hash = fields.next()?;
             (fields.next()?.trim_start_matches('*') == name).then_some(hash)
         })
-        .ok_or_else(|| io::Error::other("SHA256 checksum is missing"))?;
+        .ok_or_else(|| io::Error::other("Missing checksum"))?;
     let bytes = fetch(url(&name)?, 256 * 1024 * 1024)?;
     if bytes.is_empty() || !digest(&bytes).eq_ignore_ascii_case(expected) {
-        return Err(io::Error::other(
-            "SHA256 checksum mismatch; installation unchanged",
-        ));
+        return Err(io::Error::other("Checksum mismatch"));
     }
     let path = work.join(format!("release{}", std::env::consts::EXE_SUFFIX));
     let mut file = fs::File::create(&path)?;

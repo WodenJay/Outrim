@@ -27,7 +27,7 @@ impl Target {
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.is_file() || metadata.permissions().readonly() {
             return Err(io::Error::other(format!(
-                "not a writable regular file: {}",
+                "Not a writable file: {}",
                 path.display()
             )));
         }
@@ -65,16 +65,16 @@ impl Target {
         let metadata = fs::symlink_metadata(&self.path)?;
         if !metadata.is_file() || metadata.permissions().readonly() {
             return Err(io::Error::other(format!(
-                "target is no longer a regular file: {}",
+                "Target is not writable: {}",
                 self.path.display()
             )));
         }
         if let Some(agent) = self.agent {
             if agent.read(&self.path)?.is_none() {
-                return Err(io::Error::other("installed integration was removed"));
+                return Err(io::Error::other("Integration was removed"));
             }
         } else if digest(&fs::read(&self.path)?) != self.original {
-            return Err(io::Error::other("binary changed while update was prepared"));
+            return Err(io::Error::other("Binary changed during update"));
         }
         Ok(())
     }
@@ -126,7 +126,7 @@ impl Plan {
                     })();
                     if let Err(rollback) = recovery {
                         failures.push(format!(
-                            "{}: {rollback}; original retained at {}",
+                            "{}: {rollback}; backup: {}",
                             target.path.display(),
                             target.backup.as_ref().unwrap().display()
                         ));
@@ -152,12 +152,27 @@ impl Plan {
                 continue;
             }
             println!("Updated {}", target.path.display());
-            if let Some(agent) = target.agent {
-                println!(
-                    "Restart {} to activate; running sessions keep loaded code.",
-                    agent.name()
-                );
+        }
+        if let Some(restart) = self.restart() {
+            println!("{restart}");
+        }
+    }
+
+    pub fn restart(&self) -> Option<&'static str> {
+        let mut pi = false;
+        let mut opencode = false;
+        for target in self.targets.iter().filter(|target| target.staged.is_some()) {
+            match target.agent {
+                Some(Agent::Pi) => pi = true,
+                Some(Agent::OpenCode) => opencode = true,
+                None => (),
             }
+        }
+        match (pi, opencode) {
+            (true, true) => Some("Restart Pi and OpenCode."),
+            (true, false) => Some("Restart Pi."),
+            (false, true) => Some("Restart OpenCode."),
+            (false, false) => None,
         }
     }
 
