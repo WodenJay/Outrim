@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
 import { registerPiExtension } from "../assets/outrim-pi.js";
+import { isolateHome } from "./isolated-home.mjs";
+
+isolateHome();
 
 class FakeChild extends EventEmitter {
   writes = [];

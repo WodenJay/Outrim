@@ -7,6 +7,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerOpenCodePlugin } from "../adapters/opencode.ts";
 import opencodePlugin from "../assets/outrim-opencode.js";
+import { isolateHome } from "./isolated-home.mjs";
+
+isolateHome();
 
 class FakeChild extends EventEmitter {
   writes = [];
