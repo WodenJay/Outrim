@@ -402,6 +402,17 @@ var defaultSpawn = (executable, args, options) => nodeSpawn(executable, args, op
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
+function isShell2(tool) {
+  return ["shell", "bash", "powershell"].includes(tool);
+}
+function shellDialect(shell) {
+  const name = shell.split(/[/\\\\]/).pop()?.toLowerCase().replace(/\.exe$/, "");
+  if (name === "bash")
+    return "bash";
+  if (name === "pwsh" || name === "powershell")
+    return "powershell";
+  return "unknown";
+}
 function exitCodeFrom(metadata) {
   const value = record(metadata);
   const code = value?.exit;
@@ -452,12 +463,55 @@ async function registerOpenCodePlugin(context, options = {}) {
   const bridge = createBridge("opencode", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   const activeCallsBySession = new Map;
   const activeCodeModeCalls = new Map;
+  const dialects = new Map;
+  const rewrites = new Map;
   const eventController = new AbortController;
   let closed = false;
   function abortSession(session) {
     for (const controller of activeCallsBySession.get(session) ?? [])
       controller.abort();
     activeCodeModeCalls.delete(session);
+    dialects.delete(session);
+    for (const [command, rewrite] of rewrites) {
+      if (rewrite.session === session)
+        rewrites.delete(command);
+    }
+  }
+  async function handleBefore(event) {
+    if (closed)
+      return;
+    if (event.tool === "execute") {
+      let sessionCalls = activeCodeModeCalls.get(event.sessionID);
+      if (!sessionCalls) {
+        sessionCalls = new Map;
+        activeCodeModeCalls.set(event.sessionID, sessionCalls);
+      }
+      sessionCalls.set(event.id, (sessionCalls.get(event.id) ?? 0) + 1);
+      return;
+    }
+    const input = record(event.input);
+    const dialect = dialects.get(event.sessionID)?.get(event.agent) ?? "unknown";
+    if (event.tool !== "shell" || !context.shell || dialect === "unknown" || typeof input?.command !== "string" || activeCodeModeCalls.get(event.sessionID)?.has(event.id))
+      return;
+    const original = input.command;
+    const controller = new AbortController;
+    let calls = activeCallsBySession.get(event.sessionID);
+    if (!calls) {
+      calls = new Set;
+      activeCallsBySession.set(event.sessionID, calls);
+    }
+    calls.add(controller);
+    try {
+      const command = await bridge.rewrite(event.sessionID, event.id, original, dialect, controller.signal);
+      if (closed || controller.signal.aborted || input.command !== original || !command || command === original)
+        return;
+      rewrites.set(command, { original, dialect, session: event.sessionID, call: event.id });
+      input.command = command;
+    } finally {
+      calls.delete(controller);
+      if (calls.size === 0)
+        activeCallsBySession.delete(event.sessionID);
+    }
   }
   async function handleResult(event) {
     const codeModeSessionCalls = activeCodeModeCalls.get(event.sessionID);
@@ -472,7 +526,11 @@ async function registerOpenCodePlugin(context, options = {}) {
         codeModeSessionCalls.set(event.id, codeModeDepth - 1);
       }
     }
-    if (closed)
+    for (const [command, rewrite] of rewrites) {
+      if (rewrite.session === event.sessionID && rewrite.call === event.id)
+        rewrites.delete(command);
+    }
+    if (closed || isShell2(event.tool))
       return;
     const input = record(event.input);
     const result = event.result;
@@ -503,15 +561,6 @@ async function registerOpenCodePlugin(context, options = {}) {
         reason: "original_directory_in_arguments"
       });
       bridge.recordDelivery(selection.texts, "recovery_skipped");
-      return;
-    }
-    const shellReason = shellSkipReason("opencode", event.tool, input);
-    if (shellReason) {
-      bridge.recordObservation(observation, originalText, originalText, {
-        outcome: "protected",
-        reason: shellReason
-      });
-      bridge.recordDelivery(selection.texts, "protected");
       return;
     }
     const controller = new AbortController;
@@ -551,21 +600,37 @@ async function registerOpenCodePlugin(context, options = {}) {
         activeCallsBySession.delete(event.sessionID);
     }
   }
-  const beforeRegistration = await context.tool.hook("execute.before", (event) => {
-    if (event.tool !== "execute")
-      return;
-    let sessionCalls = activeCodeModeCalls.get(event.sessionID);
-    if (!sessionCalls) {
-      sessionCalls = new Map;
-      activeCodeModeCalls.set(event.sessionID, sessionCalls);
-    }
-    sessionCalls.set(event.id, (sessionCalls.get(event.id) ?? 0) + 1);
-  });
-  let registration;
+  const registrations = [];
   try {
-    registration = await context.tool.hook("execute.after", handleResult);
+    if (context.session && context.shell) {
+      const observeShell = (event) => {
+        const description = event.tools.shell?.description ?? "";
+        const match = /(?:^| )Commands run on (?:Windows|macOS|Linux) using ([a-zA-Z0-9_-]+)\./.exec(description);
+        let agents = dialects.get(event.sessionID);
+        if (!agents) {
+          agents = new Map;
+          dialects.set(event.sessionID, agents);
+        }
+        agents.set(event.agent, match?.[1] ? shellDialect(match[1]) : "unknown");
+      };
+      for (const name of ["context", "generate", "compaction"]) {
+        registrations.push(await context.session.hook(name, observeShell));
+      }
+      registrations.push(await context.shell.hook("create.before", (event) => {
+        const rewrite = rewrites.get(event.command);
+        if (!rewrite)
+          return;
+        rewrites.delete(event.command);
+        if (shellDialect(event.shell) !== rewrite.dialect)
+          event.command = rewrite.original;
+      }));
+    }
+    registrations.push(await context.tool.hook("execute.before", handleBefore));
+    registrations.push(await context.tool.hook("execute.after", handleResult));
   } catch (error) {
-    await beforeRegistration.dispose();
+    for (const registration of registrations.reverse())
+      await registration.dispose();
+    bridge.close();
     throw error;
   }
   let eventLoop;
@@ -594,8 +659,10 @@ async function registerOpenCodePlugin(context, options = {}) {
         controller.abort();
     }
     bridge.close();
-    await registration.dispose();
-    await beforeRegistration.dispose();
+    dialects.clear();
+    rewrites.clear();
+    for (const registration of registrations.reverse())
+      await registration.dispose();
     await eventLoop;
   };
 }
