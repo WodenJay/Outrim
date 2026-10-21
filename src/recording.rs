@@ -55,6 +55,8 @@ pub(crate) struct Event {
     pub original_path: Option<String>,
     pub original_references: Vec<OriginalReference>,
     pub content: Content,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::protocol::ExecutionMetadata>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -147,6 +149,7 @@ impl Recorder {
                 .map(|text| text.chars().count()),
             original_path: request.original_path,
             original_references,
+            execution: request.execution,
             content: Content {
                 arguments,
                 original,

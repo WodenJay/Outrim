@@ -250,6 +250,18 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
             if let Some(reason) = &event.reason {
                 writeln!(report, "  Reason: {reason}").unwrap();
             }
+            if let Some(execution) = &event.execution {
+                writeln!(
+                    report,
+                    "  Execution: {} · {} · recording {}",
+                    execution.unit_id,
+                    serde_json::to_value(execution.stream)?
+                        .as_str()
+                        .unwrap_or("unknown"),
+                    execution.recording
+                )
+                .unwrap();
+            }
             for reference in &event.original_references {
                 writeln!(
                     report,
@@ -283,8 +295,29 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
         }
     } else {
         let mut sessions = BTreeMap::new();
-        for (_, event) in &events {
+        for (directory, event) in &events {
             *sessions.entry(event.session.as_deref()).or_insert(0_u64) += 1;
+            if let Some(execution) = &event.execution {
+                writeln!(
+                    report,
+                    "Execution: {} · {} · {} · chars {} → {}\n  Events: {}",
+                    execution.unit_id,
+                    serde_json::to_value(execution.stream)?
+                        .as_str()
+                        .unwrap_or("unknown"),
+                    serde_json::to_value(&event.outcome)?
+                        .as_str()
+                        .unwrap_or("unknown"),
+                    event
+                        .before_chars
+                        .map_or_else(|| "unmeasured".into(), |count| count.to_string()),
+                    event
+                        .after_chars
+                        .map_or_else(|| "unmeasured".into(), |count| count.to_string()),
+                    directory.join("events.jsonl").display()
+                )
+                .unwrap();
+            }
         }
         if sessions.is_empty() {
             writeln!(report, "No recorded sessions.").unwrap();

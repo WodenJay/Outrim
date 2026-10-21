@@ -3,10 +3,18 @@ use std::ffi::{OsStr, OsString};
 pub(crate) enum Command {
     Help(&'static str),
     Version,
-    Install { agent: Agent, remove: bool },
+    Install {
+        agent: Agent,
+        remove: bool,
+    },
     Upgrade,
     Gain(Gain),
     Bridge(Option<bool>),
+    Exec {
+        no_compress: bool,
+        timeout: Option<std::time::Duration>,
+        arguments: Vec<OsString>,
+    },
 }
 
 pub(crate) enum Gain {
@@ -121,6 +129,39 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
             };
             Ok(Command::Gain(operation))
         }
+        Some("exec") => {
+            let usage =
+                "Usage: outrim exec [--no-compress] [--timeout-ms <ms>] -- <program> [args...]";
+            let mut no_compress = false;
+            let mut timeout = None;
+            let mut rest = rest;
+            while let Some(option) = rest.first().filter(|arg| *arg != "--") {
+                if option == "--no-compress" && !no_compress {
+                    no_compress = true;
+                    rest = &rest[1..];
+                } else if option == "--timeout-ms" && timeout.is_none() {
+                    let milliseconds = value(rest.get(1), "--timeout-ms", usage)?
+                        .to_str()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .filter(|value| *value > 0)
+                        .ok_or_else(|| {
+                            error("timeout must be a positive number of milliseconds", usage)
+                        })?;
+                    timeout = Some(std::time::Duration::from_millis(milliseconds));
+                    rest = &rest[2..];
+                } else {
+                    return Err(unexpected(option, usage));
+                }
+            }
+            if rest.len() < 2 {
+                return Err(error("expected -- followed by a program", usage));
+            }
+            Ok(Command::Exec {
+                no_compress,
+                timeout,
+                arguments: rest[1..].to_vec(),
+            })
+        }
         Some("bridge") => {
             if rest.first().is_some_and(|arg| arg == "--recording") {
                 let setting = value(rest.get(1), "--recording", RECORDING)?;
@@ -209,7 +250,7 @@ fn help(args: &[OsString]) -> Option<&'static str> {
     let level: Vec<_> = level.iter().map(|arg| arg.to_str()).collect();
     match level.as_slice() {
         [] => Some(
-            "Usage: outrim <command>\n\nCommands:\n  install    Install an agent integration\n  uninstall  Remove an agent integration\n  upgrade    Update outrim and integrations (alias: update)\n  gain       Show compression savings\n  bridge     Run the agent bridge\n\nOptions:\n  -h, --help  Show help\n  --version   Show version",
+            "Usage: outrim <command>\n\nCommands:\n  install    Install an agent integration\n  uninstall  Remove an agent integration\n  upgrade    Update outrim and integrations (alias: update)\n  gain       Show compression savings\n  bridge     Run the agent bridge\n  exec       Run a program with output compression\n\nOptions:\n  -h, --help  Show help\n  --version   Show version",
         ),
         [Some("install")] => {
             Some("Install an agent integration.\n\nUsage: outrim install --agent <pi|opencode>")
@@ -228,6 +269,9 @@ fn help(args: &[OsString]) -> Option<&'static str> {
         ),
         [Some("gain"), Some("clear")] => Some(
             "Clear cumulative savings and diagnostic records.\n\nUsage: outrim gain clear\n\nRequires interactive confirmation. Exit hosts using Outrim first.\nKeeps recovery originals and recording settings.",
+        ),
+        [Some("exec")] => Some(
+            "Run a program; compress stdout and stderr separately after exit.\n\nUsage: outrim exec [--no-compress] [--timeout-ms <ms>] -- <program> [args...]\n\nCapture: up to 8 MiB per stream; larger or non-text streams pass through unchanged.\n\nOptions:\n  --no-compress     Inherit streams directly; do not collect output\n  --timeout-ms <ms> Stop the program and its descendants after this duration",
         ),
         [Some("bridge")] => Some("Run the agent bridge over stdin/stdout.\n\nUsage: outrim bridge"),
         _ => None,

@@ -26,6 +26,7 @@ impl Originals {
         let host = match host {
             Host::Pi => "pi",
             Host::Opencode => "opencode",
+            Host::Exec => "exec",
         };
         // Session IDs are opaque and unbounded; never use their bytes as a path
         // component. This fingerprint only groups files, not their identity:

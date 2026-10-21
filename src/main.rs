@@ -5,6 +5,7 @@ use std::{
 };
 
 mod cli;
+mod exec;
 mod upgrade;
 
 fn main() -> ExitCode {
@@ -43,6 +44,14 @@ fn main() -> ExitCode {
         })),
         cli::Command::Gain(operation) => finish(run_gain(operation)),
         cli::Command::Bridge(recording) => finish(run_bridge(recording)),
+        cli::Command::Exec {
+            no_compress,
+            timeout,
+            arguments,
+        } => match exec::run(&arguments, no_compress, timeout) {
+            Ok(status) => exec::exit(status),
+            Err(error) => finish(Err(error)),
+        },
     }
 }
 

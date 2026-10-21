@@ -2,6 +2,8 @@
 //! not an independently configurable original-output directory.
 
 pub mod bridge;
+pub mod command;
+pub mod execution;
 pub mod gain;
 pub mod install;
 mod json;
@@ -64,6 +66,11 @@ impl Processor {
         if request.version != VERSION {
             response.disposition = Disposition::FailedOpen;
             response.reason = Some("unsupported_protocol_version".into());
+            return response;
+        }
+        if protection::recovery_reference(&request.tool.input) {
+            response.disposition = Disposition::RecoverySkipped;
+            response.reason = Some("original_output_reference".into());
             return response;
         }
         // Search paths are query scope only when the output parses as hit records.

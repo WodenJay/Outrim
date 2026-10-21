@@ -18,6 +18,7 @@ pub struct Request {
 pub enum Host {
     Pi,
     Opencode,
+    Exec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +129,23 @@ pub struct RecordObservationRequest {
     pub reason: Option<String>,
     #[serde(default)]
     pub parts: Vec<ProcessingPart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionMetadata {
+    pub unit_id: String,
+    pub stream: OutputStream,
+    pub recording: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
