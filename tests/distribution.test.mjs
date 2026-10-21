@@ -219,6 +219,9 @@ windowsTest(
       expect(readFileSync(join(root, ".outrim/bin/outrim.exe"), "utf8")).toBe(
         "local Windows release binary",
       );
+      expect(result.stdout.trim()).toBe(
+        `Installed ${join(root, ".outrim", "bin", "outrim.exe")}. Open a new terminal to use outrim.`,
+      );
       expect(readdirSync(join(root, ".outrim"))).toEqual(["bin"]);
     } finally {
       rmSync(root, { recursive: true, force: true });

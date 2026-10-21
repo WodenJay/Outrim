@@ -13,6 +13,7 @@ if (-not [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.Int
 }
 if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { throw 'USERPROFILE must be set.' }
 $BinDir = Join-Path $env:USERPROFILE '.outrim/bin'
+$InstalledBinary = Join-Path $BinDir 'outrim.exe'
 $Asset = 'outrim-x86_64-pc-windows-msvc.exe'
 $null = New-Item -ItemType Directory -Force -Path $BinDir
 $Staging = Join-Path $BinDir ('.install.' + [guid]::NewGuid().ToString('N'))
@@ -37,7 +38,7 @@ try {
         }
     }
     if ((Get-Item -LiteralPath $Binary).Length -eq 0) { throw 'Empty binary' }
-    Move-Item -LiteralPath $Binary -Destination (Join-Path $BinDir 'outrim.exe') -Force
+    Move-Item -LiteralPath $Binary -Destination $InstalledBinary -Force
 } finally {
     Remove-Item -LiteralPath $Staging -Recurse -Force
 }
@@ -53,4 +54,4 @@ if (-not $NoPath) {
         $env:Path = "$BinDir;$env:Path"
     }
 }
-Write-Output "Installed $BinDir/outrim.exe. Open a new terminal to use outrim."
+Write-Output "Installed $InstalledBinary. Open a new terminal to use outrim."
