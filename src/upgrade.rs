@@ -1,4 +1,6 @@
+mod background;
 mod release;
+pub use background::apply;
 mod transaction;
 
 use outrim::install::Agent;
@@ -19,6 +21,9 @@ pub fn render(executable: &Path) -> io::Result<()> {
 
 pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
     let executable = std::env::current_exe()?;
+    let Some(task) = background::Task::acquire(&executable)? else {
+        return Ok(());
+    };
     println!("Checking binary: {}", executable.display());
     let mut plan = Plan::default();
     plan.targets
@@ -30,7 +35,7 @@ pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
             plan.targets.push(Target::inspect(path, Some(agent))?);
         }
     }
-    let work = tempfile::tempdir_in(executable.parent().unwrap())?;
+    let work = task.workspace()?;
     let result = (|| {
         let downloaded = release::prepare(work.path(), &executable)?;
         let templates: [String; 2] = if let Some(binary) = &downloaded {
@@ -68,6 +73,13 @@ pub fn run(pi: &Path, opencode: &Path) -> io::Result<()> {
         plan.report();
         Ok(())
     })();
+    if result.as_ref().is_err_and(transaction::busy) {
+        let handed_off = task.handoff(&executable, work, &plan);
+        if handed_off.is_err() {
+            plan.cleanup();
+        }
+        return handed_off;
+    }
     plan.cleanup();
     result
 }

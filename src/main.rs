@@ -9,6 +9,12 @@ mod upgrade;
 
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.len() == 3 && arguments[0] == "__upgrade-apply" {
+        return match upgrade::apply(Path::new(&arguments[1]), Path::new(&arguments[2])) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail_with_error(error),
+        };
+    }
     if arguments.len() == 2 && arguments[0] == "__upgrade-render" {
         return match upgrade::render(Path::new(&arguments[1])) {
             Ok(()) => ExitCode::SUCCESS,

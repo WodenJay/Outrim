@@ -163,6 +163,178 @@ fn checksum_failure_preserves_every_formal_target() {
     }
 }
 
+fn release_binary() -> Vec<u8> {
+    static BINARY: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BINARY
+        .get_or_init(|| {
+            let directory = tempfile::tempdir().unwrap();
+            let binary = directory
+                .path()
+                .join(format!("release{}", std::env::consts::EXE_SUFFIX));
+            let output = Command::new("rustc")
+                .args(["--edition=2024", "tests/fixtures/upgrade-release.rs", "-o"])
+                .arg(&binary)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            fs::read(binary).unwrap()
+        })
+        .clone()
+}
+
+fn wait_until(mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !condition() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "update did not finish"
+        );
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn new_release_updates_in_place_using_new_binary_resources() {
+    let binary = release_binary();
+    let release = Release::serve("999.0.0", Some(binary.clone()), false);
+    for alias in ["upgrade", "update"] {
+        let install = Installation::new();
+        put(&install.pi(), "// outrim-managed: pi-extension\nold");
+        let output = install.run(&[alias], &release);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        wait_until(|| fs::read(&install.binary).is_ok_and(|content| content == binary));
+        wait_until(|| {
+            fs::read_to_string(install.pi())
+                .is_ok_and(|content| content.contains("new release fixture"))
+        });
+        let pi = fs::read_to_string(install.pi()).unwrap();
+        assert!(
+            pi.contains(&serde_json::to_string(&install.binary).unwrap()),
+            "{pi}"
+        );
+        assert!(!install.opencode().exists());
+        let version = Command::new(&install.binary)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&version.stdout).contains("999.0.0"));
+    }
+}
+
+#[cfg(windows)]
+struct Bridge(std::process::Child);
+#[cfg(windows)]
+impl Bridge {
+    fn start(install: &Installation) -> Self {
+        Self(
+            Command::new(&install.binary)
+                .arg("bridge")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .env("USERPROFILE", install.home.path())
+                .spawn()
+                .unwrap(),
+        )
+    }
+}
+#[cfg(windows)]
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        drop(self.0.stdin.take());
+        let _ = self.0.kill();
+        self.0.wait().unwrap();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn background_waits_for_all_real_bridges_and_keeps_the_original_release_and_scope() {
+    let binary = release_binary();
+    let release = Release::serve("999.0.0", Some(binary.clone()), false);
+    for alias in ["upgrade", "update"] {
+        let install = Installation::new();
+        put(&install.pi(), "// outrim-managed: pi-extension\nold");
+        let first = Bridge::start(&install);
+        let second = Bridge::start(&install);
+        let before = fs::read(&install.binary).unwrap();
+        let output = install.run(&[alias], &release);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("NOT complete"));
+        assert_eq!(fs::read(&install.binary).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(install.pi()).unwrap(),
+            "// outrim-managed: pi-extension\nold"
+        );
+        // A later release and newly installed Agent must not alter the waiting task.
+        let later = Release::serve("1000.0.0", Some(b"must not be downloaded".to_vec()), false);
+        put(
+            &install.opencode(),
+            "// outrim-managed: opencode-plugin\nadded later",
+        );
+        let repeated = install.run(&["update"], &later);
+        assert!(repeated.status.success());
+        assert!(String::from_utf8_lossy(&repeated.stdout).contains("NOT complete"));
+        drop(first);
+        assert_eq!(fs::read(&install.binary).unwrap(), before);
+        drop(second);
+        wait_until(|| {
+            fs::read_to_string(install.pi()).is_ok_and(|text| text.contains("new release fixture"))
+        });
+        assert_eq!(fs::read(&install.binary).unwrap(), binary);
+        assert_eq!(
+            fs::read_to_string(install.opencode()).unwrap(),
+            "// outrim-managed: opencode-plugin\nadded later"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn background_respects_removed_or_unmanaged_integrations_and_reports_failure_next_time() {
+    let release = Release::serve("999.0.0", Some(release_binary()), false);
+    let current = Release::current();
+    for replacement in [None, Some("user-owned now")] {
+        let install = Installation::new();
+        put(&install.pi(), "// outrim-managed: pi-extension\nold");
+        let bridge = Bridge::start(&install);
+        let before = fs::read(&install.binary).unwrap();
+        let output = install.run(&["upgrade"], &release);
+        assert!(output.status.success());
+        if let Some(text) = replacement {
+            fs::write(install.pi(), text).unwrap();
+        } else {
+            fs::remove_file(install.pi()).unwrap();
+        }
+        drop(bridge);
+        let mut reported = false;
+        wait_until(|| {
+            let output = install.run(&["update"], &current);
+            reported = String::from_utf8_lossy(&output.stderr)
+                .contains("Previous background update: FAILED");
+            reported
+        });
+        assert!(reported);
+        assert_eq!(fs::read(&install.binary).unwrap(), before);
+        if let Some(text) = replacement {
+            assert_eq!(fs::read_to_string(install.pi()).unwrap(), text);
+        } else {
+            assert!(!install.pi().exists());
+        }
+    }
+}
+
 fn put(path: &Path, content: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, content).unwrap();

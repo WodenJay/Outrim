@@ -2,9 +2,9 @@ use super::release::digest;
 use outrim::install::Agent;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -92,7 +92,7 @@ impl Plan {
         #[cfg(windows)]
         for target in &self.targets {
             if target.staged.is_some() {
-                drop(OpenOptions::new().write(true).open(&target.path)?);
+                drop(fs::OpenOptions::new().write(true).open(&target.path)?);
             }
         }
         let mut committed: Vec<usize> = Vec::new();
