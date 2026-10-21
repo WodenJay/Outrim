@@ -1,0 +1,6 @@
+- Say everything needed in as few words as possible.
+- Write for users, not lawyers: no disclaimers, defensive caveats, or responsibility hedging.
+- Respect the user's intelligence; skip obvious explanations and implementation details.
+- Say each thing once, where it is useful.
+- Make help actionable, errors specific, and results accurate.
+- Never add tests (such as `assert`) for this content.
