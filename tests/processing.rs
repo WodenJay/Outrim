@@ -547,13 +547,13 @@ fn extended_search_keeps_interleaved_paths_and_cross_file_separators_in_order() 
     let home = tempfile::tempdir().unwrap();
     let file = format!("workspace/{}/a.rs", "long-component/".repeat(12));
     // Each new record type independently opts into order-preserving grouping.
-    for (middle, expected_middle, ending) in [
-        (format!("{file}-3-context\n"), "  3-context\n", ""),
-        (String::new(), "", "[0007 matches limit reached.]\n"),
-        ("--\n".into(), "--\n", ""),
+    for (middle, expected_middle, separator, ending) in [
+        (format!("{file}-3-context\n"), "  3-context\n", "", ""),
+        (String::new(), "", "", "[0007 matches limit reached.]\n"),
+        ("--\n".into(), "--\n", "--\n", ""),
     ] {
         let text = format!(
-            "{file}:9:first\n{file}:9:duplicate\n{middle}other.rs:2:other\n--\n{file}:1:last\n{file}:1:last\n{ending}"
+            "{file}:9:first\n{file}:9:duplicate\n{middle}other.rs:2:other\n{separator}{file}:1:last\n{file}:1:last\n{ending}"
         );
         let response = Processor::new(home.path()).process(request(&text, Source::Search));
         assert_eq!(response.disposition, Disposition::Compressed);
@@ -562,7 +562,7 @@ fn extended_search_keeps_interleaved_paths_and_cross_file_separators_in_order() 
         assert_eq!(
             response.text,
             format!(
-                "{file}:\n  9:first\n  9:duplicate\n{expected_middle}other.rs:\n  2:other\n--\n{file}:\n  1:last\n  1:last\n{ending}[outrim]: The full output is available at {original_path}"
+                "{file}:\n  9:first\n  9:duplicate\n{expected_middle}other.rs:\n  2:other\n{separator}{file}:\n  1:last\n  1:last\n{ending}[outrim]: The full output is available at {original_path}"
             )
         );
     }
