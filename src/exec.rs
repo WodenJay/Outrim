@@ -63,28 +63,40 @@ pub(crate) fn run(
     let out = thread::spawn(move || capture(stdout, io::stdout()));
     let err = thread::spawn(move || capture(stderr, io::stderr()));
     let status = wait(&supervisor, &mut child, timeout)?;
+    // Join and forward independently: a closed stdout consumer must not hide stderr.
     let stdout = out
         .join()
-        .map_err(|_| io::Error::other("stdout reader panicked"))??;
+        .map_err(|_| io::Error::other("stdout reader panicked"))
+        .and_then(|result| result);
     let stderr = err
         .join()
-        .map_err(|_| io::Error::other("stderr reader panicked"))??;
-    deliver(
-        execution.as_ref(),
-        OutputStream::Stdout,
-        stdout,
-        status.code(),
-        io::stdout(),
-    )?;
-    deliver(
-        execution.as_ref(),
-        OutputStream::Stderr,
-        stderr,
-        status.code(),
-        io::stderr(),
-    )?;
-    io::stdout().flush()?;
-    io::stderr().flush()?;
+        .map_err(|_| io::Error::other("stderr reader panicked"))
+        .and_then(|result| result);
+    let stdout = stdout.and_then(|capture| {
+        deliver(
+            execution.as_ref(),
+            OutputStream::Stdout,
+            capture,
+            status.code(),
+            io::stdout(),
+        )
+    });
+    let stderr = stderr.and_then(|capture| {
+        deliver(
+            execution.as_ref(),
+            OutputStream::Stderr,
+            capture,
+            status.code(),
+            io::stderr(),
+        )
+    });
+    for result in [stdout, stderr, io::stdout().flush(), io::stderr().flush()] {
+        if let Err(error) = result
+            && error.kind() != io::ErrorKind::BrokenPipe
+        {
+            return Err(error);
+        }
+    }
     Ok(status)
 }
 

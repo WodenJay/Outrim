@@ -187,6 +187,25 @@ fn storage_and_diagnostic_failures_never_replace_the_child_result() {
 }
 
 #[test]
+fn closed_stdout_does_not_hide_stderr_or_replace_the_child_status() {
+    let home = tempfile::tempdir().unwrap();
+    let expected = raw_json();
+    let mut child = wrapper(home.path())
+        .args(["exec", "--"])
+        .arg(fixture())
+        .arg("json")
+        .current_dir(home.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(19));
+    assert_eq!(fs::read(original(&output.stderr)).unwrap(), expected.stderr);
+}
+
+#[test]
 fn concurrent_executions_keep_all_samples_and_originals() {
     let expected = raw_json();
     let home = tempfile::tempdir().unwrap();
