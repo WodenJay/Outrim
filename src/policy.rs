@@ -43,17 +43,28 @@ struct Config {
 struct Rule {
     #[serde(rename = "match")]
     condition: Condition,
+    #[serde(default, deserialize_with = "present")]
     compression: Option<Compression>,
 }
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Condition {
+    #[serde(default, deserialize_with = "present")]
     tool: Option<Pattern>,
+    #[serde(default, deserialize_with = "present")]
     command: Option<Vec<Pattern>>,
     #[serde(default)]
     exact: bool,
+    #[serde(default, deserialize_with = "present")]
     input: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+// Missing conditions are allowed; explicit nulls must not silently broaden a rule.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]

@@ -167,6 +167,10 @@ fn nearest_project_does_not_merge_ancestors_and_invalid_files_fail_open() {
     );
     for invalid in [
         "not json".to_owned(),
+        json!({"rules": [{"match": {}, "compression": null}]}).to_string(),
+        json!({"rules": [{"match": {"tool": null}, "compression": "off"}]}).to_string(),
+        json!({"rules": [{"match": {"command": null}, "compression": "off"}]}).to_string(),
+        json!({"rules": [{"match": {"input": null}, "compression": "off"}]}).to_string(),
         json!({"rules": [{"match": {}, "compression": "off"}, {"match": {}, "compression": "unknown"}]}).to_string(),
         json!({"rules": [{"match": {"command": []}, "compression": "off"}]}).to_string(),
         json!({"rules": [{"match": {}, "compression": []}]}).to_string(),
