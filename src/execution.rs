@@ -43,6 +43,7 @@ pub struct Execution {
     tool: Tool,
     recording: bool,
     selection: crate::policy::Selection,
+    call: Option<crate::policy::CallContext>,
 }
 
 impl Execution {
@@ -72,6 +73,7 @@ impl Execution {
         Self {
             processor,
             selection,
+            call,
             context,
             tool,
             recording,
@@ -195,7 +197,7 @@ impl Execution {
         let id = format!("{}-{stream:?}", self.context.unit_id);
         let response = self.processor.process_selected(
             Request {
-                context: None,
+                context: self.call.clone(),
                 version: VERSION,
                 id: id.clone(),
                 host: self.context.host,

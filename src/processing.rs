@@ -173,29 +173,35 @@ impl Processor {
             response.reason = Some("source_or_configuration_protection".into());
             return response;
         }
-        let candidates =
-            if let Some(compacted) = log_compaction::compact(&request.tool, &response.text) {
-                vec![("log_compaction", compacted)]
-            } else if let Some(grouped) = search_candidate {
-                vec![("search_hit_groups", grouped)]
-            } else if let Some(grouped) = matches!(request.tool.source, Source::Search)
-                .then(|| path_list::group_prefixes(&response.text))
-                .flatten()
-            {
-                vec![("path_prefix_groups", grouped)]
-            } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
-                json_candidates
-            } else {
-                response.reason = Some(
-                    if matches!(request.tool.source, Source::Search) {
-                        "parse_failed"
-                    } else {
-                        "source_not_applicable"
-                    }
-                    .into(),
-                );
-                return response;
-            };
+        let candidates = if let Some(compacted) = log_compaction::compact(
+            &request.tool,
+            &response.text,
+            request
+                .context
+                .as_ref()
+                .and_then(|context| context.command.as_deref()),
+        ) {
+            vec![("log_compaction", compacted)]
+        } else if let Some(grouped) = search_candidate {
+            vec![("search_hit_groups", grouped)]
+        } else if let Some(grouped) = matches!(request.tool.source, Source::Search)
+            .then(|| path_list::group_prefixes(&response.text))
+            .flatten()
+        {
+            vec![("path_prefix_groups", grouped)]
+        } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
+            json_candidates
+        } else {
+            response.reason = Some(
+                if matches!(request.tool.source, Source::Search) {
+                    "parse_failed"
+                } else {
+                    "source_not_applicable"
+                }
+                .into(),
+            );
+            return response;
+        };
         let json_rejection = candidates
             .iter()
             .any(|(rule, _)| *rule == "json_compact")

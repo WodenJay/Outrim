@@ -200,6 +200,25 @@ fn nearest_project_does_not_merge_ancestors_and_invalid_files_fail_open() {
 }
 
 #[test]
+fn builtin_logs_use_unit_argv_without_reinterpreting_original_host_input() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut input = request(project.path());
+    input.context.as_mut().unwrap().command = Some(vec!["/tools/cargo".into(), "test".into()]);
+    input.tool.name = "bash".into();
+    input.tool.source = Source::TestLog;
+    input.tool.input = json!({"command": "'/tools/cargo' test && echo done"});
+    input.text = format!(
+        "running 80 tests\n{}test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+        (0..80)
+            .map(|i| format!("test check_{i} ... ok\n"))
+            .collect::<String>()
+    );
+    let response = Processor::new(home.path()).process(input);
+    assert_eq!(response.applied_rule.as_deref(), Some("log_compaction"));
+}
+
+#[test]
 fn explicit_log_selection_recognizes_custom_reporters_and_preserves_diagnostics() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();

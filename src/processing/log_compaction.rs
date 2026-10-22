@@ -5,14 +5,19 @@ mod gh;
 
 use crate::protocol::{Source, Tool};
 
-pub(super) fn compact(tool: &Tool, text: &str) -> Option<String> {
+pub(super) fn compact(tool: &Tool, text: &str, argv: Option<&[String]>) -> Option<String> {
     if !matches!(
         tool.source,
         Source::BuildLog | Source::TestLog | Source::RuntimeLog
     ) {
         return None;
     }
-    let words = command(tool)?;
+    let mut words = match argv {
+        Some(argv) => argv.to_vec(),
+        None => command(tool)?,
+    };
+    let first = words.first_mut()?;
+    *first = crate::command::program_name(first);
     let words: Vec<_> = words.iter().map(String::as_str).collect();
     let lines: Vec<_> = text.split_inclusive('\n').collect();
     let view = lines
@@ -51,25 +56,22 @@ pub(super) fn selected(text: &str) -> Option<String> {
 // Host adapters already reject compound commands. Here accept only plain words,
 // or structured argv; this is intentionally not another shell parser.
 fn command(tool: &Tool) -> Option<Vec<String>> {
-    let mut words: Vec<String> =
-        if let Some(argv) = tool.input.get("argv").and_then(|v| v.as_array()) {
-            argv.iter()
-                .map(|v| v.as_str().map(str::to_owned))
-                .collect::<Option<_>>()?
-        } else {
-            let command = tool.input.get("command")?.as_str()?;
-            if command.chars().any(|c| {
-                matches!(
-                    c,
-                    '\'' | '"' | '`' | '$' | ';' | '&' | '|' | '<' | '>' | '\n' | '\r'
-                )
-            }) {
-                return None;
-            }
-            command.split_whitespace().map(str::to_owned).collect()
-        };
-    let first = words.first_mut()?;
-    *first = crate::command::program_name(first);
+    let words: Vec<String> = if let Some(argv) = tool.input.get("argv").and_then(|v| v.as_array()) {
+        argv.iter()
+            .map(|v| v.as_str().map(str::to_owned))
+            .collect::<Option<_>>()?
+    } else {
+        let command = tool.input.get("command")?.as_str()?;
+        if command.chars().any(|c| {
+            matches!(
+                c,
+                '\'' | '"' | '`' | '$' | ';' | '&' | '|' | '<' | '>' | '\n' | '\r'
+            )
+        }) {
+            return None;
+        }
+        command.split_whitespace().map(str::to_owned).collect()
+    };
     Some(words)
 }
 
