@@ -21,7 +21,11 @@ class FakeChild extends EventEmitter {
       const request = JSON.parse(line);
       this.writes.push(request);
       callback?.();
-      if (request.type?.startsWith("record_")) this.respond(request, {});
+      if (
+        request.type?.startsWith("record_") ||
+        ["read_reset", "read_delivered"].includes(request.type)
+      )
+        this.respond(request, {});
       if (request.type === "resolve_policy") this.respond(request, { selection: this.selection });
       return true;
     };
@@ -274,6 +278,44 @@ describe("Pi execution adapter", () => {
 });
 
 describe("Pi native result adapter", () => {
+  it("supplies native read facts and adopts only delivered bodies across compacts", async () => {
+    const path = join(homedir(), "native source.txt");
+    writeFileSync(path, "source");
+    const h = harness();
+    const e = event({
+      toolName: "read",
+      input: { path, offset: 10, limit: 300 },
+      content: [{ type: "text", text: "line\n".repeat(291) }],
+      isError: false,
+    });
+    const pending = h.result(e);
+    const child = h.children[0];
+    const request = child.writes[0];
+    expect(request.type).toBe("read_process");
+    expect(request.selection).toMatchObject({ label: "10–300" });
+    child.respond(request, { text: request.text, disposition: "protected", applied_rule: null });
+    expect(await pending).toBeUndefined();
+    expect(child.writes.find((r) => r.type === "read_delivered").request_id).toBe(request.id);
+    for (const lifecycle of ["session_compact", "session_tree", "session_start"])
+      h.handlers.get(lifecycle)();
+    for (const isError of [false, true]) {
+      const compact = h.result(event({ toolName: "compress", isError }));
+      child.respond(child.writes.at(-1), {
+        text: "original 🦀",
+        disposition: "no_match",
+        applied_rule: null,
+      });
+      await compact;
+    }
+    expect(child.writes.filter((r) => r.type === "read_reset")).toHaveLength(5);
+    const late = h.result(e);
+    const before = child.writes.at(-1);
+    h.handlers.get("session_compact")();
+    child.respond(before, processed("stale omission"));
+    expect(await late).toBeUndefined();
+    expect(child.writes.filter((r) => r.type === "read_delivered")).toHaveLength(1);
+    h.handlers.get("session_shutdown")();
+  });
   it("charges returned Unicode text per successful recovery, including shell results", async () => {
     const directory = join(homedir(), ".outrim", "outputs", "pi");
     mkdirSync(directory, { recursive: true });

@@ -6,6 +6,7 @@ mod json;
 mod log_compaction;
 mod path_list;
 mod protection;
+pub mod reads;
 mod search_footer;
 mod search_hits;
 
@@ -15,13 +16,14 @@ use crate::{
     protocol::{self, Disposition, Request, Response, Source, VERSION},
     recording,
 };
-use std::path::Path;
+use std::{cell::RefCell, path::Path};
 
 pub struct Processor {
     home: std::path::PathBuf,
     originals: compression::Originals,
     gain: gain::Store,
     recorder: recording::Recorder,
+    reads: RefCell<reads::Reads>,
 }
 
 impl Processor {
@@ -36,6 +38,7 @@ impl Processor {
             originals: compression::Originals::new(user_home),
             gain: gain::Store::new(user_home),
             recorder: recording::Recorder::new(user_home, enabled),
+            reads: RefCell::default(),
         }
     }
 
@@ -92,6 +95,102 @@ impl Processor {
         tool: &protocol::Tool,
     ) -> Selection {
         policy::resolve(&self.home, context, tool)
+    }
+
+    pub(crate) fn prepare_shell_read(
+        &self,
+        host: protocol::Host,
+        session: &str,
+        call: &str,
+        selection: reads::Selection,
+    ) -> Option<String> {
+        self.reads
+            .borrow_mut()
+            .prepare_shell(host, session, call, selection)
+    }
+
+    pub(crate) fn process_shell_read(
+        &self,
+        request: Request,
+        call: &str,
+        policy: Option<Selection>,
+    ) -> Response {
+        let selection =
+            self.reads
+                .borrow_mut()
+                .take_shell(request.host, &request.session, call, &request.text);
+        if let Some(selection) = selection {
+            return self.process_read(reads::ReadRequest {
+                request,
+                selection,
+                policy,
+            });
+        }
+        // Unverified/fallback shell output must not be processed a second time.
+        Response {
+            version: VERSION,
+            id: request.id,
+            text: request.text,
+            disposition: Disposition::NoMatch,
+            applied_rule: None,
+            original_path: None,
+            candidates: vec![],
+            reason: Some("unverified_shell_read".into()),
+        }
+    }
+
+    pub(crate) fn has_shell_read(&self, host: protocol::Host, session: &str, call: &str) -> bool {
+        self.reads.borrow().has_shell(host, session, call)
+    }
+
+    pub(crate) fn reset_reads(&self) {
+        self.reads.borrow_mut().reset();
+    }
+
+    pub(crate) fn deliver_read(&self, id: &str) {
+        self.reads.borrow_mut().adopt(id);
+    }
+
+    pub(crate) fn process_read(&self, read: reads::ReadRequest) -> Response {
+        let reads::ReadRequest {
+            request,
+            selection,
+            policy,
+        } = read;
+        let policy =
+            policy.unwrap_or_else(|| self.selection(request.context.as_ref(), &request.tool));
+        let eligible = matches!(policy, Selection::Builtin)
+            && request.version == VERSION
+            && !protection::recovery_reference(&request.tool.input)
+            && request.tool.exit_code.is_none_or(|code| code == 0);
+        let key = eligible
+            .then(|| reads::Reads::key(request.host, &request.session, &selection))
+            .flatten();
+        let textual = reads::text_read(&request.text);
+        let identical = textual
+            && key
+                .as_ref()
+                .is_some_and(|key| self.reads.borrow().identical(key, &request.text));
+        let text = request.text.clone();
+        let host = request.host;
+        let session = request.session.clone();
+        let mut response = self.process_selected(request, &policy);
+        if identical {
+            // Source/config protection remains intact for ordinary compression, but exact
+            // duplicate reads can omit the body with an always-readable original.
+            response.text = text.clone();
+            response.applied_rule = None;
+            response.original_path = None;
+            response.reason = None;
+            response.candidates.clear();
+            self.originals
+                .omit_read(host, &session, &selection, &mut response);
+        } else if let Some(key) = key {
+            self.reads
+                .borrow_mut()
+                .stage(key, &response, textual && response.text == text);
+        }
+        response
     }
 
     pub fn process(&self, request: Request) -> Response {

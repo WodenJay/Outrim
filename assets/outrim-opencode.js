@@ -2,10 +2,47 @@
 // adapters/opencode.ts
 import { spawn as nodeSpawn } from "child_process";
 
+// adapters/reads.ts
+import { realpathSync, statSync } from "fs";
+import { isAbsolute, resolve } from "path";
+function nativeReadSelection(host, input, text, cwd) {
+  const path = host === "opencode" ? input.filePath ?? input.path : input.path;
+  if (typeof path !== "string" || !isAbsolute(path) && !cwd)
+    return;
+  const start = input.offset ?? 1;
+  const limit = input.limit;
+  if (!Number.isSafeInteger(start) || start < 1 || limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
+    return;
+  let label;
+  if (host === "opencode") {
+    const range = /^Read file [^\r\n]+, lines (\d+)-(\d+)\r?\n/.exec(text);
+    if (!range || Number(range[1]) !== start)
+      return;
+    label = `${range[1]}\u2013${range[2]}`;
+  } else {
+    if (/\[(?:Showing lines |\d+ more lines in file\.)/.test(text))
+      return;
+    const count = text.split(`
+`).length - (text.endsWith(`
+`) ? 1 : 0);
+    if (!count)
+      return;
+    label = `${start}\u2013${start + count - 1}`;
+  }
+  try {
+    const absolute = realpathSync(resolve(cwd ?? "", path));
+    if (!statSync(absolute).isFile())
+      return;
+    return { path: absolute, key: JSON.stringify([host, start, limit ?? null]), label };
+  } catch {
+    return;
+  }
+}
+
 // adapters/shared.ts
-import { readFileSync, realpathSync, statSync } from "fs";
+import { readFileSync, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
 import { homedir } from "os";
-import { isAbsolute, join, relative } from "path";
+import { isAbsolute as isAbsolute2, join, relative } from "path";
 var TEST_COMMANDS = [
   /^\s*cargo\s+test(?=\s|$)/i,
   /^\s*(?:bun|npm|pnpm|yarn)\s+(?:test|run\s+test)(?=\s|$)/i,
@@ -238,13 +275,13 @@ function recoveryAttribution(tool, input) {
   } else
     return unattributed;
   try {
-    const root = realpathSync(join(homedir(), ".outrim", "outputs"));
+    const root = realpathSync2(join(homedir(), ".outrim", "outputs"));
     return paths.length > 0 && paths.every((path) => {
-      if (!isAbsolute(path))
+      if (!isAbsolute2(path))
         return false;
-      const resolved = realpathSync(path);
+      const resolved = realpathSync2(path);
       const within = relative(root, resolved);
-      return within !== "" && !within.startsWith("..") && !isAbsolute(within) && statSync(resolved).isFile();
+      return within !== "" && !within.startsWith("..") && !isAbsolute2(within) && statSync2(resolved).isFile();
     }) ? { attribution: "confirmed", original_paths: [...new Set(paths)] } : unattributed;
   } catch {
     return unattributed;
@@ -373,6 +410,15 @@ function createBridge(host, executable, spawnProcess) {
       }
     });
   }
+  let readEpoch = 0;
+  const shellReads = new Set;
+  const readIds = new WeakMap;
+  function resetReads() {
+    readEpoch++;
+    shellReads.clear();
+    if (child)
+      exchange({ type: "read_reset" });
+  }
   async function selectPolicy(session, tool, cwd, signal) {
     try {
       const request = {
@@ -390,7 +436,11 @@ function createBridge(host, executable, spawnProcess) {
       return "off";
     }
   }
-  async function processParts(session, tool, texts, cwd, signal, selection) {
+  async function processParts(session, tool, texts, cwd, signal, selection, read) {
+    if (read && texts.length === 1)
+      return [
+        await process(session, tool, texts[0] ?? "", signal, cwd, selection, { selection: read })
+      ];
     const request = {
       version: 2,
       id: "",
@@ -410,7 +460,7 @@ function createBridge(host, executable, spawnProcess) {
   function processedResult(response) {
     if (!response || typeof response.text !== "string" || typeof response.disposition !== "string" || !(response.applied_rule === null || typeof response.applied_rule === "string"))
       return;
-    return {
+    const result = {
       text: response.text,
       disposition: response.disposition,
       appliedRule: response.applied_rule,
@@ -418,8 +468,32 @@ function createBridge(host, executable, spawnProcess) {
       candidates: Array.isArray(response.candidates) ? response.candidates : [],
       reason: typeof response.reason === "string" ? response.reason : null
     };
+    return result;
   }
-  async function process(session, tool, text, signal, cwd, selection) {
+  async function process(session, tool, text, signal, cwd, selection, read) {
+    if (read) {
+      if ("call" in read && !shellReads.delete(JSON.stringify([session, read.call])))
+        return;
+      const epoch = readEpoch;
+      const facts = "selection" in read ? { type: "read_process", selection: read.selection } : { type: "shell_read", tool_call_id: read.call };
+      const response = await exchange({
+        version: 2,
+        id: "",
+        host,
+        session,
+        tool,
+        text,
+        ...cwd === undefined ? {} : { context: { cwd } },
+        ...facts,
+        policy: selection
+      }, signal);
+      if (epoch !== readEpoch)
+        return;
+      const result = processedResult(response);
+      if (result && response)
+        readIds.set(result, { id: response.id, epoch });
+      return result;
+    }
     if (selection !== undefined)
       return (await processParts(session, tool, [text], cwd, signal, selection))[0];
     const payload = {
@@ -446,6 +520,8 @@ function createBridge(host, executable, spawnProcess) {
       command
     }, signal, 5000);
     const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    if (rewritten && response?.read === true)
+      shellReads.add(JSON.stringify([session, toolCallId]));
     recordWrapping(session, toolCallId, "shell", rewritten ? "planned" : "rejected", response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"), dialect);
     return rewritten;
   }
@@ -458,6 +534,11 @@ function createBridge(host, executable, spawnProcess) {
     const texts = typeof original === "string" ? [original] : original;
     const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
     const processed = typeof outcome === "object" ? outcome : undefined;
+    const read = processed && readIds.get(processed);
+    if (processed && read && read.epoch === readEpoch) {
+      readIds.delete(processed);
+      exchange({ type: "read_delivered", request_id: read.id }, signal);
+    }
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
@@ -504,7 +585,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "9a3b2d01c1a92f532b0b00f002d17b230911ac52d44c2e486d34c23f412cf796",
+        adapter_build: "84cc735d33eebc6eac969b0c00b01240c00e0da68e2c7d5f95cf54fe5c891207",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -588,6 +669,7 @@ function createBridge(host, executable, spawnProcess) {
     selectPolicy,
     process,
     processParts,
+    resetReads,
     recordDelivery,
     recordObservation,
     recordRecovery,
@@ -808,6 +890,33 @@ async function registerOpenCodePlugin(context, options = {}) {
         reason: event.status === "completed" ? "shell_result_observed" : "host_error",
         metadataOnly: true
       });
+      const result = event.result;
+      const selection = result ? textSelection(result) : undefined;
+      const input = record(recoveryInput);
+      if (event.status !== "completed" || hostOutputFacts("opencode", result?.metadata).completeness === "host_truncated" || isCodeModeCall || !result || !selection || selection.texts.length !== 1 || !input || inputReferencesOriginals(input) || Array.isArray(result.content) && result.content.length !== 1)
+        return;
+      const text = selection.texts[0];
+      if (text === undefined)
+        return;
+      const controller = new AbortController;
+      let calls = activeCallsBySession.get(event.sessionID);
+      if (!calls) {
+        calls = new Set;
+        activeCallsBySession.set(event.sessionID, calls);
+      }
+      calls.add(controller);
+      try {
+        const processed = await bridge.process(event.sessionID, { name: event.tool, input, source: "unknown", exit_code: exitCodeFrom(result.metadata) }, text, controller.signal, cwd, policy, { call: event.id });
+        if (!processed || closed || controller.signal.aborted || processed.reason === "unverified_shell_read")
+          return;
+        bridge.recordDelivery(text, processed, controller.signal);
+        if (processed.text !== text)
+          event.result = { ...result, content: selection.apply([processed.text]) };
+      } finally {
+        calls.delete(controller);
+        if (!calls.size)
+          activeCallsBySession.delete(event.sessionID);
+      }
       return;
     }
     const input = record(recoveryInput);
@@ -850,7 +959,7 @@ async function registerOpenCodePlugin(context, options = {}) {
     }
     bridgeSessionCalls.add(controller);
     try {
-      const processedResults = await bridge.processParts(event.sessionID, observation.tool, selection.texts, cwd, controller.signal, policy);
+      const processedResults = await bridge.processParts(event.sessionID, observation.tool, selection.texts, cwd, controller.signal, policy, event.tool === "read" && observation.diagnostics.completeness !== "host_truncated" && selection.texts.length === 1 && (!Array.isArray(result.content) || result.content.length === 1) ? nativeReadSelection("opencode", input, selection.texts[0] ?? "", cwd) : undefined);
       if (closed || controller.signal.aborted) {
         bridge.recordObservation(observation, originalText, originalText, {
           ...processingFacts(processedResults),
@@ -918,12 +1027,25 @@ async function registerOpenCodePlugin(context, options = {}) {
     eventLoop = (async () => {
       try {
         for await (const event of events.subscribe({ signal: eventController.signal })) {
+          if ([
+            "session.compaction.ended",
+            "session.forked",
+            "session.revert.committed",
+            "session.revert.cleared"
+          ].includes(String(event.type))) {
+            bridge.resetReads();
+            for (const session of activeCallsBySession.keys())
+              abortSession(session);
+            continue;
+          }
           if (event.type !== "session.deleted" && event.type !== "session.execution.interrupted") {
             continue;
           }
           const session = sessionIdFrom(event);
-          if (session)
+          if (session) {
             abortSession(session);
+            bridge.resetReads();
+          }
         }
       } catch {}
     })();

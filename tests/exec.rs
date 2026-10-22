@@ -315,6 +315,7 @@ fn shared_execution_keeps_json_eligible_but_custom_logs_unchanged() {
                 tool: None,
                 command: None,
                 configured_only: false,
+                read_receipt: None,
             },
         );
         let mut output = Vec::new();

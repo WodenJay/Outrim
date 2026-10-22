@@ -197,6 +197,7 @@ export interface Candidate {
 interface CoreResponse {
   selection?: PolicySelection;
   parts?: CoreResponse[];
+  read?: boolean;
   version: number;
   id: string;
   text?: string;
@@ -442,6 +443,7 @@ export function createBridge(
     cwd: string | undefined,
     signal?: AbortSignalLike,
     selection?: PolicySelection,
+    read?: import("./reads").ReadSelection,
   ): Promise<Array<ProcessedResult | undefined>>;
   process(
     session: string,
@@ -450,7 +452,9 @@ export function createBridge(
     signal?: AbortSignalLike,
     cwd?: string,
     selection?: PolicySelection,
+    read?: { selection: import("./reads").ReadSelection } | { call: string },
   ): Promise<ProcessedResult | undefined>;
+  resetReads(): void;
   recordDelivery(
     original: string | readonly string[],
     outcome: ProcessedResult | "recovery_skipped" | "protected" | undefined,
@@ -608,6 +612,15 @@ export function createBridge(
     });
   }
 
+  let readEpoch = 0;
+  const shellReads = new Set<string>();
+  const readIds = new WeakMap<ProcessedResult, { id: string; epoch: number }>();
+  function resetReads(): void {
+    readEpoch++;
+    shellReads.clear();
+    if (child) void exchange({ type: "read_reset" });
+  }
+
   async function selectPolicy(
     session: string,
     tool: ToolInput,
@@ -638,7 +651,12 @@ export function createBridge(
     cwd: string | undefined,
     signal?: AbortSignalLike,
     selection?: PolicySelection,
+    read?: import("./reads").ReadSelection,
   ): Promise<Array<ProcessedResult | undefined>> {
+    if (read && texts.length === 1)
+      return [
+        await process(session, tool, texts[0] ?? "", signal, cwd, selection, { selection: read }),
+      ];
     const request: CoreRequest = {
       version: 2,
       id: "",
@@ -662,7 +680,7 @@ export function createBridge(
       !(response.applied_rule === null || typeof response.applied_rule === "string")
     )
       return undefined;
-    return {
+    const result: ProcessedResult = {
       text: response.text,
       disposition: response.disposition as Disposition,
       appliedRule: response.applied_rule,
@@ -670,6 +688,7 @@ export function createBridge(
       candidates: Array.isArray(response.candidates) ? response.candidates : [],
       reason: typeof response.reason === "string" ? response.reason : null,
     };
+    return result;
   }
 
   async function process(
@@ -679,7 +698,35 @@ export function createBridge(
     signal?: AbortSignalLike,
     cwd?: string,
     selection?: PolicySelection,
+    read?: { selection: import("./reads").ReadSelection } | { call: string },
   ): Promise<ProcessedResult | undefined> {
+    if (read) {
+      if ("call" in read && !shellReads.delete(JSON.stringify([session, read.call])))
+        return undefined;
+      const epoch = readEpoch;
+      const facts =
+        "selection" in read
+          ? { type: "read_process", selection: read.selection }
+          : { type: "shell_read", tool_call_id: read.call };
+      const response = await exchange(
+        {
+          version: 2,
+          id: "",
+          host,
+          session,
+          tool,
+          text,
+          ...(cwd === undefined ? {} : { context: { cwd } }),
+          ...facts,
+          policy: selection,
+        },
+        signal,
+      );
+      if (epoch !== readEpoch) return undefined;
+      const result = processedResult(response);
+      if (result && response) readIds.set(result, { id: response.id, epoch });
+      return result;
+    }
     if (selection !== undefined)
       return (await processParts(session, tool, [text], cwd, signal, selection))[0];
     const payload: CoreRequest = {
@@ -718,6 +765,7 @@ export function createBridge(
       5_000,
     );
     const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    if (rewritten && response?.read === true) shellReads.add(JSON.stringify([session, toolCallId]));
     recordWrapping(
       session,
       toolCallId,
@@ -743,6 +791,11 @@ export function createBridge(
     const texts = typeof original === "string" ? [original] : original;
     const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
     const processed = typeof outcome === "object" ? outcome : undefined;
+    const read = processed && readIds.get(processed);
+    if (processed && read && read.epoch === readEpoch) {
+      readIds.delete(processed);
+      void exchange({ type: "read_delivered", request_id: read.id }, signal);
+    }
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
@@ -900,6 +953,7 @@ export function createBridge(
     selectPolicy,
     process,
     processParts,
+    resetReads,
     recordDelivery,
     recordObservation,
     recordRecovery,

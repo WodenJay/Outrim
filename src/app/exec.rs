@@ -57,6 +57,7 @@ pub(crate) fn run(
                 tool: None,
                 command: None,
                 configured_only: false,
+                read_receipt: None,
             }),
         )
     });

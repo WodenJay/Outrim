@@ -24,6 +24,8 @@ pub struct Context {
     /// Rewritten unknown programs must not acquire builtin capture by default.
     #[serde(default)]
     pub configured_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_receipt: Option<String>,
 }
 
 impl Context {
@@ -129,6 +131,12 @@ impl Execution {
         reason: &str,
         mut diagnostics: Diagnostics,
     ) {
+        if let Some(path) = &self.context.read_receipt {
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path);
+        }
         diagnostics.execution_state = Some("executed".into());
         diagnostics.unit_id = Some(self.context.unit_id.clone());
         let mut tool = self.tool.clone();
@@ -188,6 +196,33 @@ impl Execution {
     ) -> io::Result<()> {
         diagnostics.execution_state = Some("executed".into());
         diagnostics.unit_id = Some(self.context.unit_id.clone());
+        if let Some(path) = &self.context.read_receipt
+            && matches!(self.selection, crate::policy::Selection::Builtin)
+        {
+            output.write_all(text.as_bytes())?;
+            output.flush()?;
+            if matches!(stream, OutputStream::Stdout)
+                && exit_code == Some(0)
+                && diagnostics.completeness.as_deref() == Some("complete")
+                && let Some(words) = self.call.as_ref().and_then(|call| call.command.as_ref())
+                && let Some(selection) = crate::processing::reads::shell_selection(words)
+                && let Ok(source) = std::fs::canonicalize(&selection.path)
+                && source.is_file()
+            {
+                let receipt = crate::processing::reads::Receipt { path: source, text };
+                if let Ok(bytes) = serde_json::to_vec(&receipt)
+                    && let Ok(mut file) = std::fs::OpenOptions::new()
+                        .write(true)
+                        .truncate(true)
+                        .open(path)
+                {
+                    let _ = file.write_all(&bytes);
+                }
+            } else if !text.is_empty() {
+                let _ = std::fs::remove_file(path);
+            }
+            return Ok(());
+        }
         if text.is_empty() {
             self.bypass(stream, exit_code, "empty_output", diagnostics);
             return Ok(());

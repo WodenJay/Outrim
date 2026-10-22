@@ -25,7 +25,11 @@ class FakeChild extends EventEmitter {
       const request = JSON.parse(line);
       this.writes.push(request);
       callback?.();
-      if (request.type?.startsWith("record_")) this.respond(request);
+      if (
+        request.type?.startsWith("record_") ||
+        ["read_reset", "read_delivered"].includes(request.type)
+      )
+        this.respond(request);
       if (request.type === "resolve_policy") this.respond(request, { selection: this.selection });
       return true;
     };
@@ -41,7 +45,9 @@ class FakeChild extends EventEmitter {
   requests() {
     return this.writes
       .filter(
-        (request) => !request.type?.startsWith("record_") && request.type !== "resolve_policy",
+        (request) =>
+          !request.type?.startsWith("record_") &&
+          !["resolve_policy", "read_reset", "read_delivered"].includes(request.type),
       )
       .flatMap((message) =>
         message.type === "process_parts"
@@ -235,9 +241,9 @@ async function harness({ sessionGet, ...options } = {}) {
     dispose,
     call,
     context,
-    interrupt(sessionID) {
+    interrupt(sessionID, type = "session.execution.interrupted") {
       eventWaiter({
-        value: { type: "session.execution.interrupted", properties: { sessionID } },
+        value: { type, properties: { sessionID } },
         done: false,
       });
     },
@@ -258,6 +264,60 @@ function after(overrides = {}) {
 
 // Bridge framing and parsing safety are shared; these tests exercise host adoption.
 describe("OpenCode adapter", () => {
+  it("adopts native read facts and discards results pending at compact", async () => {
+    const path = join(homedir(), "native source.txt");
+    writeFileSync(path, "source");
+    const h = await harness();
+    const text = `Read file ${path}, lines 10-300\n${"10: source\n".repeat(291)}`;
+    const e = after({
+      tool: "read",
+      input: { filePath: path, offset: 10 },
+      result: { content: text },
+    });
+    const first = h.call("tool.execute.after", e);
+    const request = h.child.requests().at(-1);
+    expect(request.type).toBe("read_process");
+    expect(request.selection.label).toBe("10–300");
+    h.child.respond(request, { text, disposition: "protected", applied_rule: null });
+    await first;
+    expect(h.child.writes.find((r) => r.type === "read_delivered").request_id).toBe(request.id);
+    const pending = h.call("tool.execute.after", e);
+    const late = h.child.requests().at(-1);
+    h.interrupt("session", "session.compaction.ended");
+    await Promise.resolve();
+    h.child.compress(late, "stale omission");
+    await pending;
+    expect(e.result.content).toBe(text);
+    expect(h.child.writes.filter((r) => r.type === "read_delivered")).toHaveLength(1);
+    expect(h.child.writes.some((r) => r.type === "read_reset")).toBe(true);
+    await h.dispose();
+  });
+  it("processes a verified shell read once at delivery, preserving metadata", async () => {
+    const h = await harness();
+    await h.context();
+    const input = { command: "cat 'file with spaces.txt'" };
+    const pending = h.call("tool.execute.before", before(input));
+    h.child.respond(h.child.requests().at(-1), { command: "wrapped", read: true });
+    await pending;
+    const e = after({
+      input,
+      result: { content: "source\n".repeat(300), metadata: { exit: 0, truncated: false } },
+    });
+    const result = h.call("tool.execute.after", e);
+    const request = h.child.requests().at(-1);
+    expect(request.type).toBe("shell_read");
+    expect(request.tool.input.command).toBe("cat 'file with spaces.txt'");
+    h.child.respond(request, {
+      text: "omitted",
+      disposition: "compressed",
+      applied_rule: "read_dedup",
+    });
+    await result;
+    expect(e.result).toEqual({ content: "omitted", metadata: { exit: 0, truncated: false } });
+    expect(h.child.deliveries()).toHaveLength(1);
+    expect(h.child.deliveries()[0].applied_rule).toBe("read_dedup");
+    await h.dispose();
+  });
   it("keeps the embedded plugin asset in sync with its sources", () => {
     const root = dirname(dirname(fileURLToPath(import.meta.url)));
     const temp = mkdtempSync(join(tmpdir(), "outrim-opencode-"));

@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { nativeReadSelection } from "./reads";
 import {
   type AbortSignalLike,
   type BridgeChild,
@@ -395,6 +396,54 @@ export async function registerOpenCodePlugin(
           metadataOnly: true,
         },
       );
+      const result = event.result;
+      const selection = result ? textSelection(result) : undefined;
+      const input = record(recoveryInput);
+      if (
+        event.status !== "completed" ||
+        hostOutputFacts("opencode", result?.metadata).completeness === "host_truncated" ||
+        isCodeModeCall ||
+        !result ||
+        !selection ||
+        selection.texts.length !== 1 ||
+        !input ||
+        inputReferencesOriginals(input) ||
+        (Array.isArray(result.content) && result.content.length !== 1)
+      )
+        return;
+      const text = selection.texts[0];
+      if (text === undefined) return;
+      const controller = new AbortController();
+      let calls = activeCallsBySession.get(event.sessionID);
+      if (!calls) {
+        calls = new Set();
+        activeCallsBySession.set(event.sessionID, calls);
+      }
+      calls.add(controller);
+      try {
+        const processed = await bridge.process(
+          event.sessionID,
+          { name: event.tool, input, source: "unknown", exit_code: exitCodeFrom(result.metadata) },
+          text,
+          controller.signal,
+          cwd,
+          policy,
+          { call: event.id },
+        );
+        if (
+          !processed ||
+          closed ||
+          controller.signal.aborted ||
+          processed.reason === "unverified_shell_read"
+        )
+          return;
+        bridge.recordDelivery(text, processed, controller.signal);
+        if (processed.text !== text)
+          event.result = { ...result, content: selection.apply([processed.text]) };
+      } finally {
+        calls.delete(controller);
+        if (!calls.size) activeCallsBySession.delete(event.sessionID);
+      }
       return;
     }
     const input = record(recoveryInput);
@@ -455,6 +504,12 @@ export async function registerOpenCodePlugin(
         cwd,
         controller.signal,
         policy,
+        event.tool === "read" &&
+          observation.diagnostics.completeness !== "host_truncated" &&
+          selection.texts.length === 1 &&
+          (!Array.isArray(result.content) || result.content.length === 1)
+          ? nativeReadSelection("opencode", input, selection.texts[0] ?? "", cwd)
+          : undefined,
       );
       if (closed || controller.signal.aborted) {
         bridge.recordObservation(observation, originalText, originalText, {
@@ -550,11 +605,26 @@ export async function registerOpenCodePlugin(
     eventLoop = (async () => {
       try {
         for await (const event of events.subscribe({ signal: eventController.signal })) {
+          if (
+            [
+              "session.compaction.ended",
+              "session.forked",
+              "session.revert.committed",
+              "session.revert.cleared",
+            ].includes(String(event.type))
+          ) {
+            bridge.resetReads();
+            for (const session of activeCallsBySession.keys()) abortSession(session);
+            continue;
+          }
           if (event.type !== "session.deleted" && event.type !== "session.execution.interrupted") {
             continue;
           }
           const session = sessionIdFrom(event);
-          if (session) abortSession(session);
+          if (session) {
+            abortSession(session);
+            bridge.resetReads();
+          }
         }
       } catch {
         // Event transport failure must not disable result processing.

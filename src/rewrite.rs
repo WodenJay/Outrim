@@ -35,6 +35,7 @@ pub struct Response {
     pub id: String,
     pub command: Option<String>,
     pub reason: Option<String>,
+    pub read: bool,
 }
 
 pub fn rewrite(request: Request, executable: &Path, processor: &Processor) -> Response {
@@ -54,6 +55,7 @@ pub fn rewrite(request: Request, executable: &Path, processor: &Processor) -> Re
         );
         return Response {
             version: VERSION,
+            read: false,
             id: request.id,
             command: None,
             reason: Some("rewritten_command_limit".into()),
@@ -61,6 +63,7 @@ pub fn rewrite(request: Request, executable: &Path, processor: &Processor) -> Re
     }
     Response {
         version: VERSION,
+        read: processor.has_shell_read(request.host, &request.session, &request.tool_call_id),
         id: request.id,
         reason: command.is_none().then(|| {
             if !matches!(request.dialect.as_str(), "bash" | "powershell") {
@@ -95,6 +98,11 @@ fn replacement(request: &Request, executable: &Path, processor: &Processor) -> O
         return None;
     };
     let compound = segments.len() > 1;
+    // Only a whole, single read command can be correlated with the host result.
+    let read = (!compound)
+        .then(|| literals(&request.command, powershell))
+        .flatten()
+        .and_then(|words| crate::processing::reads::shell_selection(&words));
     let mut output = String::new();
     let mut end = 0;
     let mut changed = false;
@@ -120,7 +128,17 @@ fn replacement(request: &Request, executable: &Path, processor: &Processor) -> O
         };
         if let Some(replacement) = segment
             .host_output
-            .then(|| simple(request, original, &unit_id, executable, powershell))
+            .then(|| {
+                simple(
+                    request,
+                    original,
+                    &unit_id,
+                    executable,
+                    powershell,
+                    processor,
+                    read.clone(),
+                )
+            })
             .flatten()
         {
             record_plan(processor, request, Some(&unit_id), true, None);
@@ -200,6 +218,8 @@ fn simple(
     unit_id: &str,
     executable: &Path,
     powershell: bool,
+    processor: &Processor,
+    read: Option<crate::processing::reads::Selection>,
 ) -> Option<String> {
     let words = literals(original.trim(), powershell)?;
     let program = words.first()?;
@@ -266,12 +286,15 @@ fn simple(
             | "jq"
             | "cat"
             | "head"
+            | "tail"
+            | "sed"
     );
     let argv: Vec<_> = words.iter().map(OsString::from).collect();
     let source = command::source(&argv);
-    let builtin_capture = builtin_program
-        && (!matches!(source, Source::Unknown)
-            || matches!(name.as_str(), "git" | "jq" | "cat" | "head"));
+    let builtin_capture = read.is_some()
+        || (builtin_program
+            && (!matches!(source, Source::Unknown)
+                || matches!(name.as_str(), "git" | "jq" | "cat" | "head")));
     if words.iter().any(|word| {
         let flag = word.split('=').next().unwrap_or(word);
         matches!(
@@ -325,6 +348,14 @@ fn simple(
         }),
         command: Some(words.clone()),
         configured_only: !builtin_capture,
+        read_receipt: read.and_then(|selection| {
+            processor.prepare_shell_read(
+                request.host,
+                &request.session,
+                &request.tool_call_id,
+                selection,
+            )
+        }),
     };
     let quote = |word: &str| quote(word, powershell);
     let encoded = quote(&context.encode());

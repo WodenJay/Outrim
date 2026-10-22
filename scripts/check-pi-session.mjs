@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 // Point at the installed @earendil-works/pi-coding-agent package directory.
 assert.ok(
   process.env.PI_SDK_DIR,
-  "Set PI_SDK_DIR to the installed Pi SDK package directory (tested with Pi 1.3.0)",
+  "Set PI_SDK_DIR to the installed Pi SDK package directory (tested with Pi 1.3.0 and 1.4.0)",
 );
 const sdkDir = resolve(process.env.PI_SDK_DIR);
 assert.ok(existsSync(join(sdkDir, "dist/index.js")), `Pi SDK not found at ${sdkDir}`);
@@ -50,8 +50,8 @@ if (process.argv[2] !== "--host") {
 fn main()->ExitCode {
  let args:Vec<_>=std::env::args().collect();
  OpenOptions::new().create(true).append(true).open("executed").unwrap().write_all(format!("{}\n",args[1..].join(" ")).as_bytes()).unwrap();
- let value=format!("{{\n  \"items\": [\n{}\n  ]\n}}\n",(0..100).map(|n|format!("    {{ \"id\": {n}, \"name\": \"item\" }}")).collect::<Vec<_>>().join(",\n"));
- print!("{value}"); eprint!("{}",value.replace("\"item\"","\"error\""));
+ print!("{}    Finished stdout fixture\n",(0..100).map(|n|format!("   Compiling stdout-{n} v1.0.0\n")).collect::<String>());
+ eprint!("{}warning: stderr fixture\n",(0..100).map(|n|format!("    Checking stderr-{n} v1.0.0\n")).collect::<String>());
  if args.iter().any(|v|v=="--fail") {ExitCode::from(19)}else{ExitCode::SUCCESS}
 }`,
     );
@@ -229,7 +229,12 @@ fn main()->ExitCode {
     assert.equal(new Set(recoveryPaths).size, 6);
     for (let i = 0; i < recoveryPaths.length; i++) {
       const original = readFileSync(recoveryPaths[i], "utf8");
-      assert.equal(JSON.parse(original).items.length, 100);
+      const stderr = i % 2 === 1;
+      const expected =
+        Array.from({ length: 100 }, (_, n) =>
+          stderr ? `    Checking stderr-${n} v1.0.0\n` : `   Compiling stdout-${n} v1.0.0\n`,
+        ).join("") + (stderr ? "warning: stderr fixture\n" : "    Finished stdout fixture\n");
+      assert.equal(original, expected);
       assert.equal(results[i + 3].content.map((p) => p.text || "").join(""), original);
     }
   } finally {
@@ -239,7 +244,8 @@ fn main()->ExitCode {
   // Bridge observations and shutdown are asynchronous; wait for persisted delivery.
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    if (JSON.parse(readFileSync(join(cwd, ".outrim/gain.json"), "utf8")).outputs === 12) break;
+    const stats = JSON.parse(readFileSync(join(cwd, ".outrim/gain.json"), "utf8"));
+    if (Object.values(stats.outcomes).reduce((total, count) => total + count, 0) === 12) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   const stats = JSON.parse(readFileSync(join(cwd, ".outrim/gain.json"), "utf8"));
@@ -250,15 +256,27 @@ fn main()->ExitCode {
       .filter(Boolean)
       .map(JSON.parse),
   );
-  const shell = events.filter((event) => event.execution);
+  // Wrapping/observation diagnostics are not delivered-output accounting samples.
+  const samples = events.filter((event) => !event.metadata_only);
+  const shell = samples.filter((event) => event.execution);
+  assert.ok(
+    events.some((event) => event.metadata_only),
+    "adapter diagnostics are recorded",
+  );
   assert.equal(shell.length, 6, JSON.stringify(events));
   assert.equal(
-    events.length,
+    samples.length,
     12,
     "6 shell streams + 6 recovery reads; no shell result double counting",
   );
-  assert.equal(stats.outputs, 12);
-  assert.equal(events.filter((e) => e.outcome === "recovery_skipped").length, 6);
+  assert.equal(
+    Object.values(stats.outcomes).reduce((total, count) => total + count, 0),
+    12,
+  );
+  assert.equal(stats.outcomes.compressed, 6);
+  assert.equal(stats.outcomes.recovery_skipped, 6);
+  assert.equal(stats.rules.log_compaction.count, 6);
+  assert.equal(samples.filter((e) => e.outcome === "recovery_skipped").length, 6);
   assert.equal(
     new Set(shell.map((e) => `${e.tool_call_id}:${e.execution.unit_id}:${e.execution.stream}`))
       .size,
