@@ -38,7 +38,15 @@ if [ -n "$source_file" ]; then
 else
     command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
     base=https://github.com/WodenJay/Outrim/releases
-    if [ "$version" = latest ]; then base=$base/latest/download; else base=$base/download/$version; fi
+    if [ "$version" = latest ]; then
+        release=$(curl -fsSLI --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "$base/latest")
+        case "$release" in
+            "$base/tag/"*) version=${release#"$base/tag/"} ;;
+            *) echo "Cannot resolve latest release" >&2; exit 1 ;;
+        esac
+        case "$version" in *[!A-Za-z0-9._-]*|''|latest) echo "Invalid release tag: $version" >&2; exit 1;; esac
+    fi
+    base=$base/download/$version
     curl -fsSL --proto '=https' --tlsv1.2 -o "$staging/outrim" "$base/$asset"
     curl -fsSL --proto '=https' --tlsv1.2 -o "$staging/SHA256SUMS" "$base/SHA256SUMS"
     expected=$(awk -v name="$asset" '$2 == name { print $1 }' "$staging/SHA256SUMS")

@@ -27,8 +27,23 @@ try {
     } else {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $Base = 'https://github.com/WodenJay/Outrim/releases'
-        if ($Version -eq 'latest') { $Base += '/latest/download' }
-        else { $Base += "/download/$Version" }
+        if ($Version -eq 'latest') {
+            $Release = Invoke-WebRequest -UseBasicParsing -Method Head -Uri "$Base/latest"
+            $ReleaseUri = if ($PSVersionTable.PSVersion.Major -ge 6) {
+                $Release.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+            } else {
+                $Release.BaseResponse.ResponseUri.AbsoluteUri
+            }
+            $Prefix = "$Base/tag/"
+            if (-not $ReleaseUri -or -not $ReleaseUri.StartsWith($Prefix, [StringComparison]::Ordinal)) {
+                throw 'Cannot resolve latest release'
+            }
+            $Version = $ReleaseUri.Substring($Prefix.Length)
+            if ($Version -cnotmatch '^[A-Za-z0-9._-]+$' -or $Version -eq 'latest') {
+                throw "Invalid release tag: $Version"
+            }
+        }
+        $Base += "/download/$Version"
         Invoke-WebRequest -UseBasicParsing -Uri "$Base/$Asset" -OutFile $Binary
         $Checksums = Join-Path $Staging 'SHA256SUMS'
         Invoke-WebRequest -UseBasicParsing -Uri "$Base/SHA256SUMS" -OutFile $Checksums
