@@ -118,12 +118,14 @@ jobs:
           RELEASE_NOTES: |
             ## What's changed
 
-            - Replace blind last-ten-line truncation with format-aware log compaction for `gh run watch`, Cargo (`test`, `build`, `check`, `clippy`), and Bun's default test reporter.
-            - Keep observed state and diagnostics: run and job identities, non-success steps, failure evidence from earlier snapshots, compiler warnings and errors, and full test failure output stay visible.
-            - Fold only positively identified repetition and success noise; unrecognized or ambiguous output is left unchanged instead of falling back to lossy truncation.
-            - Recognize Pi's appended search notices (count limits, 50.0KB output limit, 500-character line truncation), so search hits and path lists with these footers are compressed while the notices are preserved verbatim.
-            - Report compression savings, recovery cost, and net savings in `outrim gain`, deducting deduplicated recovery reads.
-            - Extend `outrim gain record` with command coverage, runtime fallbacks, and per-event diagnostics such as output completeness, terminal reason, and host truncation facts.
+            - Add per-call compression policies with configuration precedence, tool/input/command matching, literal and glob patterns, and explicit compression-method selection or disabling.
+            - Carry policy context through Pi and OpenCode, snapshot policy before tool execution, and preserve native output when policy resolution fails.
+            - Omit unchanged repeated file reads within a session, including supported `cat`, `head`, `tail`, and `sed` commands. Reads still execute, changed content stays visible, and omitted output remains recoverable.
+            - Harden command rewriting for MSYS arguments and explicitly configured interpreter runs; normalize relative and native glob paths and reject invalid null policy declarations.
+            - Derive `outrim gain` token totals from rule statistics and centralize rule display labels.
+            - Pin bootstrap downloads to a single latest-release version and simplify bridge transport and host installation internals.
+
+            Full comparison: https://github.com/WodenJay/Outrim/compare/v0.4.0...v0.5.0
 
             ## Installation
 
