@@ -4,6 +4,7 @@ use std::fs;
 
 fn request(command: &str, text: &str) -> Request {
     Request {
+        context: None,
         version: VERSION,
         id: "logs".into(),
         host: Host::Pi,

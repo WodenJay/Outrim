@@ -20,6 +20,7 @@ fn start(home: &std::path::Path) -> Child {
 
 fn request(id: &str) -> Request {
     Request {
+        context: None,
         version: VERSION,
         id: id.into(),
         host: Host::Pi,

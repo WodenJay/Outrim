@@ -174,6 +174,7 @@ impl Execution {
         tool.exit_code = exit_code;
         let id = format!("{}-{stream:?}", self.context.unit_id);
         let response = self.processor.process(Request {
+            context: None,
             version: VERSION,
             id: id.clone(),
             host: self.context.host,

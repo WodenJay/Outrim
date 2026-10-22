@@ -11,12 +11,14 @@ mod search_hits;
 
 use crate::{
     gain,
+    policy::{self, Selection},
     protocol::{self, Disposition, Request, Response, Source, VERSION},
     recording,
 };
 use std::path::Path;
 
 pub struct Processor {
+    home: std::path::PathBuf,
     originals: compression::Originals,
     gain: gain::Store,
     recorder: recording::Recorder,
@@ -30,6 +32,7 @@ impl Processor {
     /// Use the host's startup setting, including when it restarts its bridge.
     pub fn with_recording(user_home: &Path, enabled: bool) -> Self {
         Self {
+            home: user_home.to_owned(),
             originals: compression::Originals::new(user_home),
             gain: gain::Store::new(user_home),
             recorder: recording::Recorder::new(user_home, enabled),
@@ -83,7 +86,20 @@ impl Processor {
         self.recorder.record(observation).is_ok()
     }
 
+    pub fn selection(
+        &self,
+        context: Option<&policy::CallContext>,
+        tool: &protocol::Tool,
+    ) -> Selection {
+        policy::resolve(&self.home, context, tool)
+    }
+
     pub fn process(&self, request: Request) -> Response {
+        let selection = self.selection(request.context.as_ref(), &request.tool);
+        self.process_selected(request, &selection)
+    }
+
+    pub fn process_selected(&self, request: Request, selection: &Selection) -> Response {
         let mut response = Response {
             candidates: Vec::new(),
             reason: None,
@@ -102,6 +118,10 @@ impl Processor {
         if protection::recovery_reference(&request.tool.input) {
             response.disposition = Disposition::RecoverySkipped;
             response.reason = Some("original_output_reference".into());
+            return response;
+        }
+        if matches!(selection, Selection::Off) {
+            response.reason = Some("compression_disabled".into());
             return response;
         }
         // Search paths are query scope only when the output parses as hit records.

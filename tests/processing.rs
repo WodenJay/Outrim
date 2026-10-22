@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 fn request(text: &str, source: Source) -> Request {
     Request {
+        context: None,
         version: VERSION,
         id: "request-1".into(),
         host: Host::Pi,

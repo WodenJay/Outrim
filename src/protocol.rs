@@ -5,6 +5,8 @@ pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
+    #[serde(default)]
+    pub context: Option<crate::policy::CallContext>,
     pub version: u32,
     pub id: String,
     pub host: Host,

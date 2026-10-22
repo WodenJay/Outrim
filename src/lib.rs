@@ -6,6 +6,7 @@ pub mod command;
 pub mod execution;
 pub mod gain;
 pub mod install;
+pub mod policy;
 mod processing;
 pub mod protocol;
 mod recording;
