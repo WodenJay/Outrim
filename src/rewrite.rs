@@ -39,6 +39,26 @@ pub struct Response {
 
 pub fn rewrite(request: Request, executable: &Path, processor: &Processor) -> Response {
     let command = replacement(&request, executable, processor);
+    // MSYS Bash silently truncates native Windows argv at 8191 bytes. Leave
+    // headroom for shell options rather than risk executing a truncated rewrite.
+    if cfg!(windows)
+        && request.dialect == "bash"
+        && command.as_ref().is_some_and(|command| command.len() > 8000)
+    {
+        record_plan(
+            processor,
+            &request,
+            None,
+            false,
+            Some("rewritten_command_limit"),
+        );
+        return Response {
+            version: VERSION,
+            id: request.id,
+            command: None,
+            reason: Some("rewritten_command_limit".into()),
+        };
+    }
     Response {
         version: VERSION,
         id: request.id,
@@ -306,7 +326,15 @@ fn simple(
         configured_only: !builtin_capture,
     };
     let quote = |word: &str| quote(word, powershell);
-    let context = quote(&context.encode());
+    let encoded = quote(&context.encode());
+    // Fallback observations carry no input and never process output.
+    let fallback_context = Context {
+        tool: None,
+        command: None,
+        ..context
+    };
+    let fallback_context = quote(&fallback_context.encode());
+    let context = encoded;
     let executable = executable.to_str()?;
     let executable = quote(&if powershell {
         executable.to_owned()
@@ -336,7 +364,7 @@ fn simple(
         // output is redirected and failures remain local to the guard.
         let observer = if request.recording {
             format!(
-                "& {{ try {{ $i=[System.Diagnostics.ProcessStartInfo]::new(); $i.FileName={executable}; $i.Arguments='observe-fallback ' + {context}; $i.UseShellExecute=$false; $i.RedirectStandardOutput=$true; $i.RedirectStandardError=$true; $i.CreateNoWindow=$true; $p=[System.Diagnostics.Process]::Start($i); $p.WaitForExit(); $p.Dispose() }} catch {{}} }}; "
+                "& {{ try {{ $i=[System.Diagnostics.ProcessStartInfo]::new(); $i.FileName={executable}; $i.Arguments='observe-fallback ' + {fallback_context}; $i.UseShellExecute=$false; $i.RedirectStandardOutput=$true; $i.RedirectStandardError=$true; $i.CreateNoWindow=$true; $p=[System.Diagnostics.Process]::Start($i); $p.WaitForExit(); $p.Dispose() }} catch {{}} }}; "
             )
         } else {
             String::new()
@@ -356,7 +384,7 @@ fn simple(
             String::new()
         };
         let observer = if request.recording {
-            format!("({executable} observe-fallback {context}) >/dev/null 2>&1 || :; ")
+            format!("({executable} observe-fallback {fallback_context}) >/dev/null 2>&1 || :; ")
         } else {
             String::new()
         };

@@ -1,5 +1,6 @@
 //! Stream delivery shared by explicit execution and future host execution adapters.
 use crate::{Processor, command, protocol::*, recording};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::{
     ffi::OsString,
     io::{self, Write},
@@ -28,22 +29,11 @@ pub struct Context {
 impl Context {
     /// A shell-neutral transport: legacy PowerShell strips quotes in native arguments.
     pub fn encode(&self) -> String {
-        serde_json::to_vec(self)
-            .expect("serializable execution context")
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(self).expect("serializable execution context"))
     }
 
     pub fn decode(value: &str) -> Option<Self> {
-        if !value.len().is_multiple_of(2) || !value.is_ascii() {
-            return None;
-        }
-        let bytes: Option<Vec<u8>> = (0..value.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
-            .collect();
-        serde_json::from_slice(&bytes?).ok()
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(value).ok()?).ok()
     }
 }
 

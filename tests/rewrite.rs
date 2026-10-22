@@ -163,9 +163,18 @@ fn bridge_rewrites_simple_commands_with_execution_context() {
         let result = rewrite("cargo test 'a b'", dialect);
         let command = result["command"].as_str().expect("rewritten command");
         assert!(command.contains("exec --context"), "{command}");
-        assert!(command.contains("exec --context '7b"));
+        assert!(command.contains("exec --context 'eyJ"));
         assert!(command.contains("'a b'"));
     }
+}
+
+#[test]
+#[cfg(windows)]
+fn oversized_bash_context_is_left_native() {
+    let command = format!("cargo test '{}'", "x".repeat(4000));
+    let response = rewrite(&command, "bash");
+    assert!(response["command"].is_null());
+    assert_eq!(response["reason"], "rewritten_command_limit");
 }
 
 #[test]
