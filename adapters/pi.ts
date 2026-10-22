@@ -5,6 +5,7 @@ import {
   createBridge,
   inputReferencesOriginals,
   processingFacts,
+  recoveryAttribution,
   type SpawnProcess,
   sourceFor,
 } from "./shared";
@@ -121,7 +122,9 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     options.spawnProcess ?? defaultSpawn,
   );
 
+  const originalInputs = new Map<string, Record<string, unknown>>();
   pi.on("tool_call", async (event, context) => {
+    originalInputs.set(event.toolCallId, { ...event.input });
     if (
       !isShell(event.toolName) ||
       event.parentToolCallId ||
@@ -148,6 +151,19 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   });
 
   pi.on("tool_result", async (event, context) => {
+    const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
+    originalInputs.delete(event.toolCallId);
+    const attribution = recoveryAttribution(event.toolName, originalInput);
+    if (attribution && !event.isError && !context.signal?.aborted && !event.parentToolCallId) {
+      bridge.recordRecovery(
+        context.sessionManager.getSessionId(),
+        event.toolCallId,
+        event.content.flatMap((part) =>
+          part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+        ),
+        attribution,
+      );
+    }
     if (isShell(event.toolName)) return undefined;
     const observation = {
       session: context.sessionManager.getSessionId(),

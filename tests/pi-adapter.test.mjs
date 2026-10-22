@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { registerPiExtension } from "../assets/outrim-pi.js";
 import { isolateHome } from "./isolated-home.mjs";
 
@@ -156,6 +159,39 @@ describe("Pi execution adapter", () => {
 });
 
 describe("Pi native result adapter", () => {
+  it("charges returned Unicode text per successful recovery, including shell results", async () => {
+    const directory = join(homedir(), ".outrim", "outputs", "pi");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "original.txt");
+    writeFileSync(path, "original content");
+    const h = harness();
+    const result = event({
+      toolName: "read",
+      input: { path, offset: 2, limit: 1 },
+      content: [{ type: "text", text: "2: 🦀\n[continued]" }],
+      isError: false,
+    });
+    expect(await h.result(result)).toBeUndefined();
+    expect(await h.result(result)).toBeUndefined();
+    expect(await h.result({ ...result, toolCallId: "call-2" })).toBeUndefined();
+    expect(await h.result({ ...result, toolCallId: "failed", isError: true })).toBeUndefined();
+    const shell = event({
+      toolCallId: "shell-read",
+      input: { command: `head -n 1 '${path}'` },
+      structuredContent: { exit_code: 0 },
+      isError: false,
+    });
+    const unchanged = structuredClone(shell);
+    expect(await h.result(shell)).toBeUndefined();
+    expect(shell).toEqual(unchanged);
+    const recoveries = h.children[0].writes.filter((r) => r.type === "record_recovery");
+    expect(recoveries).toHaveLength(4);
+    expect(recoveries[0]).toMatchObject({ characters: 16, attribution: "confirmed" });
+    expect(recoveries[0].event_id).toBe(recoveries[1].event_id);
+    expect(recoveries[2].event_id).not.toBe(recoveries[0].event_id);
+    expect(recoveries[3]).toMatchObject({ characters: 10, attribution: "confirmed" });
+    expect(h.children[0].writes.some((r) => !r.type)).toBe(false);
+  });
   it("preserves metadata and correlates concurrent native tool results", async () => {
     const h = harness();
     const first = h.result(event({ toolName: "grep", input: { pattern: "hit" } }));

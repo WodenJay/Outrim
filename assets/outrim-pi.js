@@ -3,9 +3,9 @@
 import { spawn as nodeSpawn } from "child_process";
 
 // adapters/shared.ts
-import { readFileSync } from "fs";
+import { readFileSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join, relative } from "path";
 var TEST_COMMANDS = [
   /^\s*cargo\s+test(?=\s|$)/i,
   /^\s*(?:bun|npm|pnpm|yarn)\s+(?:test|run\s+test)(?=\s|$)/i,
@@ -154,6 +154,60 @@ function inputReferencesOriginals(value) {
     return Object.values(value).some(inputReferencesOriginals);
   }
   return false;
+}
+function recoveryAttribution(tool, input) {
+  if (!inputReferencesOriginals(input))
+    return null;
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return "unattributed";
+  const args = input;
+  let paths;
+  if (tool === "read") {
+    const path = args.path ?? args.filePath ?? args.file_path;
+    if (typeof path !== "string")
+      return "unattributed";
+    paths = [path];
+  } else if (["bash", "powershell", "shell"].includes(tool) && typeof args.command === "string") {
+    const command = args.command;
+    if (/[\\`$\r\n\0|&;<>()*?{}[\]]/.test(command.replaceAll("\\", "/")))
+      return "unattributed";
+    const words = [];
+    const pattern = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"\\]+))(?=\s|$)/gy;
+    let end = 0;
+    for (const match of command.matchAll(pattern)) {
+      if (match.index !== end)
+        return "unattributed";
+      words.push(match[1] ?? match[2] ?? match[3] ?? "");
+      end = match.index + match[0].length;
+    }
+    if (command.slice(end).trim())
+      return "unattributed";
+    const program = words.shift();
+    if (program !== "cat" && program !== "head")
+      return "unattributed";
+    if (program === "head" && words[0] === "-n" && /^\d+$/.test(words[1] ?? ""))
+      words.splice(0, 2);
+    if (program === "head" && /^-\d+$/.test(words[0] ?? ""))
+      words.shift();
+    if (words[0] === "--")
+      words.shift();
+    if (words.some((word) => word.startsWith("-")))
+      return "unattributed";
+    paths = words;
+  } else
+    return "unattributed";
+  try {
+    const root = realpathSync(join(homedir(), ".outrim", "outputs"));
+    return paths.length > 0 && paths.every((path) => {
+      if (!isAbsolute(path))
+        return false;
+      const resolved = realpathSync(path);
+      const within = relative(root, resolved);
+      return within !== "" && !within.startsWith("..") && !isAbsolute(within) && statSync(resolved).isFile();
+    }) ? "confirmed" : "unattributed";
+  } catch {
+    return "unattributed";
+  }
 }
 function createBridge(host, executable, spawnProcess) {
   let recording = false;
@@ -375,6 +429,17 @@ function createBridge(host, executable, spawnProcess) {
       fail(currentChild);
     }
   }
+  function recordRecovery(session, toolCallId, texts, attribution) {
+    exchange({
+      type: "record_recovery",
+      host,
+      session,
+      tool_call_id: toolCallId,
+      event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
+      characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
+      attribution
+    });
+  }
   function close() {
     if (closed)
       return;
@@ -393,7 +458,7 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { rewrite, process, recordDelivery, recordObservation, close };
+  return { rewrite, process, recordDelivery, recordObservation, recordRecovery, close };
 }
 
 // adapters/pi.ts
@@ -428,7 +493,9 @@ async function shellDialect(pi, name) {
 var defaultSpawn = (executable, args, options) => nodeSpawn(executable, args, options);
 function registerPiExtension(pi, options = {}) {
   const bridge = createBridge("pi", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
+  const originalInputs = new Map;
   pi.on("tool_call", async (event, context) => {
+    originalInputs.set(event.toolCallId, { ...event.input });
     if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string")
       return;
     const original = event.input.command;
@@ -443,6 +510,12 @@ function registerPiExtension(pi, options = {}) {
     } catch {}
   });
   pi.on("tool_result", async (event, context) => {
+    const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
+    originalInputs.delete(event.toolCallId);
+    const attribution = recoveryAttribution(event.toolName, originalInput);
+    if (attribution && !event.isError && !context.signal?.aborted && !event.parentToolCallId) {
+      bridge.recordRecovery(context.sessionManager.getSessionId(), event.toolCallId, event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []), attribution);
+    }
     if (isShell2(event.toolName))
       return;
     const observation = {

@@ -23,7 +23,7 @@ class FakeChild extends EventEmitter {
       const request = JSON.parse(line);
       this.writes.push(request);
       callback?.();
-      if (request.type === "record_delivery") this.respond(request);
+      if (request.type?.startsWith("record_")) this.respond(request);
       return true;
     };
     this.stdin.end = () => {
@@ -36,7 +36,7 @@ class FakeChild extends EventEmitter {
     return true;
   }
   requests() {
-    return this.writes.filter((request) => request.type !== "record_delivery");
+    return this.writes.filter((request) => !request.type?.startsWith("record_"));
   }
   deliveries() {
     return this.writes.filter((request) => request.type === "record_delivery");
@@ -400,6 +400,9 @@ describe("OpenCode adapter", () => {
     expect(event.result).toBe(result);
     expect(h.child.requests()).toEqual([]);
     expect(h.child.deliveries()).toMatchObject([{ disposition: "recovery_skipped" }]);
+    expect(h.child.writes.find((r) => r.type === "record_recovery")).toMatchObject({
+      attribution: "unattributed",
+    });
     event.input = { filePath: "normal.log" };
     event.result = { output: "mentioned ~/.outrim/outputs/file.txt" };
     const pending = h.call("tool.execute.after", event);

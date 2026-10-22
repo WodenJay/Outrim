@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 export type Host = "pi" | "opencode";
 export type Source =
@@ -305,6 +305,62 @@ export function inputReferencesOriginals(value: unknown): boolean {
   return false;
 }
 
+// Stricter than recovery protection: only literal, successful original reads
+// justify a deduction. Never read file contents to estimate returned characters.
+export function recoveryAttribution(
+  tool: string,
+  input: unknown,
+): "confirmed" | "unattributed" | null {
+  if (!inputReferencesOriginals(input)) return null;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return "unattributed";
+  const args = input as Record<string, unknown>;
+  let paths: string[];
+  if (tool === "read") {
+    const path = args.path ?? args.filePath ?? args.file_path;
+    if (typeof path !== "string") return "unattributed";
+    paths = [path];
+  } else if (["bash", "powershell", "shell"].includes(tool) && typeof args.command === "string") {
+    // No expansions, redirections, scripts, transformations or compound commands.
+    const command = args.command;
+    if (/[\\`$\r\n\0|&;<>()*?{}[\]]/.test(command.replaceAll("\\", "/"))) return "unattributed";
+    const words: string[] = [];
+    const pattern = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"\\]+))(?=\s|$)/gy;
+    let end = 0;
+    for (const match of command.matchAll(pattern)) {
+      if (match.index !== end) return "unattributed";
+      words.push(match[1] ?? match[2] ?? match[3] ?? "");
+      end = match.index + match[0].length;
+    }
+    if (command.slice(end).trim()) return "unattributed";
+    const program = words.shift();
+    if (program !== "cat" && program !== "head") return "unattributed";
+    if (program === "head" && words[0] === "-n" && /^\d+$/.test(words[1] ?? "")) words.splice(0, 2);
+    if (program === "head" && /^-\d+$/.test(words[0] ?? "")) words.shift();
+    if (words[0] === "--") words.shift();
+    if (words.some((word) => word.startsWith("-"))) return "unattributed";
+    paths = words;
+  } else return "unattributed";
+  try {
+    const root = realpathSync(join(homedir(), ".outrim", "outputs"));
+    return paths.length > 0 &&
+      paths.every((path) => {
+        if (!isAbsolute(path)) return false;
+        const resolved = realpathSync(path);
+        const within = relative(root, resolved);
+        return (
+          within !== "" &&
+          !within.startsWith("..") &&
+          !isAbsolute(within) &&
+          statSync(resolved).isFile()
+        );
+      })
+      ? "confirmed"
+      : "unattributed";
+  } catch {
+    return "unattributed";
+  }
+}
+
 export function createBridge(
   host: Host,
   executable: string,
@@ -333,6 +389,12 @@ export function createBridge(
     original: string | null,
     final: string | null,
     facts: ObservationFacts,
+  ): void;
+  recordRecovery(
+    session: string,
+    toolCallId: string,
+    texts: readonly string[],
+    attribution: "confirmed" | "unattributed",
   ): void;
   close(): void;
 } {
@@ -594,6 +656,24 @@ export function createBridge(
     }
   }
 
+  function recordRecovery(
+    session: string,
+    toolCallId: string,
+    texts: readonly string[],
+    attribution: "confirmed" | "unattributed",
+  ): void {
+    // The durable identity is independent of bridge transport/restarts.
+    void exchange({
+      type: "record_recovery",
+      host,
+      session,
+      tool_call_id: toolCallId,
+      event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
+      characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
+      attribution,
+    });
+  }
+
   function close(): void {
     if (closed) return;
     closed = true;
@@ -611,5 +691,5 @@ export function createBridge(
     }
   }
 
-  return { rewrite, process, recordDelivery, recordObservation, close };
+  return { rewrite, process, recordDelivery, recordObservation, recordRecovery, close };
 }

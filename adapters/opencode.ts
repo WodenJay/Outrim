@@ -5,6 +5,7 @@ import {
   createBridge,
   inputReferencesOriginals,
   processingFacts,
+  recoveryAttribution,
   type SpawnProcess,
   sourceFor,
 } from "./shared";
@@ -187,6 +188,8 @@ export async function registerOpenCodePlugin(
     options.executable ?? BRIDGE_EXECUTABLE,
     options.spawnProcess ?? defaultSpawn,
   );
+  const originalInputs = new Map<string, unknown>();
+  const callKey = (session: string, call: string) => JSON.stringify([session, call]);
   const activeCallsBySession = new Map<string, Set<AbortController>>();
   // OpenCode v2 Code Mode forwards the wrapper call ID to nested tool hooks.
   const activeCodeModeCalls = new Map<string, Map<string, number>>();
@@ -214,6 +217,11 @@ export async function registerOpenCodePlugin(
 
   async function handleBefore(event: ToolHookBeforeEvent): Promise<void> {
     if (closed) return;
+    const originalInput = record(event.input);
+    originalInputs.set(
+      callKey(event.sessionID, event.id),
+      originalInput ? { ...originalInput } : event.input,
+    );
     if (event.tool === "execute") {
       let sessionCalls = activeCodeModeCalls.get(event.sessionID);
       if (!sessionCalls) {
@@ -281,7 +289,22 @@ export async function registerOpenCodePlugin(
       if (rewrite.session === event.sessionID && rewrite.call === event.id)
         rewrites.delete(command);
     }
-    if (closed || isShell(event.tool)) return;
+    if (closed) return;
+    const key = callKey(event.sessionID, event.id);
+    const recoveryInput = originalInputs.get(key) ?? event.input;
+    originalInputs.delete(key);
+    const recoverySelection = event.result ? textSelection(event.result) : undefined;
+    const attribution = recoveryAttribution(event.tool, recoveryInput);
+    if (
+      attribution &&
+      event.status === "completed" &&
+      recoverySelection &&
+      !isCodeModeCall &&
+      (exitCodeFrom(event.result?.metadata) ?? 0) === 0
+    ) {
+      bridge.recordRecovery(event.sessionID, event.id, recoverySelection.texts, attribution);
+    }
+    if (isShell(event.tool)) return;
     const input = record(event.input);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
@@ -441,6 +464,7 @@ export async function registerOpenCodePlugin(
     bridge.close();
     dialects.clear();
     rewrites.clear();
+    originalInputs.clear();
     for (const registration of registrations.reverse()) await registration.dispose();
     await eventLoop;
   };
