@@ -49,6 +49,25 @@ pub fn run(
                     &crate::rewrite::rewrite(request, &executable, processor),
                 )?;
             }
+            Message::ProcessParts(batch) => {
+                let selection =
+                    processor.selection(batch.request.context.as_ref(), &batch.request.tool);
+                let parts: Vec<_> = batch
+                    .texts
+                    .into_iter()
+                    .map(|text| {
+                        let mut request = batch.request.clone();
+                        request.text = text;
+                        processor.process_selected(request, &selection)
+                    })
+                    .collect();
+                write_response(
+                    &mut output,
+                    &serde_json::json!({
+                        "version": VERSION, "id": batch.request.id, "parts": parts
+                    }),
+                )?;
+            }
             Message::Process(request) => {
                 let response = processor.process(request);
                 write_response(&mut output, &response)?;
@@ -80,7 +99,14 @@ fn write_response(output: &mut impl Write, response: &impl serde::Serialize) -> 
     output.flush()
 }
 
+#[derive(serde::Deserialize)]
+struct ProcessParts {
+    request: Request,
+    texts: Vec<String>,
+}
+
 enum Message {
+    ProcessParts(ProcessParts),
     Rewrite(crate::rewrite::Request),
     Process(Request),
     RecordDelivery(RecordDeliveryRequest),
@@ -105,6 +131,13 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
     match value.get("type") {
         None => serde_json::from_value(value)
             .map(Message::Process)
+            .map_err(|error| ParseFailure {
+                id,
+                error: ProtocolError::InvalidRequest,
+                details: error.to_string(),
+            }),
+        Some(Value::String(kind)) if kind == "process_parts" => serde_json::from_value(value)
+            .map(Message::ProcessParts)
             .map_err(|error| ParseFailure {
                 id,
                 error: ProtocolError::InvalidRequest,

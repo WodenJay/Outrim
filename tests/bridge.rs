@@ -44,6 +44,64 @@ fn request(id: &str) -> Request {
 }
 
 #[test]
+fn multipart_results_share_context_and_refresh_on_next_call() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join(".outrim")).unwrap();
+    let config = project.path().join(".outrim/config.json");
+    fs::write(
+        &config,
+        r#"{"rules":[{"match":{"tool":"custom"},"compression":"off"}]}"#,
+    )
+    .unwrap();
+    let mut child = start(home.path());
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let text =
+        serde_json::to_string_pretty(&vec![json!({"name":"repeated", "value":42}); 100]).unwrap();
+    for (id, compressed) in [("off", false), ("compact", true)] {
+        if compressed {
+            fs::write(
+                &config,
+                r#"{"rules":[{"match":{"tool":"custom"},"compression":"json_compact"}]}"#,
+            )
+            .unwrap();
+        }
+        let mut item = serde_json::to_value(request(id)).unwrap();
+        item["context"] = json!({"cwd": project.path()});
+        item["tool"] = json!({"name":"custom", "input":{"directory":"unrelated"}, "source":"unknown", "exit_code":null});
+        item["text"] = json!("");
+        writeln!(
+            input,
+            "{}",
+            json!({"type":"process_parts", "request":item, "texts":[text, text]})
+        )
+        .unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["id"], id);
+        let parts = response["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        for part in parts {
+            let part: Response = serde_json::from_value(part.clone()).unwrap();
+            assert_eq!(part.id, id);
+            assert_eq!(part.disposition == Disposition::Compressed, compressed);
+            if compressed {
+                assert_eq!(
+                    fs::read_to_string(part.original_path.unwrap()).unwrap(),
+                    text
+                );
+            } else {
+                assert_eq!(part.text, text);
+            }
+        }
+    }
+    drop(input);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn concurrent_sessions_and_pipelined_requests_do_not_overwrite_or_cross_ids() {
     let home = tempfile::tempdir().unwrap();
     let mut workers = Vec::new();

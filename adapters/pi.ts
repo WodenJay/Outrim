@@ -35,6 +35,7 @@ interface ToolResultEvent {
 }
 
 interface ToolResultContext {
+  cwd: string;
   sessionManager: { getSessionId(): string };
   signal: AbortSignalLike | undefined;
 }
@@ -125,9 +126,13 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   );
 
   const originalInputs = new Map<string, Record<string, unknown>>();
+  const callDirectories = new Map<string, string>();
+  const callKey = (session: string, call: string) => JSON.stringify([session, call]);
   pi.on("tool_call", async (event, context) => {
-    originalInputs.set(event.toolCallId, { ...event.input });
     const session = context.sessionManager.getSessionId();
+    const key = callKey(session, event.toolCallId);
+    originalInputs.set(key, structuredClone(event.input));
+    callDirectories.set(key, context.cwd);
     const wrapping = (state: WrappingState, reason: string | null, dialect = "unknown") =>
       bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
     if (
@@ -151,6 +156,12 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
         original,
         dialect,
         context.signal,
+        {
+          name: event.toolName,
+          input: originalInputs.get(key) ?? event.input,
+          source: sourceFor("pi", event.toolName, event.input),
+          exit_code: null,
+        },
       );
       if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
         event.input.command = command;
@@ -164,8 +175,11 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   });
 
   pi.on("tool_result", async (event, context) => {
-    const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
-    originalInputs.delete(event.toolCallId);
+    const key = callKey(context.sessionManager.getSessionId(), event.toolCallId);
+    const originalInput = originalInputs.get(key) ?? event.input;
+    const cwd = callDirectories.get(key) ?? context.cwd;
+    originalInputs.delete(key);
+    callDirectories.delete(key);
     const attribution = recoveryAttribution(event.toolName, originalInput);
     if (
       attribution &&
@@ -217,8 +231,8 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       diagnostics: hostOutputFacts("pi", event.details),
       tool: {
         name: event.toolName,
-        input: event.input,
-        source: sourceFor("pi", event.toolName, event.input),
+        input: originalInput,
+        source: sourceFor("pi", event.toolName, originalInput),
         exit_code: exitCodeFrom(event.structuredContent),
       },
     };
@@ -242,7 +256,7 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
 
     const original = content as TextContent;
     const text = original.text;
-    if (inputReferencesOriginals(event.input)) {
+    if (inputReferencesOriginals(originalInput)) {
       bridge.recordObservation(observation, text, text, {
         outcome: context.signal?.aborted ? "cancelled" : "recovery_skipped",
         reason: "original_directory_in_arguments",
@@ -256,6 +270,7 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       observation.tool,
       text,
       context.signal,
+      cwd,
     );
     bridge.recordObservation(
       observation,

@@ -172,6 +172,7 @@ interface CoreRequest {
   session: string;
   tool: ToolInput;
   text: string;
+  context?: { cwd: string; command?: string[] };
 }
 
 type Disposition =
@@ -192,6 +193,7 @@ export interface Candidate {
 }
 
 interface CoreResponse {
+  parts?: CoreResponse[];
   version: number;
   id: string;
   text?: string;
@@ -422,12 +424,21 @@ export function createBridge(
     command: string,
     dialect: "bash" | "powershell" | "unknown",
     signal?: AbortSignalLike,
+    tool?: ToolInput,
   ): Promise<string | undefined>;
+  processParts(
+    session: string,
+    tool: ToolInput,
+    texts: string[],
+    cwd: string | undefined,
+    signal?: AbortSignalLike,
+  ): Promise<Array<ProcessedResult | undefined>>;
   process(
     session: string,
     tool: ToolInput,
     text: string,
     signal?: AbortSignalLike,
+    cwd?: string,
   ): Promise<ProcessedResult | undefined>;
   recordDelivery(
     original: string | readonly string[],
@@ -540,7 +551,16 @@ export function createBridge(
     if (!currentChild) return Promise.resolve(undefined);
 
     const id = String(++nextId);
-    const request = { ...payload, version: 2, id };
+    const request = {
+      ...payload,
+      version: 2,
+      id,
+      ...(payload.type === "process_parts"
+        ? {
+            request: { ...(payload.request as CoreRequest), id },
+          }
+        : {}),
+    };
     let line: string;
     try {
       line = `${JSON.stringify(request)}\n`;
@@ -577,14 +597,29 @@ export function createBridge(
     });
   }
 
-  async function process(
+  async function processParts(
     session: string,
     tool: ToolInput,
-    text: string,
+    texts: string[],
+    cwd: string | undefined,
     signal?: AbortSignalLike,
-  ): Promise<ProcessedResult | undefined> {
-    const payload: CoreRequest = { version: 2, id: "", host, session, tool, text };
-    const response = await exchange({ ...payload }, signal);
+  ): Promise<Array<ProcessedResult | undefined>> {
+    const request: CoreRequest = {
+      version: 2,
+      id: "",
+      host,
+      session,
+      tool,
+      text: "",
+      ...(cwd === undefined ? {} : { context: { cwd } }),
+    };
+    const response = await exchange({ type: "process_parts", request, texts }, signal);
+    if (!Array.isArray(response?.parts) || response.parts.length !== texts.length)
+      return texts.map(() => undefined);
+    return response.parts.map(processedResult);
+  }
+
+  function processedResult(response: CoreResponse | undefined): ProcessedResult | undefined {
     if (
       !response ||
       typeof response.text !== "string" ||
@@ -602,16 +637,37 @@ export function createBridge(
     };
   }
 
+  async function process(
+    session: string,
+    tool: ToolInput,
+    text: string,
+    signal?: AbortSignalLike,
+    cwd?: string,
+  ): Promise<ProcessedResult | undefined> {
+    const payload: CoreRequest = {
+      version: 2,
+      id: "",
+      host,
+      session,
+      tool,
+      text,
+      ...(cwd === undefined ? {} : { context: { cwd } }),
+    };
+    return processedResult(await exchange({ ...payload }, signal));
+  }
+
   async function rewrite(
     session: string,
     toolCallId: string,
     command: string,
     dialect: "bash" | "powershell" | "unknown",
     signal?: AbortSignalLike,
+    tool?: ToolInput,
   ): Promise<string | undefined> {
     const response = await exchange(
       {
         type: "rewrite",
+        tool,
         host,
         session,
         tool_call_id: toolCallId,
@@ -804,6 +860,7 @@ export function createBridge(
   return {
     rewrite,
     process,
+    processParts,
     recordDelivery,
     recordObservation,
     recordRecovery,

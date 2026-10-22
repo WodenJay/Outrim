@@ -327,7 +327,14 @@ function createBridge(host, executable, spawnProcess) {
     if (!currentChild)
       return Promise.resolve(undefined);
     const id = String(++nextId);
-    const request = { ...payload, version: 2, id };
+    const request = {
+      ...payload,
+      version: 2,
+      id,
+      ...payload.type === "process_parts" ? {
+        request: { ...payload.request, id }
+      } : {}
+    };
     let line;
     try {
       line = `${JSON.stringify(request)}
@@ -366,9 +373,24 @@ function createBridge(host, executable, spawnProcess) {
       }
     });
   }
-  async function process(session, tool, text, signal) {
-    const payload = { version: 2, id: "", host, session, tool, text };
-    const response = await exchange({ ...payload }, signal);
+  async function processParts(session, tool, texts, cwd, signal) {
+    const request = {
+      version: 2,
+      id: "",
+      host,
+      session,
+      tool,
+      text: "",
+      ...cwd === undefined ? {} : { context: { cwd } }
+    };
+    const response = await exchange({ type: "process_parts", request, texts }, signal);
+    if (!Array.isArray(response?.parts) || response.parts.length !== texts.length)
+      return texts.map(() => {
+        return;
+      });
+    return response.parts.map(processedResult);
+  }
+  function processedResult(response) {
     if (!response || typeof response.text !== "string" || typeof response.disposition !== "string" || !(response.applied_rule === null || typeof response.applied_rule === "string"))
       return;
     return {
@@ -380,9 +402,22 @@ function createBridge(host, executable, spawnProcess) {
       reason: typeof response.reason === "string" ? response.reason : null
     };
   }
-  async function rewrite(session, toolCallId, command, dialect, signal) {
+  async function process(session, tool, text, signal, cwd) {
+    const payload = {
+      version: 2,
+      id: "",
+      host,
+      session,
+      tool,
+      text,
+      ...cwd === undefined ? {} : { context: { cwd } }
+    };
+    return processedResult(await exchange({ ...payload }, signal));
+  }
+  async function rewrite(session, toolCallId, command, dialect, signal, tool) {
     const response = await exchange({
       type: "rewrite",
+      tool,
       host,
       session,
       tool_call_id: toolCallId,
@@ -450,7 +485,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "5ae6cea7cb97720e58a23fbe8ea1b94bcb9f7e3f6d75a4d8b8abc1cd4f55b28f",
+        adapter_build: "d44eba35705fbdfe3d10c9a06712928b4eebe5e90d3074a6f4e52f4613a294e5",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -532,6 +567,7 @@ function createBridge(host, executable, spawnProcess) {
   return {
     rewrite,
     process,
+    processParts,
     recordDelivery,
     recordObservation,
     recordRecovery,
@@ -573,9 +609,13 @@ var defaultSpawn = (executable, args, options) => nodeSpawn(executable, args, op
 function registerPiExtension(pi, options = {}) {
   const bridge = createBridge("pi", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   const originalInputs = new Map;
+  const callDirectories = new Map;
+  const callKey = (session, call) => JSON.stringify([session, call]);
   pi.on("tool_call", async (event, context) => {
-    originalInputs.set(event.toolCallId, { ...event.input });
     const session = context.sessionManager.getSessionId();
+    const key = callKey(session, event.toolCallId);
+    originalInputs.set(key, structuredClone(event.input));
+    callDirectories.set(key, context.cwd);
     const wrapping = (state, reason, dialect = "unknown") => bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
     if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string") {
       wrapping("not_attempted", event.parentToolCallId ? "nested_call" : "source_not_applicable");
@@ -588,7 +628,12 @@ function registerPiExtension(pi, options = {}) {
         wrapping("not_attempted", "unknown_dialect");
         return;
       }
-      const command = await bridge.rewrite(context.sessionManager.getSessionId(), event.toolCallId, original, dialect, context.signal);
+      const command = await bridge.rewrite(context.sessionManager.getSessionId(), event.toolCallId, original, dialect, context.signal, {
+        name: event.toolName,
+        input: originalInputs.get(key) ?? event.input,
+        source: sourceFor("pi", event.toolName, event.input),
+        exit_code: null
+      });
       if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
         event.input.command = command;
         wrapping("adopted", null, dialect);
@@ -598,8 +643,11 @@ function registerPiExtension(pi, options = {}) {
     } catch {}
   });
   pi.on("tool_result", async (event, context) => {
-    const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
-    originalInputs.delete(event.toolCallId);
+    const key = callKey(context.sessionManager.getSessionId(), event.toolCallId);
+    const originalInput = originalInputs.get(key) ?? event.input;
+    const cwd = callDirectories.get(key) ?? context.cwd;
+    originalInputs.delete(key);
+    callDirectories.delete(key);
     const attribution = recoveryAttribution(event.toolName, originalInput);
     if (attribution && !event.isError && (!isShell2(event.toolName) || (exitCodeFrom(event.structuredContent) ?? 0) === 0) && !context.signal?.aborted && !event.parentToolCallId) {
       bridge.recordRecovery(context.sessionManager.getSessionId(), event.toolCallId, event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []), attribution);
@@ -630,8 +678,8 @@ function registerPiExtension(pi, options = {}) {
       diagnostics: hostOutputFacts("pi", event.details),
       tool: {
         name: event.toolName,
-        input: event.input,
-        source: sourceFor("pi", event.toolName, event.input),
+        input: originalInput,
+        source: sourceFor("pi", event.toolName, originalInput),
         exit_code: exitCodeFrom(event.structuredContent)
       }
     };
@@ -648,7 +696,7 @@ function registerPiExtension(pi, options = {}) {
     }
     const original = content;
     const text = original.text;
-    if (inputReferencesOriginals(event.input)) {
+    if (inputReferencesOriginals(originalInput)) {
       bridge.recordObservation(observation, text, text, {
         outcome: context.signal?.aborted ? "cancelled" : "recovery_skipped",
         reason: "original_directory_in_arguments"
@@ -656,7 +704,7 @@ function registerPiExtension(pi, options = {}) {
       bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return;
     }
-    const processed = await bridge.process(observation.session, observation.tool, text, context.signal);
+    const processed = await bridge.process(observation.session, observation.tool, text, context.signal, cwd);
     bridge.recordObservation(observation, text, context.signal?.aborted ? text : processed?.text ?? text, {
       ...processingFacts([processed]),
       ...context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}

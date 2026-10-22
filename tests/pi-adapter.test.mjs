@@ -52,7 +52,7 @@ function harness(options = {}) {
       ...options,
     },
   );
-  const context = { sessionManager: { getSessionId: () => "session-1" } };
+  const context = { cwd: "D:/host-session", sessionManager: { getSessionId: () => "session-1" } };
   return {
     children,
     handlers,
@@ -76,6 +76,17 @@ function event(overrides = {}) {
 const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_compaction" });
 
 describe("Pi execution adapter", () => {
+  it("uses host cwd rather than read targets or input directories", async () => {
+    const h = harness();
+    const input = { path: "Z:/outside/data.json", directory: "Z:/not-session" };
+    const pending = h.result(event({ toolName: "read", input }));
+    const request = h.children[0].writes.find((message) => !message.type);
+    expect(request.context).toEqual({ cwd: "D:/host-session" });
+    expect(request.tool).toMatchObject({ name: "read", input });
+    h.children[0].respond(request, processed("short"));
+    await pending;
+    h.handlers.get("session_shutdown")();
+  });
   it("retains only explicit host truncation facts on metadata-only results", async () => {
     const settings = join(homedir(), ".outrim", "recording.json");
     mkdirSync(join(homedir(), ".outrim"), { recursive: true });
@@ -147,6 +158,7 @@ describe("Pi execution adapter", () => {
       dialect: "bash",
       recording: false,
       command: "cargo test",
+      tool: { name: "bash", input: { command: "cargo test", timeout: 12 }, exit_code: null },
     });
     h.children[0].respond(request, { command: "wrapped command" });
     expect(await pending).toBeUndefined();

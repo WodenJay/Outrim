@@ -67,6 +67,9 @@ interface OpenCodeEvent {
 
 export interface OpenCodePluginContext {
   session?: {
+    get?(input: {
+      sessionID: string;
+    }): Promise<{ location: { directory: string }; subpath?: string }>;
     hook(
       name: "context" | "generate" | "compaction",
       handler: (event: SessionContextEvent) => void,
@@ -190,6 +193,16 @@ export async function registerOpenCodePlugin(
     options.spawnProcess ?? defaultSpawn,
   );
   const originalInputs = new Map<string, unknown>();
+  const callDirectories = new Map<string, string>();
+  async function sessionDirectory(sessionID: string): Promise<string | undefined> {
+    try {
+      const session = await context.session?.get?.({ sessionID });
+      if (typeof session?.location.directory !== "string") return undefined;
+      return session.location.directory;
+    } catch {
+      return undefined;
+    }
+  }
   const callKey = (session: string, call: string) => JSON.stringify([session, call]);
   const activeCallsBySession = new Map<string, Set<AbortController>>();
   // OpenCode v2 Code Mode forwards the wrapper call ID to nested tool hooks.
@@ -219,10 +232,10 @@ export async function registerOpenCodePlugin(
   async function handleBefore(event: ToolHookBeforeEvent): Promise<void> {
     if (closed) return;
     const originalInput = record(event.input);
-    originalInputs.set(
-      callKey(event.sessionID, event.id),
-      originalInput ? { ...originalInput } : event.input,
-    );
+    originalInputs.set(callKey(event.sessionID, event.id), structuredClone(event.input));
+    const cwd = context.session?.get ? await sessionDirectory(event.sessionID) : undefined;
+    if (closed) return;
+    if (cwd !== undefined) callDirectories.set(callKey(event.sessionID, event.id), cwd);
     if (event.tool === "execute") {
       let sessionCalls = activeCodeModeCalls.get(event.sessionID);
       if (!sessionCalls) {
@@ -266,6 +279,12 @@ export async function registerOpenCodePlugin(
         original,
         dialect,
         controller.signal,
+        {
+          name: event.tool,
+          input: originalInputs.get(callKey(event.sessionID, event.id)) ?? event.input,
+          source: sourceFor("opencode", event.tool, originalInput ?? {}),
+          exit_code: null,
+        },
       );
       if (
         closed ||
@@ -312,6 +331,10 @@ export async function registerOpenCodePlugin(
     }
     if (closed) return;
     const key = callKey(event.sessionID, event.id);
+    const cwd =
+      callDirectories.get(key) ??
+      (context.session?.get ? await sessionDirectory(event.sessionID) : undefined);
+    callDirectories.delete(key);
     const recoveryInput = originalInputs.get(key) ?? event.input;
     originalInputs.delete(key);
     const recoverySelection = event.result ? textSelection(event.result) : undefined;
@@ -348,7 +371,7 @@ export async function registerOpenCodePlugin(
       );
       return;
     }
-    const input = record(event.input);
+    const input = record(recoveryInput);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
     const observation = {
@@ -357,7 +380,7 @@ export async function registerOpenCodePlugin(
       diagnostics: hostOutputFacts("opencode", result?.metadata),
       tool: {
         name: event.tool,
-        input: event.input ?? null,
+        input: recoveryInput ?? null,
         source: sourceFor("opencode", event.tool, input ?? {}),
         exit_code: exitCodeFrom(result?.metadata),
       },
@@ -399,20 +422,12 @@ export async function registerOpenCodePlugin(
     }
     bridgeSessionCalls.add(controller);
     try {
-      const processedResults = await Promise.all(
-        selection.texts.map((text) =>
-          bridge.process(
-            event.sessionID,
-            {
-              name: event.tool,
-              input,
-              source: sourceFor("opencode", event.tool, input),
-              exit_code: exitCodeFrom(result.metadata),
-            },
-            text,
-            controller.signal,
-          ),
-        ),
+      const processedResults = await bridge.processParts(
+        event.sessionID,
+        observation.tool,
+        selection.texts,
+        cwd,
+        controller.signal,
       );
       if (closed || controller.signal.aborted) {
         bridge.recordObservation(observation, originalText, originalText, {

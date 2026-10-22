@@ -37,18 +37,79 @@ class FakeChild extends EventEmitter {
     return true;
   }
   requests() {
-    return this.writes.filter((request) => !request.type?.startsWith("record_"));
+    return this.writes
+      .filter((request) => !request.type?.startsWith("record_"))
+      .flatMap((message) =>
+        message.type === "process_parts"
+          ? message.texts.map((text, index) => ({
+              ...message.request,
+              text,
+              batch: message,
+              index,
+            }))
+          : [message],
+      );
   }
   deliveries() {
     return this.writes.filter((request) => request.type === "record_delivery");
   }
   respond(request, fields = {}) {
+    if (request.batch) {
+      const batch = request.batch;
+      batch.replies ??= [];
+      batch.replies[request.index] = { version: 2, id: batch.id, ...fields };
+      if (batch.replies.filter(Boolean).length !== batch.texts.length) return;
+      this.respond(batch, { parts: batch.replies });
+      return;
+    }
     this.stdout.emit("data", `${JSON.stringify({ version: 2, id: request.id, ...fields })}\n`);
   }
   compress(request, text) {
     this.respond(request, { text, disposition: "compressed", applied_rule: "log_compaction" });
   }
 }
+
+it("sends one batch with the current host session cwd and original input", async () => {
+  let directory = "D:/session-one";
+  const h = await harness({
+    sessionGet: async ({ sessionID }) => ({ location: { directory: `${directory}/${sessionID}` } }),
+  });
+  for (const sessionID of ["first", "second"]) {
+    const input = { filePath: "Z:/outside/data.json", directory: "Z:/not-session" };
+    const event = after({
+      sessionID,
+      tool: "read",
+      input,
+      result: {
+        content: [
+          { type: "text", text: "first" },
+          { type: "text", text: "second" },
+          { type: "image", data: "keep" },
+        ],
+        metadata: { keep: true },
+      },
+    });
+    const pending = h.call("tool.execute.after", event);
+    await Promise.resolve();
+    await Promise.resolve();
+    const batch = h.child.writes.filter((message) => message.type === "process_parts").at(-1);
+    expect(batch.texts).toEqual(["first", "second"]);
+    expect(batch.request.context).toEqual({ cwd: `${directory}/${sessionID}` });
+    expect(batch.request.tool).toMatchObject({ name: "read", input });
+    expect(batch.request.id).toBe(batch.id);
+    h.child.respond(batch, {
+      parts: batch.texts.map(() => ({
+        text: "short",
+        disposition: "compressed",
+        applied_rule: "json_compact",
+      })),
+    });
+    await pending;
+    expect(event.result.content[2]).toEqual({ type: "image", data: "keep" });
+    directory = "D:/session-updated";
+  }
+  await h.dispose();
+});
 
 it("preserves explicit OpenCode completeness without retaining result content", async () => {
   const settings = join(homedir(), ".outrim", "recording.json");
@@ -74,7 +135,7 @@ it("preserves explicit OpenCode completeness without retaining result content", 
   await h.dispose();
 });
 
-async function harness(options = {}) {
+async function harness({ sessionGet, ...options } = {}) {
   const handlers = new Map();
   const child = new FakeChild();
   let eventWaiter;
@@ -84,6 +145,7 @@ async function harness(options = {}) {
         ["tool", "session", "shell"].map((domain) => [
           domain,
           {
+            ...(domain === "session" && sessionGet ? { get: sessionGet } : {}),
             hook(name, handler) {
               handlers.set(`${domain}.${name}`, handler);
               return Promise.resolve({ dispose: () => handlers.delete(`${domain}.${name}`) });

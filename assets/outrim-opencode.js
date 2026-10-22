@@ -327,7 +327,14 @@ function createBridge(host, executable, spawnProcess) {
     if (!currentChild)
       return Promise.resolve(undefined);
     const id = String(++nextId);
-    const request = { ...payload, version: 2, id };
+    const request = {
+      ...payload,
+      version: 2,
+      id,
+      ...payload.type === "process_parts" ? {
+        request: { ...payload.request, id }
+      } : {}
+    };
     let line;
     try {
       line = `${JSON.stringify(request)}
@@ -366,9 +373,24 @@ function createBridge(host, executable, spawnProcess) {
       }
     });
   }
-  async function process(session, tool, text, signal) {
-    const payload = { version: 2, id: "", host, session, tool, text };
-    const response = await exchange({ ...payload }, signal);
+  async function processParts(session, tool, texts, cwd, signal) {
+    const request = {
+      version: 2,
+      id: "",
+      host,
+      session,
+      tool,
+      text: "",
+      ...cwd === undefined ? {} : { context: { cwd } }
+    };
+    const response = await exchange({ type: "process_parts", request, texts }, signal);
+    if (!Array.isArray(response?.parts) || response.parts.length !== texts.length)
+      return texts.map(() => {
+        return;
+      });
+    return response.parts.map(processedResult);
+  }
+  function processedResult(response) {
     if (!response || typeof response.text !== "string" || typeof response.disposition !== "string" || !(response.applied_rule === null || typeof response.applied_rule === "string"))
       return;
     return {
@@ -380,9 +402,22 @@ function createBridge(host, executable, spawnProcess) {
       reason: typeof response.reason === "string" ? response.reason : null
     };
   }
-  async function rewrite(session, toolCallId, command, dialect, signal) {
+  async function process(session, tool, text, signal, cwd) {
+    const payload = {
+      version: 2,
+      id: "",
+      host,
+      session,
+      tool,
+      text,
+      ...cwd === undefined ? {} : { context: { cwd } }
+    };
+    return processedResult(await exchange({ ...payload }, signal));
+  }
+  async function rewrite(session, toolCallId, command, dialect, signal, tool) {
     const response = await exchange({
       type: "rewrite",
+      tool,
       host,
       session,
       tool_call_id: toolCallId,
@@ -450,7 +485,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "4ac0f6f4e45cba60022b167e06d2f65e6c8c63293cb27a708ea0b8a3863dc2f7",
+        adapter_build: "bb0e0fc75ddfa796bb540dfa34826d48b61464750e034bcde2fda85ed7a76b18",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -532,6 +567,7 @@ function createBridge(host, executable, spawnProcess) {
   return {
     rewrite,
     process,
+    processParts,
     recordDelivery,
     recordObservation,
     recordRecovery,
@@ -606,6 +642,17 @@ function sessionIdFrom(event) {
 async function registerOpenCodePlugin(context, options = {}) {
   const bridge = createBridge("opencode", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   const originalInputs = new Map;
+  const callDirectories = new Map;
+  async function sessionDirectory(sessionID) {
+    try {
+      const session = await context.session?.get?.({ sessionID });
+      if (typeof session?.location.directory !== "string")
+        return;
+      return session.location.directory;
+    } catch {
+      return;
+    }
+  }
   const callKey = (session, call) => JSON.stringify([session, call]);
   const activeCallsBySession = new Map;
   const activeCodeModeCalls = new Map;
@@ -627,7 +674,12 @@ async function registerOpenCodePlugin(context, options = {}) {
     if (closed)
       return;
     const originalInput = record(event.input);
-    originalInputs.set(callKey(event.sessionID, event.id), originalInput ? { ...originalInput } : event.input);
+    originalInputs.set(callKey(event.sessionID, event.id), structuredClone(event.input));
+    const cwd = context.session?.get ? await sessionDirectory(event.sessionID) : undefined;
+    if (closed)
+      return;
+    if (cwd !== undefined)
+      callDirectories.set(callKey(event.sessionID, event.id), cwd);
     if (event.tool === "execute") {
       let sessionCalls = activeCodeModeCalls.get(event.sessionID);
       if (!sessionCalls) {
@@ -652,7 +704,12 @@ async function registerOpenCodePlugin(context, options = {}) {
     }
     calls.add(controller);
     try {
-      const command = await bridge.rewrite(event.sessionID, event.id, original, dialect, controller.signal);
+      const command = await bridge.rewrite(event.sessionID, event.id, original, dialect, controller.signal, {
+        name: event.tool,
+        input: originalInputs.get(callKey(event.sessionID, event.id)) ?? event.input,
+        source: sourceFor("opencode", event.tool, originalInput ?? {}),
+        exit_code: null
+      });
       if (closed || controller.signal.aborted || input.command !== original || !command || command === original) {
         if (command)
           bridge.recordWrapping(event.sessionID, event.id, event.tool, "withdrawn", controller.signal.aborted ? "cancelled" : "changed_input", dialect);
@@ -687,6 +744,8 @@ async function registerOpenCodePlugin(context, options = {}) {
     if (closed)
       return;
     const key = callKey(event.sessionID, event.id);
+    const cwd = callDirectories.get(key) ?? (context.session?.get ? await sessionDirectory(event.sessionID) : undefined);
+    callDirectories.delete(key);
     const recoveryInput = originalInputs.get(key) ?? event.input;
     originalInputs.delete(key);
     const recoverySelection = event.result ? textSelection(event.result) : undefined;
@@ -713,7 +772,7 @@ async function registerOpenCodePlugin(context, options = {}) {
       });
       return;
     }
-    const input = record(event.input);
+    const input = record(recoveryInput);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
     const observation = {
@@ -722,7 +781,7 @@ async function registerOpenCodePlugin(context, options = {}) {
       diagnostics: hostOutputFacts("opencode", result?.metadata),
       tool: {
         name: event.tool,
-        input: event.input ?? null,
+        input: recoveryInput ?? null,
         source: sourceFor("opencode", event.tool, input ?? {}),
         exit_code: exitCodeFrom(result?.metadata)
       }
@@ -753,12 +812,7 @@ async function registerOpenCodePlugin(context, options = {}) {
     }
     bridgeSessionCalls.add(controller);
     try {
-      const processedResults = await Promise.all(selection.texts.map((text) => bridge.process(event.sessionID, {
-        name: event.tool,
-        input,
-        source: sourceFor("opencode", event.tool, input),
-        exit_code: exitCodeFrom(result.metadata)
-      }, text, controller.signal)));
+      const processedResults = await bridge.processParts(event.sessionID, observation.tool, selection.texts, cwd, controller.signal);
       if (closed || controller.signal.aborted) {
         bridge.recordObservation(observation, originalText, originalText, {
           ...processingFacts(processedResults),
