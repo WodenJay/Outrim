@@ -117,8 +117,7 @@ if (process.argv[2] === "--host") {
         .split("\n")
         .map(JSON.parse),
     );
-    assert.equal(events.length, 4);
-    const streams = events.filter((event) => event.tool_call_id === "wrapped");
+    const streams = events.filter((event) => event.tool_call_id === "wrapped" && event.execution);
     assert.deepEqual(streams.map((event) => event.execution.stream).sort(), ["stderr", "stdout"]);
     for (const event of streams) {
       assert.equal(event.host, "pi");
@@ -126,7 +125,23 @@ if (process.argv[2] === "--host") {
       assert.equal(event.execution.unit_id, "wrapped:0");
       assert.equal(event.execution.recording, true);
     }
-    assert.equal(events.filter((event) => event.outcome === "recovery_skipped").length, 1);
+    assert.equal(
+      events.filter((event) => event.outcome === "recovery_skipped" && !event.metadata_only).length,
+      1,
+    );
+    const recovery = events.filter((event) => event.diagnostics?.recovery);
+    assert.equal(recovery.length, 1);
+    assert.equal(stats.recovery_chars, recovery[0].diagnostics.recovery.characters);
+    assert.ok(stats.recovery_chars > 0);
+    const stdout = streams.find((event) => event.execution.stream === "stdout");
+    assert.deepEqual(recovery[0].original_references, [
+      { original_path: stdout.original_path, record_id: stdout.event_id },
+    ]);
+    const metadata = events.filter((event) => event.metadata_only);
+    assert.ok(metadata.length > 0);
+    assert.ok(
+      metadata.every((event) => Object.values(event.content).every((path) => path === null)),
+    );
     console.log(
       "pi: installed bundle → rewrite → native shell → per-stream originals/gain/records passed",
     );

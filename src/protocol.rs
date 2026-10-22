@@ -131,6 +131,31 @@ pub struct RecordObservationRequest {
     pub parts: Vec<ProcessingPart>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionMetadata>,
+    #[serde(default)]
+    pub metadata_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<Diagnostics>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Diagnostics {
+    pub adapter_build: Option<String>,
+    pub unit_id: Option<String>,
+    pub execution_state: Option<String>,
+    pub terminal_reason: Option<String>,
+    pub wrapping: Option<String>,
+    pub attempt_id: Option<String>,
+    pub requested_dialect: Option<String>,
+    pub actual_dialect: Option<String>,
+    pub output_origin: Option<String>,
+    pub completeness: Option<String>,
+    pub host_truncation: Option<serde_json::Value>,
+    pub observed_bytes: Option<u64>,
+    pub observed_chars: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub limit_bytes: Option<u64>,
+    pub recovery: Option<RecoveryRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +201,36 @@ pub enum ObservationOutcome {
     Unsupported,
     Cancelled,
     Mixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryRequest {
+    #[serde(rename = "type")]
+    pub message_type: RecoveryMessageType,
+    pub version: u32,
+    pub id: String,
+    pub event_id: String,
+    pub host: Host,
+    pub session: String,
+    pub tool_call_id: String,
+    pub characters: u64,
+    pub attribution: RecoveryAttribution,
+    #[serde(default)]
+    pub original_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryMessageType {
+    RecordRecovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryAttribution {
+    Confirmed,
+    Unattributed,
 }
 
 #[derive(Debug, Serialize)]

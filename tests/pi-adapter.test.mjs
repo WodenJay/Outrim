@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { registerPiExtension } from "../assets/outrim-pi.js";
 import { isolateHome } from "./isolated-home.mjs";
 
@@ -73,6 +76,62 @@ function event(overrides = {}) {
 const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_compaction" });
 
 describe("Pi execution adapter", () => {
+  it("retains only explicit host truncation facts on metadata-only results", async () => {
+    const settings = join(homedir(), ".outrim", "recording.json");
+    mkdirSync(join(homedir(), ".outrim"), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ recording: true }));
+    const h = harness();
+    rmSync(settings);
+    const e = event({
+      details: {
+        truncation: {
+          truncated: true,
+          truncatedBy: "bytes",
+          totalBytes: 90000,
+          outputBytes: 51200,
+          maxBytes: 51200,
+          content: "private payload",
+        },
+      },
+    });
+    const original = structuredClone(e);
+    expect(await h.result(e)).toBeUndefined();
+    expect(e).toEqual(original);
+    const record = h.children[0].writes.find((request) => request.type === "record_observation");
+    expect(record.diagnostics).toMatchObject({
+      completeness: "host_truncated",
+      host_truncation: { totalBytes: 90000, outputBytes: 51200, maxBytes: 51200 },
+      observed_chars: 10,
+      observed_bytes: 13,
+    });
+    expect(record.diagnostics.total_bytes).toBeUndefined();
+    expect(JSON.stringify(record)).not.toContain("private payload");
+    expect(record.original_text).toBeNull();
+  });
+  it("records wrapping stages without retaining newly observed inputs", async () => {
+    const settings = join(homedir(), ".outrim", "recording.json");
+    mkdirSync(join(homedir(), ".outrim"), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ recording: true }));
+    const h = harness();
+    rmSync(settings);
+    const e = event();
+    const pending = h.call(e);
+    const child = h.children[0];
+    child.respond(
+      child.writes.find((r) => r.type === "rewrite"),
+      { command: "wrapped" },
+    );
+    await pending;
+    const records = child.writes.filter((r) => r.type === "record_observation");
+    expect(records.map((r) => r.diagnostics.wrapping)).toEqual(["planned", "adopted"]);
+    for (const record of records) {
+      expect(record.tool.input).toBeNull();
+      expect(record.original_text).toBeNull();
+      expect(record.metadata_only).toBe(true);
+      expect(record.diagnostics.adapter_build).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(record)).not.toContain("cargo test");
+    }
+  });
   it("mutates the original argument object before native execution", async () => {
     const h = harness();
     const e = event();
@@ -156,6 +215,46 @@ describe("Pi execution adapter", () => {
 });
 
 describe("Pi native result adapter", () => {
+  it("charges returned Unicode text per successful recovery, including shell results", async () => {
+    const directory = join(homedir(), ".outrim", "outputs", "pi");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "original.txt");
+    writeFileSync(path, "original content");
+    const h = harness();
+    const result = event({
+      toolName: "read",
+      input: { path, offset: 2, limit: 1 },
+      content: [{ type: "text", text: "2: 🦀\n[continued]" }],
+      isError: false,
+    });
+    expect(await h.result(result)).toBeUndefined();
+    expect(await h.result(result)).toBeUndefined();
+    expect(await h.result({ ...result, toolCallId: "call-2" })).toBeUndefined();
+    expect(await h.result({ ...result, toolCallId: "failed", isError: true })).toBeUndefined();
+    const shell = event({
+      toolCallId: "shell-read",
+      input: { command: `head -n 1 '${path}'` },
+      structuredContent: { exit_code: 0 },
+      isError: false,
+    });
+    const unchanged = structuredClone(shell);
+    expect(await h.result(shell)).toBeUndefined();
+    expect(shell).toEqual(unchanged);
+    expect(
+      await h.result({ ...shell, toolCallId: "failed-shell", structuredContent: { exit_code: 1 } }),
+    ).toBeUndefined();
+    const recoveries = h.children[0].writes.filter((r) => r.type === "record_recovery");
+    expect(recoveries).toHaveLength(4);
+    expect(recoveries[0]).toMatchObject({ characters: 16, attribution: "confirmed" });
+    expect(recoveries[0].event_id).toBe(recoveries[1].event_id);
+    expect(recoveries[2].event_id).not.toBe(recoveries[0].event_id);
+    expect(recoveries[3]).toMatchObject({
+      characters: 10,
+      attribution: "confirmed",
+      original_paths: [path],
+    });
+    expect(h.children[0].writes.some((r) => !r.type)).toBe(false);
+  });
   it("preserves metadata and correlates concurrent native tool results", async () => {
     const h = harness();
     const first = h.result(event({ toolName: "grep", input: { pattern: "hit" } }));

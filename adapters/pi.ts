@@ -3,10 +3,13 @@ import {
   type AbortSignalLike,
   type BridgeChild,
   createBridge,
+  hostOutputFacts,
   inputReferencesOriginals,
   processingFacts,
+  recoveryAttribution,
   type SpawnProcess,
   sourceFor,
+  type WrappingState,
 } from "./shared";
 
 export const OUTRIM_EXTENSION_MARKER = "outrim-managed: pi-extension";
@@ -121,17 +124,27 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     options.spawnProcess ?? defaultSpawn,
   );
 
+  const originalInputs = new Map<string, Record<string, unknown>>();
   pi.on("tool_call", async (event, context) => {
+    originalInputs.set(event.toolCallId, { ...event.input });
+    const session = context.sessionManager.getSessionId();
+    const wrapping = (state: WrappingState, reason: string | null, dialect = "unknown") =>
+      bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
     if (
       !isShell(event.toolName) ||
       event.parentToolCallId ||
       typeof event.input.command !== "string"
-    )
+    ) {
+      wrapping("not_attempted", event.parentToolCallId ? "nested_call" : "source_not_applicable");
       return;
+    }
     const original = event.input.command;
     try {
       const dialect = options.dialect ?? (await shellDialect(pi, event.toolName));
-      if (dialect === "unknown") return;
+      if (dialect === "unknown") {
+        wrapping("not_attempted", "unknown_dialect");
+        return;
+      }
       const command = await bridge.rewrite(
         context.sessionManager.getSessionId(),
         event.toolCallId,
@@ -141,6 +154,9 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       );
       if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
         event.input.command = command;
+        wrapping("adopted", null, dialect);
+      } else if (command !== undefined) {
+        wrapping("withdrawn", context.signal?.aborted ? "cancelled" : "changed_input", dialect);
       }
     } catch {
       // Failure to optimize must not prevent native execution.
@@ -148,10 +164,57 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   });
 
   pi.on("tool_result", async (event, context) => {
-    if (isShell(event.toolName)) return undefined;
+    const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
+    originalInputs.delete(event.toolCallId);
+    const attribution = recoveryAttribution(event.toolName, originalInput);
+    if (
+      attribution &&
+      !event.isError &&
+      (!isShell(event.toolName) || (exitCodeFrom(event.structuredContent) ?? 0) === 0) &&
+      !context.signal?.aborted &&
+      !event.parentToolCallId
+    ) {
+      bridge.recordRecovery(
+        context.sessionManager.getSessionId(),
+        event.toolCallId,
+        event.content.flatMap((part) =>
+          part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+        ),
+        attribution,
+      );
+    }
+    if (isShell(event.toolName)) {
+      const text = event.content
+        .flatMap((part) =>
+          part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+        )
+        .join("\n");
+      bridge.recordObservation(
+        {
+          session: context.sessionManager.getSessionId(),
+          toolCallId: event.toolCallId,
+          diagnostics: hostOutputFacts("pi", event.details),
+          tool: {
+            name: event.toolName,
+            input: null,
+            source: "unknown",
+            exit_code: exitCodeFrom(event.structuredContent),
+          },
+        },
+        text,
+        null,
+        {
+          outcome: context.signal?.aborted ? "cancelled" : "unsupported",
+          reason: event.isError ? "host_error" : "shell_result_observed",
+          metadataOnly: true,
+        },
+      );
+      return undefined;
+    }
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,
+      diagnostics: hostOutputFacts("pi", event.details),
       tool: {
         name: event.toolName,
         input: event.input,

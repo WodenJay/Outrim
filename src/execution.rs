@@ -66,8 +66,49 @@ impl Execution {
         }
     }
 
+    pub fn record_fallback(&self) {
+        self.processor.record_observation(RecordObservationRequest {
+            message_type: ObservationMessageType::RecordObservation,
+            version: VERSION,
+            id: self.context.unit_id.clone(),
+            host: self.context.host,
+            session: self.context.session.clone(),
+            tool_call_id: self.context.tool_call_id.clone(),
+            tool: Tool {
+                name: "shell".into(),
+                input: serde_json::Value::Null,
+                source: Source::Unknown,
+                exit_code: None,
+            },
+            original_text: None,
+            final_text: None,
+            metadata_only: true,
+            diagnostics: Some(Diagnostics {
+                wrapping: Some("runtime_bypassed".into()),
+                unit_id: Some(self.context.unit_id.clone()),
+                execution_state: Some("runtime_fallback".into()),
+                ..Default::default()
+            }),
+            outcome: ObservationOutcome::Unsupported,
+            reason: Some("runtime_resolution_fallback".into()),
+            applied_rule: None,
+            original_path: None,
+            candidates: vec![],
+            parts: vec![],
+            execution: None,
+        });
+    }
+
     /// Record why an unmeasured byte stream bypassed processing, never its content.
-    pub fn bypass(&self, stream: OutputStream, exit_code: Option<i32>, reason: &str) {
+    pub fn bypass(
+        &self,
+        stream: OutputStream,
+        exit_code: Option<i32>,
+        reason: &str,
+        mut diagnostics: Diagnostics,
+    ) {
+        diagnostics.execution_state = Some("executed".into());
+        diagnostics.unit_id = Some(self.context.unit_id.clone());
         let mut tool = self.tool.clone();
         tool.exit_code = exit_code;
         self.processor.record_observation(RecordObservationRequest {
@@ -80,6 +121,8 @@ impl Execution {
             tool,
             original_text: None,
             final_text: None,
+            metadata_only: true,
+            diagnostics: Some(diagnostics),
             outcome: ObservationOutcome::Unsupported,
             applied_rule: None,
             original_path: None,
@@ -100,9 +143,31 @@ impl Execution {
         stream: OutputStream,
         text: String,
         exit_code: Option<i32>,
-        mut output: impl Write,
+        output: impl Write,
     ) -> io::Result<()> {
+        let diagnostics = Diagnostics {
+            output_origin: Some("native_capture".into()),
+            completeness: Some("complete".into()),
+            observed_bytes: Some(text.len() as u64),
+            observed_chars: Some(text.chars().count() as u64),
+            total_bytes: Some(text.len() as u64),
+            ..Diagnostics::default()
+        };
+        self.deliver_captured(stream, text, exit_code, output, diagnostics)
+    }
+
+    pub fn deliver_captured(
+        &self,
+        stream: OutputStream,
+        text: String,
+        exit_code: Option<i32>,
+        mut output: impl Write,
+        mut diagnostics: Diagnostics,
+    ) -> io::Result<()> {
+        diagnostics.execution_state = Some("executed".into());
+        diagnostics.unit_id = Some(self.context.unit_id.clone());
         if text.is_empty() {
+            self.bypass(stream, exit_code, "empty_output", diagnostics);
             return Ok(());
         }
         let mut tool = self.tool.clone();
@@ -149,6 +214,8 @@ impl Execution {
             tool,
             original_text: Some(text),
             final_text: Some(response.text),
+            metadata_only: false,
+            diagnostics: Some(diagnostics),
             outcome,
             applied_rule: response.applied_rule,
             original_path: response.original_path,

@@ -3,9 +3,9 @@
 import { spawn as nodeSpawn } from "child_process";
 
 // adapters/shared.ts
-import { readFileSync } from "fs";
+import { readFileSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join, relative } from "path";
 var TEST_COMMANDS = [
   /^\s*cargo\s+test(?=\s|$)/i,
   /^\s*(?:bun|npm|pnpm|yarn)\s+(?:test|run\s+test)(?=\s|$)/i,
@@ -116,6 +116,46 @@ function sourceFor(host, toolName, input) {
     return "runtime_log";
   return "unknown";
 }
+function hostOutputFacts(host, value) {
+  const details = value && typeof value === "object" ? value : {};
+  const raw = host === "pi" ? details.truncation : details;
+  const truncation = raw && typeof raw === "object" ? raw : {};
+  const facts = {};
+  if (typeof truncation.truncated === "boolean")
+    facts.truncated = truncation.truncated;
+  if (host === "pi") {
+    for (const name of [
+      "totalLines",
+      "totalBytes",
+      "outputLines",
+      "outputBytes",
+      "maxLines",
+      "maxBytes"
+    ]) {
+      const number = truncation[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number >= 0)
+        facts[name] = number;
+    }
+    if (truncation.truncatedBy === "bytes" || truncation.truncatedBy === "lines")
+      facts.truncatedBy = truncation.truncatedBy;
+    for (const name of ["lastLinePartial", "firstLineExceedsLimit"]) {
+      if (typeof truncation[name] === "boolean")
+        facts[name] = truncation[name];
+    }
+    for (const name of ["matchLimitReached", "resultLimitReached", "entryLimitReached"]) {
+      const number = details[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number > 0)
+        facts[name] = number;
+    }
+    if (typeof details.linesTruncated === "boolean")
+      facts.linesTruncated = details.linesTruncated;
+  }
+  const limited = facts.truncated === true || facts.linesTruncated === true || ["matchLimitReached", "resultLimitReached", "entryLimitReached"].some((name) => (name in facts));
+  return {
+    completeness: limited ? "host_truncated" : facts.truncated === false ? "complete" : "unknown",
+    host_truncation: Object.keys(facts).length ? facts : null
+  };
+}
 function distinct(values) {
   return [...new Set(values.flatMap((value) => value === null ? [] : [value]))];
 }
@@ -154,6 +194,61 @@ function inputReferencesOriginals(value) {
     return Object.values(value).some(inputReferencesOriginals);
   }
   return false;
+}
+function recoveryAttribution(tool, input) {
+  if (!inputReferencesOriginals(input))
+    return null;
+  const unattributed = { attribution: "unattributed", original_paths: [] };
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return unattributed;
+  const args = input;
+  let paths;
+  if (tool === "read") {
+    const path = args.path ?? args.filePath ?? args.file_path;
+    if (typeof path !== "string")
+      return unattributed;
+    paths = [path];
+  } else if (["bash", "powershell", "shell"].includes(tool) && typeof args.command === "string") {
+    const command = args.command;
+    if (/[\\`$\r\n\0|&;<>()*?{}[\]]/.test(command.replaceAll("\\", "/")))
+      return unattributed;
+    const words = [];
+    const pattern = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"\\]+))(?=\s|$)/gy;
+    let end = 0;
+    for (const match of command.matchAll(pattern)) {
+      if (match.index !== end)
+        return unattributed;
+      words.push(match[1] ?? match[2] ?? match[3] ?? "");
+      end = match.index + match[0].length;
+    }
+    if (command.slice(end).trim())
+      return unattributed;
+    const program = words.shift();
+    if (program !== "cat" && program !== "head")
+      return unattributed;
+    if (program === "head" && words[0] === "-n" && /^\d+$/.test(words[1] ?? ""))
+      words.splice(0, 2);
+    if (program === "head" && /^-\d+$/.test(words[0] ?? ""))
+      words.shift();
+    if (words[0] === "--")
+      words.shift();
+    if (words.some((word) => word.startsWith("-")))
+      return unattributed;
+    paths = words;
+  } else
+    return unattributed;
+  try {
+    const root = realpathSync(join(homedir(), ".outrim", "outputs"));
+    return paths.length > 0 && paths.every((path) => {
+      if (!isAbsolute(path))
+        return false;
+      const resolved = realpathSync(path);
+      const within = relative(root, resolved);
+      return within !== "" && !within.startsWith("..") && !isAbsolute(within) && statSync(resolved).isFile();
+    }) ? { attribution: "confirmed", original_paths: [...new Set(paths)] } : unattributed;
+  } catch {
+    return unattributed;
+  }
 }
 function createBridge(host, executable, spawnProcess) {
   let recording = false;
@@ -296,7 +391,9 @@ function createBridge(host, executable, spawnProcess) {
       dialect,
       command
     }, signal, 5000);
-    return typeof response?.command === "string" ? response.command : undefined;
+    const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    recordWrapping(session, toolCallId, "shell", rewritten ? "planned" : "rejected", response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"), dialect);
+    return rewritten;
   }
   function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
@@ -348,9 +445,19 @@ function createBridge(host, executable, spawnProcess) {
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
-      tool: context.tool,
-      original_text: original,
-      final_text: final,
+      tool: facts.metadataOnly ? { ...context.tool, input: null } : context.tool,
+      original_text: facts.metadataOnly ? null : original,
+      final_text: facts.metadataOnly ? null : final,
+      metadata_only: facts.metadataOnly ?? false,
+      diagnostics: {
+        adapter_build: "5ae6cea7cb97720e58a23fbe8ea1b94bcb9f7e3f6d75a4d8b8abc1cd4f55b28f",
+        output_origin: "host_result",
+        completeness: "unknown",
+        observed_chars: original === null ? null : Array.from(original).length,
+        observed_bytes: original === null ? null : Buffer.byteLength(original, "utf8"),
+        ...context.diagnostics,
+        ...facts.diagnostics
+      },
       outcome: facts.outcome,
       applied_rule: facts.appliedRule ?? null,
       original_path: facts.originalPath ?? null,
@@ -375,6 +482,35 @@ function createBridge(host, executable, spawnProcess) {
       fail(currentChild);
     }
   }
+  function recordRecovery(session, toolCallId, texts, evidence) {
+    exchange({
+      type: "record_recovery",
+      host,
+      session,
+      tool_call_id: toolCallId,
+      event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
+      characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
+      ...evidence
+    });
+  }
+  function recordWrapping(session, call, tool, state, reason, dialect, actual) {
+    recordObservation({
+      session,
+      toolCallId: call,
+      tool: { name: tool, input: null, source: "unknown", exit_code: null }
+    }, null, null, {
+      outcome: "unsupported",
+      metadataOnly: true,
+      reason,
+      diagnostics: {
+        wrapping: state,
+        attempt_id: JSON.stringify([host, session, call]),
+        requested_dialect: dialect,
+        actual_dialect: actual ?? null,
+        output_origin: null
+      }
+    });
+  }
   function close() {
     if (closed)
       return;
@@ -393,7 +529,15 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { rewrite, process, recordDelivery, recordObservation, close };
+  return {
+    rewrite,
+    process,
+    recordDelivery,
+    recordObservation,
+    recordRecovery,
+    recordWrapping,
+    close
+  };
 }
 
 // adapters/pi.ts
@@ -428,26 +572,62 @@ async function shellDialect(pi, name) {
 var defaultSpawn = (executable, args, options) => nodeSpawn(executable, args, options);
 function registerPiExtension(pi, options = {}) {
   const bridge = createBridge("pi", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
+  const originalInputs = new Map;
   pi.on("tool_call", async (event, context) => {
-    if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string")
+    originalInputs.set(event.toolCallId, { ...event.input });
+    const session = context.sessionManager.getSessionId();
+    const wrapping = (state, reason, dialect = "unknown") => bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
+    if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string") {
+      wrapping("not_attempted", event.parentToolCallId ? "nested_call" : "source_not_applicable");
       return;
+    }
     const original = event.input.command;
     try {
       const dialect = options.dialect ?? await shellDialect(pi, event.toolName);
-      if (dialect === "unknown")
+      if (dialect === "unknown") {
+        wrapping("not_attempted", "unknown_dialect");
         return;
+      }
       const command = await bridge.rewrite(context.sessionManager.getSessionId(), event.toolCallId, original, dialect, context.signal);
       if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
         event.input.command = command;
+        wrapping("adopted", null, dialect);
+      } else if (command !== undefined) {
+        wrapping("withdrawn", context.signal?.aborted ? "cancelled" : "changed_input", dialect);
       }
     } catch {}
   });
   pi.on("tool_result", async (event, context) => {
-    if (isShell2(event.toolName))
+    const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
+    originalInputs.delete(event.toolCallId);
+    const attribution = recoveryAttribution(event.toolName, originalInput);
+    if (attribution && !event.isError && (!isShell2(event.toolName) || (exitCodeFrom(event.structuredContent) ?? 0) === 0) && !context.signal?.aborted && !event.parentToolCallId) {
+      bridge.recordRecovery(context.sessionManager.getSessionId(), event.toolCallId, event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []), attribution);
+    }
+    if (isShell2(event.toolName)) {
+      const text = event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join(`
+`);
+      bridge.recordObservation({
+        session: context.sessionManager.getSessionId(),
+        toolCallId: event.toolCallId,
+        diagnostics: hostOutputFacts("pi", event.details),
+        tool: {
+          name: event.toolName,
+          input: null,
+          source: "unknown",
+          exit_code: exitCodeFrom(event.structuredContent)
+        }
+      }, text, null, {
+        outcome: context.signal?.aborted ? "cancelled" : "unsupported",
+        reason: event.isError ? "host_error" : "shell_result_observed",
+        metadataOnly: true
+      });
       return;
+    }
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,
+      diagnostics: hostOutputFacts("pi", event.details),
       tool: {
         name: event.toolName,
         input: event.input,

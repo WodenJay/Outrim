@@ -64,11 +64,15 @@ struct Event {
     content: Content,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     execution: Option<crate::protocol::ExecutionMetadata>,
+    #[serde(default)]
+    metadata_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<crate::protocol::Diagnostics>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Content {
-    arguments: String,
+    arguments: Option<String>,
     original: Option<String>,
     r#final: Option<String>,
 }
@@ -108,10 +112,15 @@ impl Recorder {
         let instance = guard.as_mut().unwrap();
         instance.sequence += 1;
         let original_references = references(&self.home, &request.tool.input)?;
-        let arguments = instance.save(&serde_json::to_string(&request.tool.input)?, ".json")?;
+        let arguments = if request.metadata_only {
+            None
+        } else {
+            Some(instance.save(&serde_json::to_string(&request.tool.input)?, ".json")?)
+        };
         let original = request
             .original_text
             .as_deref()
+            .filter(|_| !request.metadata_only)
             .map(|text| instance.save(text, ".txt"))
             .transpose()?;
         let final_content = if request.final_text == request.original_text {
@@ -120,6 +129,7 @@ impl Recorder {
             request
                 .final_text
                 .as_deref()
+                .filter(|_| !request.metadata_only)
                 .map(|text| instance.save(text, ".txt"))
                 .transpose()?
         };
@@ -157,6 +167,8 @@ impl Recorder {
             original_path: request.original_path,
             original_references,
             execution: request.execution,
+            metadata_only: request.metadata_only,
+            diagnostics: request.diagnostics,
             content: Content {
                 arguments,
                 original,

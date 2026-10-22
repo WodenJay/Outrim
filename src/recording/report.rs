@@ -1,5 +1,10 @@
 use super::{events, settings};
-use std::{collections::BTreeMap, fmt::Write, io, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write,
+    io,
+    path::Path,
+};
 
 pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
     let mut report = format!(
@@ -12,6 +17,38 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
         home.join(".outrim").join("records").display()
     );
     let events = events(home)?;
+    let mut executed = BTreeSet::new();
+    let mut fallbacks = BTreeSet::new();
+    for (_, event) in events.iter().filter(|(_, event)| {
+        session.is_none_or(|session| event.session.as_deref() == Some(session))
+    }) {
+        if let Some(facts) = &event.diagnostics {
+            let key = serde_json::to_string(&(
+                event.host,
+                &event.session,
+                &event.tool_call_id,
+                &facts.unit_id,
+            ))?;
+            if facts.unit_id.is_some() {
+                match facts.execution_state.as_deref() {
+                    Some("executed") => {
+                        executed.insert(key);
+                    }
+                    Some("runtime_fallback") => {
+                        fallbacks.insert(key);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    writeln!(
+        report,
+        "Executed commands: {}\nRuntime fallbacks: {}\n",
+        executed.len(),
+        fallbacks.len()
+    )
+    .unwrap();
     if let Some(session) = session {
         writeln!(report, "Session: {session}").unwrap();
         let mut found = false;
@@ -74,12 +111,12 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
                 directory.join("events.jsonl").display()
             )
             .unwrap();
-            writeln!(
-                report,
-                "  Arguments: {}",
-                directory.join(&event.content.arguments).display()
-            )
-            .unwrap();
+            if let Some(path) = &event.content.arguments {
+                writeln!(report, "  Arguments: {}", directory.join(path).display()).unwrap();
+            }
+            if let Some(facts) = &event.diagnostics {
+                writeln!(report, "  Diagnostics: {}", serde_json::to_string(facts)?).unwrap();
+            }
             if let Some(path) = &event.content.original {
                 writeln!(report, "  Original: {}", directory.join(path).display()).unwrap();
             }

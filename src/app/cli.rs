@@ -10,6 +10,7 @@ pub(crate) enum Command {
     Upgrade,
     Gain(Gain),
     Bridge(Option<bool>),
+    ObserveFallback(outrim::execution::Context),
     Exec {
         no_compress: bool,
         context: Option<outrim::execution::Context>,
@@ -129,6 +130,15 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Command, String> {
                 }
             };
             Ok(Command::Gain(operation))
+        }
+        Some("observe-fallback") => {
+            let context = rest
+                .first()
+                .and_then(|arg| arg.to_str())
+                .and_then(outrim::execution::Context::decode)
+                .ok_or_else(|| "invalid execution context".to_owned())?;
+            no_extra(&rest[1..], TOP)?;
+            Ok(Command::ObserveFallback(context))
         }
         Some("exec") => {
             let usage =

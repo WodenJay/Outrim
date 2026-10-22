@@ -3,8 +3,10 @@ import {
   type AbortSignalLike,
   type BridgeChild,
   createBridge,
+  hostOutputFacts,
   inputReferencesOriginals,
   processingFacts,
+  recoveryAttribution,
   type SpawnProcess,
   sourceFor,
 } from "./shared";
@@ -187,6 +189,8 @@ export async function registerOpenCodePlugin(
     options.executable ?? BRIDGE_EXECUTABLE,
     options.spawnProcess ?? defaultSpawn,
   );
+  const originalInputs = new Map<string, unknown>();
+  const callKey = (session: string, call: string) => JSON.stringify([session, call]);
   const activeCallsBySession = new Map<string, Set<AbortController>>();
   // OpenCode v2 Code Mode forwards the wrapper call ID to nested tool hooks.
   const activeCodeModeCalls = new Map<string, Map<string, number>>();
@@ -214,6 +218,11 @@ export async function registerOpenCodePlugin(
 
   async function handleBefore(event: ToolHookBeforeEvent): Promise<void> {
     if (closed) return;
+    const originalInput = record(event.input);
+    originalInputs.set(
+      callKey(event.sessionID, event.id),
+      originalInput ? { ...originalInput } : event.input,
+    );
     if (event.tool === "execute") {
       let sessionCalls = activeCodeModeCalls.get(event.sessionID);
       if (!sessionCalls) {
@@ -231,8 +240,17 @@ export async function registerOpenCodePlugin(
       dialect === "unknown" ||
       typeof input?.command !== "string" ||
       activeCodeModeCalls.get(event.sessionID)?.has(event.id)
-    )
+    ) {
+      bridge.recordWrapping(
+        event.sessionID,
+        event.id,
+        event.tool,
+        "not_attempted",
+        dialect === "unknown" ? "unknown_dialect" : "source_not_applicable",
+        dialect,
+      );
       return;
+    }
     const original = input.command;
     const controller = new AbortController();
     let calls = activeCallsBySession.get(event.sessionID);
@@ -255,8 +273,19 @@ export async function registerOpenCodePlugin(
         input.command !== original ||
         !command ||
         command === original
-      )
+      ) {
+        if (command)
+          bridge.recordWrapping(
+            event.sessionID,
+            event.id,
+            event.tool,
+            "withdrawn",
+            controller.signal.aborted ? "cancelled" : "changed_input",
+            dialect,
+          );
         return;
+      }
+      bridge.recordWrapping(event.sessionID, event.id, event.tool, "adopted", null, dialect);
       rewrites.set(command, { original, dialect, session: event.sessionID, call: event.id });
       input.command = command;
     } finally {
@@ -281,13 +310,51 @@ export async function registerOpenCodePlugin(
       if (rewrite.session === event.sessionID && rewrite.call === event.id)
         rewrites.delete(command);
     }
-    if (closed || isShell(event.tool)) return;
+    if (closed) return;
+    const key = callKey(event.sessionID, event.id);
+    const recoveryInput = originalInputs.get(key) ?? event.input;
+    originalInputs.delete(key);
+    const recoverySelection = event.result ? textSelection(event.result) : undefined;
+    const attribution = recoveryAttribution(event.tool, recoveryInput);
+    if (
+      attribution &&
+      event.status === "completed" &&
+      recoverySelection &&
+      !isCodeModeCall &&
+      (exitCodeFrom(event.result?.metadata) ?? 0) === 0
+    ) {
+      bridge.recordRecovery(event.sessionID, event.id, recoverySelection.texts, attribution);
+    }
+    if (isShell(event.tool)) {
+      bridge.recordObservation(
+        {
+          session: event.sessionID,
+          toolCallId: event.id,
+          diagnostics: hostOutputFacts("opencode", event.result?.metadata),
+          tool: {
+            name: event.tool,
+            input: null,
+            source: "unknown",
+            exit_code: exitCodeFrom(event.result?.metadata),
+          },
+        },
+        recoverySelection?.texts.join("\n") ?? null,
+        null,
+        {
+          outcome: event.status === "cancelled" ? "cancelled" : "unsupported",
+          reason: event.status === "completed" ? "shell_result_observed" : "host_error",
+          metadataOnly: true,
+        },
+      );
+      return;
+    }
     const input = record(event.input);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
     const observation = {
       session: event.sessionID ?? null,
       toolCallId: event.id ?? null,
+      diagnostics: hostOutputFacts("opencode", result?.metadata),
       tool: {
         name: event.tool,
         input: event.input ?? null,
@@ -402,7 +469,29 @@ export async function registerOpenCodePlugin(
           const rewrite = rewrites.get(event.command);
           if (!rewrite) return;
           rewrites.delete(event.command);
-          if (shellDialect(event.shell) !== rewrite.dialect) event.command = rewrite.original;
+          const actual = shellDialect(event.shell);
+          if (actual !== rewrite.dialect) {
+            event.command = rewrite.original;
+            bridge.recordWrapping(
+              rewrite.session,
+              rewrite.call,
+              "shell",
+              "withdrawn",
+              "dialect_mismatch",
+              rewrite.dialect,
+              actual,
+            );
+          } else {
+            bridge.recordWrapping(
+              rewrite.session,
+              rewrite.call,
+              "shell",
+              "adopted",
+              null,
+              rewrite.dialect,
+              actual,
+            );
+          }
         }),
       );
     }
@@ -441,6 +530,7 @@ export async function registerOpenCodePlugin(
     bridge.close();
     dialects.clear();
     rewrites.clear();
+    originalInputs.clear();
     for (const registration of registrations.reverse()) await registration.dispose();
     await eventLoop;
   };

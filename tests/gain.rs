@@ -102,6 +102,50 @@ fn log() -> String {
     )
 }
 
+#[test]
+fn recovery_cost_is_independent_deduplicated_and_can_exceed_savings() {
+    for recording in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        if recording {
+            assert!(
+                gain_command(home.path(), &["record", "on"])
+                    .status
+                    .success()
+            );
+        }
+        let mut bridge = Bridge::start(home.path());
+        let delivery = json!({
+            "type": "record_delivery", "version": 2, "id": "delivery",
+            "disposition": "compressed", "applied_rule": "log_tail",
+            "before_chars": 1000, "after_chars": 200
+        });
+        assert_eq!(bridge.exchange(&delivery)["acknowledged"], true);
+        let recovery = json!({
+            "type": "record_recovery", "version": 2, "id": "transport-1",
+            "event_id": "pi/session/call-1/recovery", "host": "pi",
+            "session": "session", "tool_call_id": "call-1",
+            "characters": 600, "attribution": "confirmed"
+        });
+        assert_eq!(bridge.exchange(&recovery)["acknowledged"], true);
+        let mut retry = recovery.clone();
+        retry["id"] = json!("transport-2");
+        assert_eq!(bridge.exchange(&retry)["acknowledged"], true);
+        let mut repeated = recovery;
+        repeated["event_id"] = json!("pi/session/call-2/recovery");
+        repeated["tool_call_id"] = json!("call-2");
+        assert_eq!(bridge.exchange(&repeated)["acknowledged"], true);
+        bridge.stop();
+        let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
+        assert!(
+            report.contains("Compression savings: 800 chars"),
+            "{report}"
+        );
+        assert!(report.contains("Recovery cost: 1,200 chars"), "{report}");
+        assert!(report.contains("Net savings: -400 chars"), "{report}");
+        assert_eq!(home.path().join(".outrim/records").exists(), recording);
+    }
+}
+
 fn tool_request(id: &str, text: &str) -> Value {
     json!({
         "version": 2,

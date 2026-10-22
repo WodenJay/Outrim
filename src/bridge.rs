@@ -34,9 +34,20 @@ pub fn run(
         };
 
         match message {
+            Message::RecordRecovery(recovery) => {
+                let response = DeliveryAcknowledgement {
+                    version: VERSION,
+                    id: recovery.id.clone(),
+                    acknowledged: processor.record_recovery(recovery),
+                };
+                write_response(&mut output, &response)?;
+            }
             Message::Rewrite(request) => {
                 let executable = std::env::current_exe()?;
-                write_response(&mut output, &crate::rewrite::rewrite(request, &executable))?;
+                write_response(
+                    &mut output,
+                    &crate::rewrite::rewrite(request, &executable, processor),
+                )?;
             }
             Message::Process(request) => {
                 let response = processor.process(request);
@@ -46,7 +57,7 @@ pub fn run(
                 let response = DeliveryAcknowledgement {
                     version: VERSION,
                     id: observation.id.clone(),
-                    acknowledged: processor.record_observation(observation),
+                    acknowledged: processor.record_observation(*observation),
                 };
                 write_response(&mut output, &response)?;
             }
@@ -73,7 +84,8 @@ enum Message {
     Rewrite(crate::rewrite::Request),
     Process(Request),
     RecordDelivery(RecordDeliveryRequest),
-    RecordObservation(RecordObservationRequest),
+    RecordRecovery(crate::protocol::RecoveryRequest),
+    RecordObservation(Box<RecordObservationRequest>),
 }
 
 struct ParseFailure {
@@ -107,6 +119,13 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
             }),
         Some(Value::String(kind)) if kind == "record_observation" => serde_json::from_value(value)
             .map(Message::RecordObservation)
+            .map_err(|error| ParseFailure {
+                id,
+                error: ProtocolError::InvalidRequest,
+                details: error.to_string(),
+            }),
+        Some(Value::String(kind)) if kind == "record_recovery" => serde_json::from_value(value)
+            .map(Message::RecordRecovery)
             .map_err(|error| ParseFailure {
                 id,
                 error: ProtocolError::InvalidRequest,

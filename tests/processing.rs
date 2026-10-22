@@ -335,6 +335,31 @@ fn unknown_host_notice_text_does_not_disable_independent_json_compression() {
 }
 
 #[test]
+fn rejection_categories_do_not_change_output_or_rule_eligibility() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    for (text, reason) in [
+        ("{broken", "parse_failed"),
+        ("{} extra", "extra_content"),
+        ("plain prose", "source_not_applicable"),
+    ] {
+        let response = processor.process(request(text, Source::Unknown));
+        assert_eq!(response.text, text);
+        assert_eq!(response.reason.as_deref(), Some(reason));
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    let response = processor.process(request("{}", Source::Unknown));
+    assert_eq!(response.disposition, Disposition::NotShorter);
+    assert!(
+        response
+            .candidates
+            .iter()
+            .all(|candidate| candidate.reason.starts_with("not_shorter"))
+    );
+}
+
+#[test]
 fn path_lists_group_contiguous_prefixes_and_save_the_original() {
     let home = tempfile::tempdir().unwrap();
     let prefix = format!("workspace/{}/", "long-directory/".repeat(24));

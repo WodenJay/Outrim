@@ -36,6 +36,42 @@ impl Processor {
         }
     }
 
+    pub(crate) fn record_recovery(&self, recovery: protocol::RecoveryRequest) -> bool {
+        if self.gain.record_recovery(&recovery).is_err() {
+            return false;
+        }
+        self.recorder
+            .record(protocol::RecordObservationRequest {
+                message_type: protocol::ObservationMessageType::RecordObservation,
+                version: VERSION,
+                id: recovery.id.clone(),
+                host: recovery.host,
+                session: Some(recovery.session.clone()),
+                tool_call_id: Some(recovery.tool_call_id.clone()),
+                tool: protocol::Tool {
+                    name: "recovery".into(),
+                    input: serde_json::json!(recovery.original_paths),
+                    source: Source::Unknown,
+                    exit_code: None,
+                },
+                original_text: None,
+                final_text: None,
+                outcome: protocol::ObservationOutcome::RecoverySkipped,
+                applied_rule: None,
+                original_path: None,
+                candidates: vec![],
+                reason: None,
+                parts: vec![],
+                execution: None,
+                metadata_only: true,
+                diagnostics: Some(protocol::Diagnostics {
+                    recovery: Some(recovery),
+                    ..Default::default()
+                }),
+            })
+            .is_ok()
+    }
+
     pub(crate) fn record_delivery(&self, delivery: protocol::RecordDeliveryRequest) -> bool {
         self.gain.record(delivery).is_ok()
     }
@@ -92,10 +128,29 @@ impl Processor {
             } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
                 json_candidates
             } else {
+                response.reason = Some(
+                    if matches!(request.tool.source, Source::Search) {
+                        "parse_failed"
+                    } else {
+                        "source_not_applicable"
+                    }
+                    .into(),
+                );
                 return response;
             };
+        let json_rejection = candidates
+            .iter()
+            .any(|(rule, _)| *rule == "json_compact")
+            .then(|| json::rejection(&response.text))
+            .flatten();
         self.originals
             .compress(request.host, &request.session, candidates, &mut response);
+        if let Some(reason) = json_rejection {
+            response.reason = Some(reason.into());
+            for candidate in &mut response.candidates {
+                candidate.reason = reason.into();
+            }
+        }
         response
     }
 }

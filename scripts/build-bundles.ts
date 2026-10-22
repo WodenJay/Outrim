@@ -4,6 +4,8 @@
  * Outrim embeds these files with `include_str!`, so they must be reproducible:
  * `bun run build` followed by `git diff --exit-code assets` has to stay clean.
  */
+
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 
 const entries = [
@@ -25,7 +27,9 @@ for (const { entrypoint, outfile } of entries) {
     for (const log of result.logs) console.error(log);
     continue;
   }
-  await Bun.write(join(root, outfile), await output.text());
+  const bundled = await output.text();
+  const identity = createHash("sha256").update(bundled).digest("hex");
+  await Bun.write(join(root, outfile), bundled.replaceAll("__OUTRIM_ADAPTER_BUILD__", identity));
   console.log(`${outfile} <- ${entrypoint}`);
 }
 

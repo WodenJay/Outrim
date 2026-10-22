@@ -3,9 +3,9 @@
 import { spawn as nodeSpawn } from "child_process";
 
 // adapters/shared.ts
-import { readFileSync } from "fs";
+import { readFileSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join, relative } from "path";
 var TEST_COMMANDS = [
   /^\s*cargo\s+test(?=\s|$)/i,
   /^\s*(?:bun|npm|pnpm|yarn)\s+(?:test|run\s+test)(?=\s|$)/i,
@@ -116,6 +116,46 @@ function sourceFor(host, toolName, input) {
     return "runtime_log";
   return "unknown";
 }
+function hostOutputFacts(host, value) {
+  const details = value && typeof value === "object" ? value : {};
+  const raw = host === "pi" ? details.truncation : details;
+  const truncation = raw && typeof raw === "object" ? raw : {};
+  const facts = {};
+  if (typeof truncation.truncated === "boolean")
+    facts.truncated = truncation.truncated;
+  if (host === "pi") {
+    for (const name of [
+      "totalLines",
+      "totalBytes",
+      "outputLines",
+      "outputBytes",
+      "maxLines",
+      "maxBytes"
+    ]) {
+      const number = truncation[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number >= 0)
+        facts[name] = number;
+    }
+    if (truncation.truncatedBy === "bytes" || truncation.truncatedBy === "lines")
+      facts.truncatedBy = truncation.truncatedBy;
+    for (const name of ["lastLinePartial", "firstLineExceedsLimit"]) {
+      if (typeof truncation[name] === "boolean")
+        facts[name] = truncation[name];
+    }
+    for (const name of ["matchLimitReached", "resultLimitReached", "entryLimitReached"]) {
+      const number = details[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number > 0)
+        facts[name] = number;
+    }
+    if (typeof details.linesTruncated === "boolean")
+      facts.linesTruncated = details.linesTruncated;
+  }
+  const limited = facts.truncated === true || facts.linesTruncated === true || ["matchLimitReached", "resultLimitReached", "entryLimitReached"].some((name) => (name in facts));
+  return {
+    completeness: limited ? "host_truncated" : facts.truncated === false ? "complete" : "unknown",
+    host_truncation: Object.keys(facts).length ? facts : null
+  };
+}
 function distinct(values) {
   return [...new Set(values.flatMap((value) => value === null ? [] : [value]))];
 }
@@ -154,6 +194,61 @@ function inputReferencesOriginals(value) {
     return Object.values(value).some(inputReferencesOriginals);
   }
   return false;
+}
+function recoveryAttribution(tool, input) {
+  if (!inputReferencesOriginals(input))
+    return null;
+  const unattributed = { attribution: "unattributed", original_paths: [] };
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return unattributed;
+  const args = input;
+  let paths;
+  if (tool === "read") {
+    const path = args.path ?? args.filePath ?? args.file_path;
+    if (typeof path !== "string")
+      return unattributed;
+    paths = [path];
+  } else if (["bash", "powershell", "shell"].includes(tool) && typeof args.command === "string") {
+    const command = args.command;
+    if (/[\\`$\r\n\0|&;<>()*?{}[\]]/.test(command.replaceAll("\\", "/")))
+      return unattributed;
+    const words = [];
+    const pattern = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"\\]+))(?=\s|$)/gy;
+    let end = 0;
+    for (const match of command.matchAll(pattern)) {
+      if (match.index !== end)
+        return unattributed;
+      words.push(match[1] ?? match[2] ?? match[3] ?? "");
+      end = match.index + match[0].length;
+    }
+    if (command.slice(end).trim())
+      return unattributed;
+    const program = words.shift();
+    if (program !== "cat" && program !== "head")
+      return unattributed;
+    if (program === "head" && words[0] === "-n" && /^\d+$/.test(words[1] ?? ""))
+      words.splice(0, 2);
+    if (program === "head" && /^-\d+$/.test(words[0] ?? ""))
+      words.shift();
+    if (words[0] === "--")
+      words.shift();
+    if (words.some((word) => word.startsWith("-")))
+      return unattributed;
+    paths = words;
+  } else
+    return unattributed;
+  try {
+    const root = realpathSync(join(homedir(), ".outrim", "outputs"));
+    return paths.length > 0 && paths.every((path) => {
+      if (!isAbsolute(path))
+        return false;
+      const resolved = realpathSync(path);
+      const within = relative(root, resolved);
+      return within !== "" && !within.startsWith("..") && !isAbsolute(within) && statSync(resolved).isFile();
+    }) ? { attribution: "confirmed", original_paths: [...new Set(paths)] } : unattributed;
+  } catch {
+    return unattributed;
+  }
 }
 function createBridge(host, executable, spawnProcess) {
   let recording = false;
@@ -296,7 +391,9 @@ function createBridge(host, executable, spawnProcess) {
       dialect,
       command
     }, signal, 5000);
-    return typeof response?.command === "string" ? response.command : undefined;
+    const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    recordWrapping(session, toolCallId, "shell", rewritten ? "planned" : "rejected", response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"), dialect);
+    return rewritten;
   }
   function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
@@ -348,9 +445,19 @@ function createBridge(host, executable, spawnProcess) {
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
-      tool: context.tool,
-      original_text: original,
-      final_text: final,
+      tool: facts.metadataOnly ? { ...context.tool, input: null } : context.tool,
+      original_text: facts.metadataOnly ? null : original,
+      final_text: facts.metadataOnly ? null : final,
+      metadata_only: facts.metadataOnly ?? false,
+      diagnostics: {
+        adapter_build: "4ac0f6f4e45cba60022b167e06d2f65e6c8c63293cb27a708ea0b8a3863dc2f7",
+        output_origin: "host_result",
+        completeness: "unknown",
+        observed_chars: original === null ? null : Array.from(original).length,
+        observed_bytes: original === null ? null : Buffer.byteLength(original, "utf8"),
+        ...context.diagnostics,
+        ...facts.diagnostics
+      },
       outcome: facts.outcome,
       applied_rule: facts.appliedRule ?? null,
       original_path: facts.originalPath ?? null,
@@ -375,6 +482,35 @@ function createBridge(host, executable, spawnProcess) {
       fail(currentChild);
     }
   }
+  function recordRecovery(session, toolCallId, texts, evidence) {
+    exchange({
+      type: "record_recovery",
+      host,
+      session,
+      tool_call_id: toolCallId,
+      event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
+      characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
+      ...evidence
+    });
+  }
+  function recordWrapping(session, call, tool, state, reason, dialect, actual) {
+    recordObservation({
+      session,
+      toolCallId: call,
+      tool: { name: tool, input: null, source: "unknown", exit_code: null }
+    }, null, null, {
+      outcome: "unsupported",
+      metadataOnly: true,
+      reason,
+      diagnostics: {
+        wrapping: state,
+        attempt_id: JSON.stringify([host, session, call]),
+        requested_dialect: dialect,
+        actual_dialect: actual ?? null,
+        output_origin: null
+      }
+    });
+  }
   function close() {
     if (closed)
       return;
@@ -393,7 +529,15 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { rewrite, process, recordDelivery, recordObservation, close };
+  return {
+    rewrite,
+    process,
+    recordDelivery,
+    recordObservation,
+    recordRecovery,
+    recordWrapping,
+    close
+  };
 }
 
 // adapters/opencode.ts
@@ -461,6 +605,8 @@ function sessionIdFrom(event) {
 }
 async function registerOpenCodePlugin(context, options = {}) {
   const bridge = createBridge("opencode", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
+  const originalInputs = new Map;
+  const callKey = (session, call) => JSON.stringify([session, call]);
   const activeCallsBySession = new Map;
   const activeCodeModeCalls = new Map;
   const dialects = new Map;
@@ -480,6 +626,8 @@ async function registerOpenCodePlugin(context, options = {}) {
   async function handleBefore(event) {
     if (closed)
       return;
+    const originalInput = record(event.input);
+    originalInputs.set(callKey(event.sessionID, event.id), originalInput ? { ...originalInput } : event.input);
     if (event.tool === "execute") {
       let sessionCalls = activeCodeModeCalls.get(event.sessionID);
       if (!sessionCalls) {
@@ -491,8 +639,10 @@ async function registerOpenCodePlugin(context, options = {}) {
     }
     const input = record(event.input);
     const dialect = dialects.get(event.sessionID)?.get(event.agent) ?? "unknown";
-    if (event.tool !== "shell" || !context.shell || dialect === "unknown" || typeof input?.command !== "string" || activeCodeModeCalls.get(event.sessionID)?.has(event.id))
+    if (event.tool !== "shell" || !context.shell || dialect === "unknown" || typeof input?.command !== "string" || activeCodeModeCalls.get(event.sessionID)?.has(event.id)) {
+      bridge.recordWrapping(event.sessionID, event.id, event.tool, "not_attempted", dialect === "unknown" ? "unknown_dialect" : "source_not_applicable", dialect);
       return;
+    }
     const original = input.command;
     const controller = new AbortController;
     let calls = activeCallsBySession.get(event.sessionID);
@@ -503,8 +653,12 @@ async function registerOpenCodePlugin(context, options = {}) {
     calls.add(controller);
     try {
       const command = await bridge.rewrite(event.sessionID, event.id, original, dialect, controller.signal);
-      if (closed || controller.signal.aborted || input.command !== original || !command || command === original)
+      if (closed || controller.signal.aborted || input.command !== original || !command || command === original) {
+        if (command)
+          bridge.recordWrapping(event.sessionID, event.id, event.tool, "withdrawn", controller.signal.aborted ? "cancelled" : "changed_input", dialect);
         return;
+      }
+      bridge.recordWrapping(event.sessionID, event.id, event.tool, "adopted", null, dialect);
       rewrites.set(command, { original, dialect, session: event.sessionID, call: event.id });
       input.command = command;
     } finally {
@@ -530,14 +684,42 @@ async function registerOpenCodePlugin(context, options = {}) {
       if (rewrite.session === event.sessionID && rewrite.call === event.id)
         rewrites.delete(command);
     }
-    if (closed || isShell2(event.tool))
+    if (closed)
       return;
+    const key = callKey(event.sessionID, event.id);
+    const recoveryInput = originalInputs.get(key) ?? event.input;
+    originalInputs.delete(key);
+    const recoverySelection = event.result ? textSelection(event.result) : undefined;
+    const attribution = recoveryAttribution(event.tool, recoveryInput);
+    if (attribution && event.status === "completed" && recoverySelection && !isCodeModeCall && (exitCodeFrom(event.result?.metadata) ?? 0) === 0) {
+      bridge.recordRecovery(event.sessionID, event.id, recoverySelection.texts, attribution);
+    }
+    if (isShell2(event.tool)) {
+      bridge.recordObservation({
+        session: event.sessionID,
+        toolCallId: event.id,
+        diagnostics: hostOutputFacts("opencode", event.result?.metadata),
+        tool: {
+          name: event.tool,
+          input: null,
+          source: "unknown",
+          exit_code: exitCodeFrom(event.result?.metadata)
+        }
+      }, recoverySelection?.texts.join(`
+`) ?? null, null, {
+        outcome: event.status === "cancelled" ? "cancelled" : "unsupported",
+        reason: event.status === "completed" ? "shell_result_observed" : "host_error",
+        metadataOnly: true
+      });
+      return;
+    }
     const input = record(event.input);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
     const observation = {
       session: event.sessionID ?? null,
       toolCallId: event.id ?? null,
+      diagnostics: hostOutputFacts("opencode", result?.metadata),
       tool: {
         name: event.tool,
         input: event.input ?? null,
@@ -621,8 +803,13 @@ async function registerOpenCodePlugin(context, options = {}) {
         if (!rewrite)
           return;
         rewrites.delete(event.command);
-        if (shellDialect(event.shell) !== rewrite.dialect)
+        const actual = shellDialect(event.shell);
+        if (actual !== rewrite.dialect) {
           event.command = rewrite.original;
+          bridge.recordWrapping(rewrite.session, rewrite.call, "shell", "withdrawn", "dialect_mismatch", rewrite.dialect, actual);
+        } else {
+          bridge.recordWrapping(rewrite.session, rewrite.call, "shell", "adopted", null, rewrite.dialect, actual);
+        }
       }));
     }
     registrations.push(await context.tool.hook("execute.before", handleBefore));
@@ -661,6 +848,7 @@ async function registerOpenCodePlugin(context, options = {}) {
     bridge.close();
     dialects.clear();
     rewrites.clear();
+    originalInputs.clear();
     for (const registration of registrations.reverse())
       await registration.dispose();
     await eventLoop;
