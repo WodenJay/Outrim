@@ -1,7 +1,8 @@
 use super::search_hits::{is_search_record, valid_search_path};
 
 pub(crate) fn group_prefixes(text: &str) -> Option<String> {
-    let records: Vec<_> = text.split_inclusive('\n').collect();
+    let (body, footer) = super::search_footer::split(text, " results limit reached", false);
+    let records: Vec<_> = body.split_inclusive('\n').collect();
     let path_count = records
         .iter()
         .rposition(|record| !matches!(*record, "\n" | "\r\n"))
@@ -65,5 +66,6 @@ pub(crate) fn group_prefixes(text: &str) -> Option<String> {
     for raw in &records[path_count..] {
         output.push_str(raw);
     }
+    output.push_str(footer);
     grouped.then_some(output)
 }

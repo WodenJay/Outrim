@@ -6,6 +6,7 @@ mod json;
 mod log_tail;
 mod path_list;
 mod protection;
+mod search_footer;
 mod search_hits;
 
 use crate::{

@@ -26,6 +26,313 @@ fn log() -> String {
 }
 
 #[test]
+fn search_host_match_notice_preserves_interleaved_order_and_original() {
+    let home = tempfile::tempdir().unwrap();
+    let file = format!("workspace/{}/a.rs", "long-directory/".repeat(24));
+    let tail = "\n[250 matches limit reached. Use limit=500 for more, or refine pattern]";
+    let text =
+        format!("{file}:1:03:first\n{file}:1:03:first\nother.rs:2:middle\n{file}:3:last\n{tail}");
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.applied_rule.as_deref(), Some("search_hit_groups"));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+    assert_eq!(
+        response.text,
+        format!(
+            "{file}:\n  1:03:first\n  1:03:first\nother.rs:\n  2:middle\n{file}:\n  3:last\n{tail}\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn path_lists_preserve_host_results_notices_and_original() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
+    for notice in [
+        "12 results limit reached",
+        "12 results limit reached. Use limit=24 for more, or refine pattern",
+        "50.0KB limit reached",
+        "12 results limit reached. 50.0KB limit reached",
+        "12 results limit reached. Use limit=24 for more, or refine pattern. 50.0KB limit reached",
+    ] {
+        let tail = format!("\n[{notice}]\n");
+        let text = format!("{prefix}a.rs\n{prefix}b.rs\n{prefix}b.rs\n{tail}");
+        let response = processor.process(request(&text, Source::Search));
+        assert_eq!(
+            response.applied_rule.as_deref(),
+            Some("path_prefix_groups"),
+            "{notice}"
+        );
+        let original_path = response.original_path.unwrap();
+        assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+        assert_eq!(
+            response.text,
+            format!(
+                "{prefix}\n  a.rs\n  b.rs\n  b.rs\n{tail}[outrim]: The full output is available at {original_path}"
+            )
+        );
+    }
+}
+
+#[test]
+fn search_host_notices_preserve_all_supported_combinations_and_endings() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let file = format!("workspace/{}/a.rs", "long-directory/".repeat(24));
+    for notice in [
+        "2 matches limit reached. Use limit=4 for more, or refine pattern",
+        "50.0KB limit reached",
+        "Some lines truncated to 500 chars. Use read tool to see full lines",
+        "2 matches limit reached. Use limit=4 for more, or refine pattern. 50.0KB limit reached",
+        "2 matches limit reached. Use limit=4 for more, or refine pattern. Some lines truncated to 500 chars. Use read tool to see full lines",
+        "50.0KB limit reached. Some lines truncated to 500 chars. Use read tool to see full lines",
+        "2 matches limit reached. Use limit=4 for more, or refine pattern. 50.0KB limit reached. Some lines truncated to 500 chars. Use read tool to see full lines",
+    ] {
+        for (first, second, blank, ending) in [
+            ("\n", "\n", "\n", ""),
+            ("\r\n", "\r\n", "\r\n", "\r\n\r\n"),
+            ("\r\n", "\n", "\r\n", "\n\r\n\n"),
+        ] {
+            let tail = format!("{blank}[{notice}]{ending}");
+            let text = format!("{file}-0001-context{first}{file}:2:03:[{notice}]{second}{tail}");
+            let response = processor.process(request(&text, Source::Search));
+            assert_eq!(
+                response.applied_rule.as_deref(),
+                Some("search_hit_groups"),
+                "{notice}"
+            );
+            let original_path = response.original_path.unwrap();
+            assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+            let separator = if ending.is_empty() { "\n" } else { "" };
+            assert_eq!(
+                response.text,
+                format!(
+                    "{file}:{first}  0001-context{first}  2:03:[{notice}]{second}{tail}{separator}[outrim]: The full output is available at {original_path}"
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn host_notices_reject_unverified_boundaries_components_and_bodies() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
+    for body in [
+        format!("{prefix}a.rs:1:hit\n{prefix}a.rs:2:hit\n"),
+        format!("{prefix}a.rs\n{prefix}b.rs\n"),
+    ] {
+        for tail in [
+            "[50.0KB limit reached]",
+            "\n\n[50.0KB limit reached]",
+            " \n[50.0KB limit reached]",
+            "\t\n[50.0KB limit reached]",
+            "\n[50.0KB limit reached]\nother.rs",
+            "\n[50.0KB limit reached]\n\n[50.0KB limit reached]",
+            "\n[50.0KB limit reached]\n \n",
+            "\n[50.0KB limit reached. 50.0KB limit reached]",
+            "\n[50.0KB limit reached. unknown]",
+            "\n[50.0KB limit reached. 2 results limit reached]",
+            "\n[Some lines truncated to 500 chars. Use read tool to see full lines. 50.0KB limit reached]",
+            "\n[2 matches limit reached. Use limit=4 for more, or refine pattern. 2 results limit reached]",
+            "\n[2 results limit reached. Some lines truncated to 500 chars. Use read tool to see full lines]",
+            "\n[50.0KB limit reached.]",
+            "\n[50.0KB limit reached]extra",
+            "[1 matches limit reached.]\n\n[50.0KB limit reached]",
+            "invalid record\n\n[50.0KB limit reached]",
+            "src/a.rs-1-context:2:ambiguous\n\n[50.0KB limit reached]",
+        ] {
+            let text = format!("{body}{tail}");
+            let response = processor.process(request(&text, Source::Search));
+            assert_eq!(response.text, text, "{tail:?}");
+            assert!(response.original_path.is_none());
+            assert!(response.candidates.is_empty(), "{tail:?}");
+        }
+    }
+}
+
+#[test]
+fn host_count_notices_require_generated_positive_decimal_pairs() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
+    for (kind, body) in [
+        (
+            "matches",
+            format!("{prefix}a.rs:1:hit\n{prefix}a.rs:2:hit\n"),
+        ),
+        ("results", format!("{prefix}a.rs\n{prefix}b.rs\n")),
+    ] {
+        for (count, more) in [
+            ("0", "0"),
+            ("01", "2"),
+            ("1", "02"),
+            ("-1", "-2"),
+            ("１", "２"),
+            ("1.0", "2"),
+            ("1", "3"),
+            ("1", "0"),
+            ("", "2"),
+            ("18446744073709551615", "36893488147419103230"),
+            ("99999999999999999999999999999999999999999999999999", "2"),
+        ] {
+            let text = format!(
+                "{body}\n[{count} {kind} limit reached. Use limit={more} for more, or refine pattern]"
+            );
+            let response = processor.process(request(&text, Source::Search));
+            assert_eq!(response.text, text);
+            assert!(response.candidates.is_empty(), "{count}/{more}");
+            assert!(response.original_path.is_none());
+        }
+    }
+}
+
+#[test]
+fn host_footer_paths_preserve_mixed_endings_and_notice_like_literals() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
+    for (first, second, tail) in [
+        ("\n", "\n", "\n[50.0KB limit reached]"),
+        ("\r\n", "\r\n", "\r\n[50.0KB limit reached]\r\n\r\n"),
+        ("\r\n", "\n", "\r\n[50.0KB limit reached]\n\r\n"),
+    ] {
+        let text = format!("{prefix}a.rs{first}{prefix}b.rs{second}{tail}");
+        let response = processor.process(request(&text, Source::Search));
+        assert_eq!(response.applied_rule.as_deref(), Some("path_prefix_groups"));
+        let original_path = response.original_path.unwrap();
+        assert_eq!(fs::read_to_string(&original_path).unwrap(), text);
+        let separator = if tail.ends_with('\n') { "" } else { "\n" };
+        assert_eq!(
+            response.text,
+            format!(
+                "{prefix}{first}  a.rs{first}  b.rs{second}{tail}{separator}[outrim]: The full output is available at {original_path}"
+            )
+        );
+    }
+    // Without the verified blank boundary this whitespace-free name is a path.
+    let text = format!("{prefix}a.rs\n{prefix}b.rs\n[50.0KB-limit-reached]\n");
+    let response = processor.process(request(&text, Source::Search));
+    let original_path = response.original_path.unwrap();
+    assert_eq!(
+        response.text,
+        format!(
+            "{prefix}\n  a.rs\n  b.rs\n[50.0KB-limit-reached]\n[outrim]: The full output is available at {original_path}"
+        )
+    );
+}
+
+#[test]
+fn host_footers_keep_strict_final_unicode_savings_with_real_recovery_paths() {
+    let home = tempfile::Builder::new()
+        .prefix("outrim-恢复-🦀-")
+        .tempdir()
+        .unwrap();
+    let processor = Processor::new(home.path());
+    let tail = "\n[50.0KB limit reached]";
+    let probe_body = format!("{0}/a.rs\n{0}/b.rs\n{tail}", "long-directory".repeat(40));
+    let probe = processor.process(request(&probe_body, Source::Search));
+    let hint_length = format!(
+        "\n[outrim]: The full output is available at {}",
+        probe.original_path.unwrap()
+    )
+    .chars()
+    .count();
+    for hits in [false, true] {
+        for (offset, expected) in [
+            (-1, Disposition::NotShorter),
+            (0, Disposition::NotShorter),
+            (1, Disposition::Compressed),
+        ] {
+            // Two records save the repeated path/prefix minus header and indent costs.
+            let repeated_length = hint_length + if hits { 4 } else { 5 };
+            let repeated_length = repeated_length.checked_add_signed(offset).unwrap();
+            let repeated = format!("{}/", "🦀".repeat(repeated_length - 1));
+            let text = if hits {
+                format!("{repeated}:1:hit\n{repeated}:2:hit\n{tail}")
+            } else {
+                format!("{repeated}a.rs\n{repeated}b.rs\n{tail}")
+            };
+            let response = processor.process(request(&text, Source::Search));
+            assert_eq!(
+                response.disposition, expected,
+                "hits={hits} offset={offset}"
+            );
+            assert_eq!(
+                response.candidates[0].final_chars.unwrap() as i64,
+                text.chars().count() as i64 - offset as i64
+            );
+            if expected == Disposition::Compressed {
+                assert_eq!(response.text.chars().count() + 1, text.chars().count());
+                assert_eq!(
+                    fs::read_to_string(response.original_path.unwrap()).unwrap(),
+                    text
+                );
+            } else {
+                assert_eq!(response.text, text);
+                assert!(response.original_path.is_none());
+                assert!(response.applied_rule.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn host_footers_do_not_bypass_source_configuration_or_storage_guards() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
+    let hits = format!("{prefix}a.rs:1:hit\n{prefix}a.rs:2:hit\n\n[50.0KB limit reached]");
+    let paths = format!("{prefix}a.rs\n{prefix}b.rs\n\n[50.0KB limit reached]");
+    for text in [&hits, &paths] {
+        for source in [Source::Unknown, Source::SourceCode, Source::Configuration] {
+            let response = processor.process(request(text, source));
+            assert_eq!(response.text, *text);
+            assert!(response.candidates.is_empty());
+        }
+        let mut input = request(text, Source::Search);
+        input.tool.input = json!({"path": "config/settings.json"});
+        let response = processor.process(input);
+        // Only validated hit candidates retain the existing query-scope exemption.
+        assert_eq!(
+            response.disposition,
+            if text == &hits {
+                Disposition::Compressed
+            } else {
+                Disposition::Protected
+            }
+        );
+    }
+    let blocked = tempfile::tempdir().unwrap();
+    fs::write(blocked.path().join(".outrim"), "blocked").unwrap();
+    for text in [&hits, &paths] {
+        let response = Processor::new(blocked.path()).process(request(text, Source::Search));
+        assert_eq!(response.disposition, Disposition::FailedOpen);
+        assert_eq!(response.text, *text);
+        assert!(response.original_path.is_none());
+        assert_eq!(response.candidates[0].reason, "storage_failed");
+    }
+}
+
+#[test]
+fn unknown_host_notice_text_does_not_disable_independent_json_compression() {
+    let home = tempfile::tempdir().unwrap();
+    let text = serde_json::to_string_pretty(
+        &json!({"notice": "[unknown limit reached]", "records": vec!["value"; 200]}),
+    )
+    .unwrap();
+    let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert!(response.applied_rule.unwrap().starts_with("json_"));
+    assert_eq!(
+        fs::read_to_string(response.original_path.unwrap()).unwrap(),
+        text
+    );
+}
+
+#[test]
 fn path_lists_group_contiguous_prefixes_and_save_the_original() {
     let home = tempfile::tempdir().unwrap();
     let prefix = format!("workspace/{}/", "long-directory/".repeat(24));
