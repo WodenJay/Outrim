@@ -20,16 +20,19 @@ if (process.argv[2] === "--host") {
     const event = {
       toolName: "bash",
       toolCallId: "wrapped",
-      input: { command: `'${path}' build` },
+      input: { command: `'${path}' test --report` },
     };
     await handlers.get("tool_call")(event, context);
     assert.ok(event.input.command.includes("exec --context"));
     const output = spawnSync("bash", ["-c", event.input.command], { encoding: "utf8" });
     assert.equal(output.status, 19, output.stderr);
-    for (const text of [output.stdout, output.stderr]) {
+    for (const [stream, text] of Object.entries({ stdout: output.stdout, stderr: output.stderr })) {
       const path = text.split("The full output is available at ")[1]?.trim();
       assert.ok(path, text);
-      assert.ok(readFileSync(path, "utf8").includes('"items"'));
+      const original = readFileSync(path, "utf8");
+      assert.ok(original.includes("running 100 tests"));
+      assert.ok(original.includes(`test ${stream}_case_99 ... ok`));
+      assert.equal(original.includes(stream === "stdout" ? "stderr_case" : "stdout_case"), false);
     }
     assert.equal(readFileSync("executed", "utf8"), "once");
     assert.equal(

@@ -3,6 +3,14 @@ use std::{io::{self, Read, Write}, process::ExitCode};
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args[0].as_str() {
+        "test" if args.get(1).is_some_and(|arg| arg == "--report") => {
+            std::fs::OpenOptions::new().create(true).append(true).open("executed").unwrap().write_all(b"once").unwrap();
+            let records = (0..100).map(|n| format!("test stdout_case_{n} ... ok\n")).collect::<String>();
+            let report = format!("running 100 tests\n{records}test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n");
+            print!("{report}");
+            eprint!("{}", report.replace("stdout_case", "stderr_case"));
+            ExitCode::from(19)
+        }
         "echo" | "test" => {
             let mut input = Vec::new();
             io::stdin().read_to_end(&mut input).unwrap();

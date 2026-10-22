@@ -46,7 +46,7 @@ if (process.argv[2] === "--host") {
       sessionID: "roundtrip",
       agent: "build",
       id: "wrapped",
-      input: { command: `'${path}' build` },
+      input: { command: `'${path}' test --report` },
     };
     await handlers.get("tool.execute.before")(event);
     assert.ok(event.input.command.includes("exec --context"));
@@ -54,12 +54,17 @@ if (process.argv[2] === "--host") {
     handlers.get("shell.create.before")(invocation);
     const output = spawnSync("bash", ["-c", invocation.command], { encoding: "utf8" });
     assert.equal(output.status, 19, output.stderr);
-    const originals = [output.stdout, output.stderr].map((text) => {
-      const path = text.split("The full output is available at ")[1]?.trim();
-      assert.ok(path, text);
-      assert.ok(readFileSync(path, "utf8").includes('"items"'));
-      return path;
-    });
+    const originals = Object.entries({ stdout: output.stdout, stderr: output.stderr }).map(
+      ([stream, text]) => {
+        const path = text.split("The full output is available at ")[1]?.trim();
+        assert.ok(path, text);
+        const original = readFileSync(path, "utf8");
+        assert.ok(original.includes("running 100 tests"));
+        assert.ok(original.includes(`test ${stream}_case_99 ... ok`));
+        assert.equal(original.includes(stream === "stdout" ? "stderr_case" : "stdout_case"), false);
+        return path;
+      },
+    );
     assert.equal(readFileSync("executed", "utf8"), "once");
     const result = {
       content: [{ type: "text", text: output.stdout + output.stderr }],
