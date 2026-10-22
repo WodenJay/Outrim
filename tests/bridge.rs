@@ -74,7 +74,23 @@ fn multipart_results_share_context_and_refresh_on_next_call() {
         writeln!(
             input,
             "{}",
-            json!({"type":"process_parts", "request":item, "texts":[text, text]})
+            json!({"type":"resolve_policy", "request":item, "id":id})
+        )
+        .unwrap();
+        let mut selected = String::new();
+        output.read_line(&mut selected).unwrap();
+        let selected: serde_json::Value = serde_json::from_str(&selected).unwrap();
+        assert!(selected.get("selection").is_some(), "{selected}");
+        // A config edit during execution belongs to the next invocation.
+        fs::write(
+            &config,
+            r#"{"rules":[{"match":{},"compression":"json_toon"}]}"#,
+        )
+        .unwrap();
+        writeln!(
+            input,
+            "{}",
+            json!({"type":"process_parts", "request":item, "selection":selected["selection"], "texts":[text, text]})
         )
         .unwrap();
         let mut line = String::new();
@@ -88,6 +104,7 @@ fn multipart_results_share_context_and_refresh_on_next_call() {
             assert_eq!(part.id, id);
             assert_eq!(part.disposition == Disposition::Compressed, compressed);
             if compressed {
+                assert_eq!(part.applied_rule.as_deref(), Some("json_compact"));
                 assert_eq!(
                     fs::read_to_string(part.original_path.unwrap()).unwrap(),
                     text

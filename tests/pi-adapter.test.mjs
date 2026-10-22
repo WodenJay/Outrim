@@ -10,6 +10,7 @@ isolateHome();
 
 class FakeChild extends EventEmitter {
   writes = [];
+  selection = "builtin";
   killed = false;
   ended = false;
   stdin = new EventEmitter();
@@ -21,6 +22,7 @@ class FakeChild extends EventEmitter {
       this.writes.push(request);
       callback?.();
       if (request.type?.startsWith("record_")) this.respond(request, {});
+      if (request.type === "resolve_policy") this.respond(request, { selection: this.selection });
       return true;
     };
     this.stdin.end = () => {
@@ -76,6 +78,24 @@ function event(overrides = {}) {
 const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_compaction" });
 
 describe("Pi execution adapter", () => {
+  it("pins policy before execution and refreshes only for the next call", async () => {
+    const h = harness();
+    const e = event({ toolName: "read", input: { path: "data.json" } });
+    for (const selection of ["builtin", "off"]) {
+      await h.call(e);
+      const child = h.children[0];
+      const snapshot = child.writes.filter((message) => message.type === "resolve_policy").at(-1);
+      expect(snapshot.request.context).toEqual({ cwd: "D:/host-session" });
+      expect(snapshot.request.tool.input).toEqual(e.input);
+      child.selection = "off";
+      const pending = h.result(e);
+      const batch = child.writes.filter((message) => message.type === "process_parts").at(-1);
+      expect(batch.selection).toEqual(selection);
+      child.respond(batch, { parts: [processed("short")] });
+      await pending;
+    }
+    h.handlers.get("session_shutdown")();
+  });
   it("uses host cwd rather than read targets or input directories", async () => {
     const h = harness();
     const input = { path: "Z:/outside/data.json", directory: "Z:/not-session" };
@@ -218,11 +238,13 @@ describe("Pi execution adapter", () => {
     expect(e.input.command).toBe("cargo test");
     expect(h.children).toHaveLength(0);
   });
-  it("leaves nested calls and non-shell calls alone", async () => {
+  it("keeps nested calls native and only snapshots non-shell policy", async () => {
     const h = harness();
     await h.call(event({ parentToolCallId: "parent" }));
-    await h.call(event({ toolName: "read" }));
     expect(h.children).toHaveLength(0);
+    await h.call(event({ toolName: "read" }));
+    expect(h.children[0].writes.map((request) => request.type)).toEqual(["resolve_policy"]);
+    h.handlers.get("session_shutdown")();
   });
 });
 

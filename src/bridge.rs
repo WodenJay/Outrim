@@ -49,9 +49,20 @@ pub fn run(
                     &crate::rewrite::rewrite(request, &executable, processor),
                 )?;
             }
-            Message::ProcessParts(batch) => {
+            Message::ResolvePolicy(batch) => {
                 let selection =
                     processor.selection(batch.request.context.as_ref(), &batch.request.tool);
+                write_response(
+                    &mut output,
+                    &serde_json::json!({
+                        "version": VERSION, "id": batch.id, "selection": selection
+                    }),
+                )?;
+            }
+            Message::ProcessParts(batch) => {
+                let selection = batch.selection.unwrap_or_else(|| {
+                    processor.selection(batch.request.context.as_ref(), &batch.request.tool)
+                });
                 let parts: Vec<_> = batch
                     .texts
                     .into_iter()
@@ -103,9 +114,18 @@ fn write_response(output: &mut impl Write, response: &impl serde::Serialize) -> 
 struct ProcessParts {
     request: Request,
     texts: Vec<String>,
+    #[serde(default)]
+    selection: Option<crate::policy::Selection>,
+}
+
+#[derive(serde::Deserialize)]
+struct ResolvePolicy {
+    id: String,
+    request: Request,
 }
 
 enum Message {
+    ResolvePolicy(ResolvePolicy),
     ProcessParts(ProcessParts),
     Rewrite(crate::rewrite::Request),
     Process(Request),
@@ -131,6 +151,13 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
     match value.get("type") {
         None => serde_json::from_value(value)
             .map(Message::Process)
+            .map_err(|error| ParseFailure {
+                id,
+                error: ProtocolError::InvalidRequest,
+                details: error.to_string(),
+            }),
+        Some(Value::String(kind)) if kind == "resolve_policy" => serde_json::from_value(value)
+            .map(Message::ResolvePolicy)
             .map_err(|error| ParseFailure {
                 id,
                 error: ProtocolError::InvalidRequest,

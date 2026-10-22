@@ -373,7 +373,24 @@ function createBridge(host, executable, spawnProcess) {
       }
     });
   }
-  async function processParts(session, tool, texts, cwd, signal) {
+  async function selectPolicy(session, tool, cwd, signal) {
+    try {
+      const request = {
+        version: 2,
+        id: "",
+        host,
+        session,
+        tool,
+        text: "",
+        ...cwd === undefined ? {} : { context: { cwd } }
+      };
+      const response = await exchange({ type: "resolve_policy", request }, signal, 5000);
+      return response?.selection ?? "builtin";
+    } catch {
+      return "builtin";
+    }
+  }
+  async function processParts(session, tool, texts, cwd, signal, selection) {
     const request = {
       version: 2,
       id: "",
@@ -383,7 +400,7 @@ function createBridge(host, executable, spawnProcess) {
       text: "",
       ...cwd === undefined ? {} : { context: { cwd } }
     };
-    const response = await exchange({ type: "process_parts", request, texts }, signal);
+    const response = await exchange({ type: "process_parts", request, texts, selection }, signal);
     if (!Array.isArray(response?.parts) || response.parts.length !== texts.length)
       return texts.map(() => {
         return;
@@ -402,7 +419,9 @@ function createBridge(host, executable, spawnProcess) {
       reason: typeof response.reason === "string" ? response.reason : null
     };
   }
-  async function process(session, tool, text, signal, cwd) {
+  async function process(session, tool, text, signal, cwd, selection) {
+    if (selection !== undefined)
+      return (await processParts(session, tool, [text], cwd, signal, selection))[0];
     const payload = {
       version: 2,
       id: "",
@@ -485,7 +504,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "d44eba35705fbdfe3d10c9a06712928b4eebe5e90d3074a6f4e52f4613a294e5",
+        adapter_build: "22bc3dab3f802e2148394ad3c0a8d2e7df85f64e0bac60abc401ca329932bcb9",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -566,6 +585,7 @@ function createBridge(host, executable, spawnProcess) {
   }
   return {
     rewrite,
+    selectPolicy,
     process,
     processParts,
     recordDelivery,
@@ -610,12 +630,21 @@ function registerPiExtension(pi, options = {}) {
   const bridge = createBridge("pi", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
   const originalInputs = new Map;
   const callDirectories = new Map;
+  const callPolicies = new Map;
   const callKey = (session, call) => JSON.stringify([session, call]);
   pi.on("tool_call", async (event, context) => {
     const session = context.sessionManager.getSessionId();
     const key = callKey(session, event.toolCallId);
     originalInputs.set(key, structuredClone(event.input));
     callDirectories.set(key, context.cwd);
+    if (!isShell2(event.toolName) && !event.parentToolCallId) {
+      callPolicies.set(key, await bridge.selectPolicy(session, {
+        name: event.toolName,
+        input: originalInputs.get(key),
+        source: sourceFor("pi", event.toolName, event.input),
+        exit_code: null
+      }, context.cwd, context.signal));
+    }
     const wrapping = (state, reason, dialect = "unknown") => bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
     if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string") {
       wrapping("not_attempted", event.parentToolCallId ? "nested_call" : "source_not_applicable");
@@ -646,8 +675,10 @@ function registerPiExtension(pi, options = {}) {
     const key = callKey(context.sessionManager.getSessionId(), event.toolCallId);
     const originalInput = originalInputs.get(key) ?? event.input;
     const cwd = callDirectories.get(key) ?? context.cwd;
+    const selection = callPolicies.get(key);
     originalInputs.delete(key);
     callDirectories.delete(key);
+    callPolicies.delete(key);
     const attribution = recoveryAttribution(event.toolName, originalInput);
     if (attribution && !event.isError && (!isShell2(event.toolName) || (exitCodeFrom(event.structuredContent) ?? 0) === 0) && !context.signal?.aborted && !event.parentToolCallId) {
       bridge.recordRecovery(context.sessionManager.getSessionId(), event.toolCallId, event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []), attribution);
@@ -704,7 +735,7 @@ function registerPiExtension(pi, options = {}) {
       bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return;
     }
-    const processed = await bridge.process(observation.session, observation.tool, text, context.signal, cwd);
+    const processed = await bridge.process(observation.session, observation.tool, text, context.signal, cwd, selection);
     bridge.recordObservation(observation, text, context.signal?.aborted ? text : processed?.text ?? text, {
       ...processingFacts([processed]),
       ...context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}

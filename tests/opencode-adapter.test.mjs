@@ -14,6 +14,7 @@ isolateHome();
 
 class FakeChild extends EventEmitter {
   writes = [];
+  selection = "builtin";
   ended = false;
   stdin = new EventEmitter();
   stdout = new EventEmitter();
@@ -25,6 +26,7 @@ class FakeChild extends EventEmitter {
       this.writes.push(request);
       callback?.();
       if (request.type?.startsWith("record_")) this.respond(request);
+      if (request.type === "resolve_policy") this.respond(request, { selection: this.selection });
       return true;
     };
     this.stdin.end = () => {
@@ -38,7 +40,9 @@ class FakeChild extends EventEmitter {
   }
   requests() {
     return this.writes
-      .filter((request) => !request.type?.startsWith("record_"))
+      .filter(
+        (request) => !request.type?.startsWith("record_") && request.type !== "resolve_policy",
+      )
       .flatMap((message) =>
         message.type === "process_parts"
           ? message.texts.map((text, index) => ({
@@ -68,6 +72,48 @@ class FakeChild extends EventEmitter {
     this.respond(request, { text, disposition: "compressed", applied_rule: "log_compaction" });
   }
 }
+
+it("pins non-shell policy at invocation start for all parts", async () => {
+  const h = await harness({ sessionGet: async () => ({ location: { directory: "D:/session" } }) });
+  for (const selection of ["builtin", "off"]) {
+    const input = { filePath: "Z:/outside.json" };
+    const tool = selection === "off" ? "execute" : "read";
+    await h.call("tool.execute.before", before(input, { tool }));
+    if (tool === "execute") {
+      await h.call("tool.execute.before", before({}, { tool: "read" }));
+      await h.call(
+        "tool.execute.after",
+        after({ tool: "read", input: {}, result: { content: "nested" } }),
+      );
+    }
+    const snapshot = h.child.writes.filter((message) => message.type === "resolve_policy").at(-1);
+    expect(snapshot.request.context).toEqual({ cwd: "D:/session" });
+    expect(snapshot.request.tool.input).toEqual(input);
+    h.child.selection = "off";
+    const e = after({
+      tool,
+      input,
+      result: {
+        content: [
+          { type: "text", text: "one" },
+          { type: "text", text: "two" },
+        ],
+      },
+    });
+    const pending = h.call("tool.execute.after", e);
+    const batch = h.child.writes.filter((message) => message.type === "process_parts").at(-1);
+    expect(batch.selection).toEqual(selection);
+    h.child.respond(batch, {
+      parts: batch.texts.map(() => ({
+        text: "short",
+        disposition: "compressed",
+        applied_rule: "json_compact",
+      })),
+    });
+    await pending;
+  }
+  await h.dispose();
+});
 
 it("sends one batch with the current host session cwd and original input", async () => {
   let directory = "D:/session-one";
@@ -319,7 +365,8 @@ describe("OpenCode adapter", () => {
     h.context();
     await h.call("tool.execute.before", before({}, { tool: "execute" }));
     await h.call("tool.execute.before", before());
-    expect(h.child.writes).toEqual([]);
+    expect(h.child.writes.map((request) => request.type)).toEqual(["resolve_policy"]);
+    expect(h.child.requests()).toEqual([]);
     await h.call("tool.execute.after", after({ tool: "execute", status: "error" }));
     h.call("session.generate", { sessionID: "session", agent: "build", tools: {} });
     await h.call("tool.execute.before", before());

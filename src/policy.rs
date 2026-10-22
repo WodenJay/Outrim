@@ -14,7 +14,8 @@ pub struct CallContext {
     pub command: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Selection {
     #[default]
     Builtin,
@@ -22,7 +23,7 @@ pub enum Selection {
     Methods(Vec<Method>),
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
     LogCompaction,

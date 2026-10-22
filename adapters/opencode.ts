@@ -5,6 +5,7 @@ import {
   createBridge,
   hostOutputFacts,
   inputReferencesOriginals,
+  type PolicySelection,
   processingFacts,
   recoveryAttribution,
   type SpawnProcess,
@@ -194,6 +195,7 @@ export async function registerOpenCodePlugin(
   );
   const originalInputs = new Map<string, unknown>();
   const callDirectories = new Map<string, string>();
+  const callPolicies = new Map<string, PolicySelection>();
   async function sessionDirectory(sessionID: string): Promise<string | undefined> {
     try {
       const session = await context.session?.get?.({ sessionID });
@@ -232,10 +234,29 @@ export async function registerOpenCodePlugin(
   async function handleBefore(event: ToolHookBeforeEvent): Promise<void> {
     if (closed) return;
     const originalInput = record(event.input);
-    originalInputs.set(callKey(event.sessionID, event.id), structuredClone(event.input));
-    const cwd = context.session?.get ? await sessionDirectory(event.sessionID) : undefined;
-    if (closed) return;
-    if (cwd !== undefined) callDirectories.set(callKey(event.sessionID, event.id), cwd);
+    const key = callKey(event.sessionID, event.id);
+    const nested = activeCodeModeCalls.get(event.sessionID)?.has(event.id);
+    if (!nested) {
+      originalInputs.set(key, structuredClone(event.input));
+      const cwd = context.session?.get ? await sessionDirectory(event.sessionID) : undefined;
+      if (closed) return;
+      if (cwd !== undefined) callDirectories.set(key, cwd);
+      if (!isShell(event.tool)) {
+        callPolicies.set(
+          key,
+          await bridge.selectPolicy(
+            event.sessionID,
+            {
+              name: event.tool,
+              input: originalInputs.get(key) ?? null,
+              source: sourceFor("opencode", event.tool, originalInput ?? {}),
+              exit_code: null,
+            },
+            cwd,
+          ),
+        );
+      }
+    }
     if (event.tool === "execute") {
       let sessionCalls = activeCodeModeCalls.get(event.sessionID);
       if (!sessionCalls) {
@@ -331,12 +352,17 @@ export async function registerOpenCodePlugin(
     }
     if (closed) return;
     const key = callKey(event.sessionID, event.id);
+    const ownsCall = !isCodeModeCall || (event.tool === "execute" && codeModeDepth === 1);
+    const policy = ownsCall ? callPolicies.get(key) : undefined;
     const cwd =
-      callDirectories.get(key) ??
+      (ownsCall ? callDirectories.get(key) : undefined) ??
       (context.session?.get ? await sessionDirectory(event.sessionID) : undefined);
-    callDirectories.delete(key);
-    const recoveryInput = originalInputs.get(key) ?? event.input;
-    originalInputs.delete(key);
+    const recoveryInput = (ownsCall ? originalInputs.get(key) : undefined) ?? event.input;
+    if (ownsCall) {
+      callDirectories.delete(key);
+      originalInputs.delete(key);
+      callPolicies.delete(key);
+    }
     const recoverySelection = event.result ? textSelection(event.result) : undefined;
     const attribution = recoveryAttribution(event.tool, recoveryInput);
     if (
@@ -428,6 +454,7 @@ export async function registerOpenCodePlugin(
         selection.texts,
         cwd,
         controller.signal,
+        policy,
       );
       if (closed || controller.signal.aborted) {
         bridge.recordObservation(observation, originalText, originalText, {

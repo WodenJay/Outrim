@@ -5,6 +5,7 @@ import {
   createBridge,
   hostOutputFacts,
   inputReferencesOriginals,
+  type PolicySelection,
   processingFacts,
   recoveryAttribution,
   type SpawnProcess,
@@ -127,12 +128,29 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
 
   const originalInputs = new Map<string, Record<string, unknown>>();
   const callDirectories = new Map<string, string>();
+  const callPolicies = new Map<string, PolicySelection>();
   const callKey = (session: string, call: string) => JSON.stringify([session, call]);
   pi.on("tool_call", async (event, context) => {
     const session = context.sessionManager.getSessionId();
     const key = callKey(session, event.toolCallId);
     originalInputs.set(key, structuredClone(event.input));
     callDirectories.set(key, context.cwd);
+    if (!isShell(event.toolName) && !event.parentToolCallId) {
+      callPolicies.set(
+        key,
+        await bridge.selectPolicy(
+          session,
+          {
+            name: event.toolName,
+            input: originalInputs.get(key),
+            source: sourceFor("pi", event.toolName, event.input),
+            exit_code: null,
+          },
+          context.cwd,
+          context.signal,
+        ),
+      );
+    }
     const wrapping = (state: WrappingState, reason: string | null, dialect = "unknown") =>
       bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
     if (
@@ -178,8 +196,10 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     const key = callKey(context.sessionManager.getSessionId(), event.toolCallId);
     const originalInput = originalInputs.get(key) ?? event.input;
     const cwd = callDirectories.get(key) ?? context.cwd;
+    const selection = callPolicies.get(key);
     originalInputs.delete(key);
     callDirectories.delete(key);
+    callPolicies.delete(key);
     const attribution = recoveryAttribution(event.toolName, originalInput);
     if (
       attribution &&
@@ -271,6 +291,7 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       text,
       context.signal,
       cwd,
+      selection,
     );
     bridge.recordObservation(
       observation,

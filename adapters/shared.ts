@@ -165,6 +165,8 @@ export function sourceFor(host: Host, toolName: string, input: Record<string, un
   return "unknown";
 }
 
+export type PolicySelection = "builtin" | "off" | { methods: string[] };
+
 interface CoreRequest {
   version: 2;
   id: string;
@@ -193,6 +195,7 @@ export interface Candidate {
 }
 
 interface CoreResponse {
+  selection?: PolicySelection;
   parts?: CoreResponse[];
   version: number;
   id: string;
@@ -426,12 +429,19 @@ export function createBridge(
     signal?: AbortSignalLike,
     tool?: ToolInput,
   ): Promise<string | undefined>;
+  selectPolicy(
+    session: string,
+    tool: ToolInput,
+    cwd?: string,
+    signal?: AbortSignalLike,
+  ): Promise<PolicySelection>;
   processParts(
     session: string,
     tool: ToolInput,
     texts: string[],
     cwd: string | undefined,
     signal?: AbortSignalLike,
+    selection?: PolicySelection,
   ): Promise<Array<ProcessedResult | undefined>>;
   process(
     session: string,
@@ -439,6 +449,7 @@ export function createBridge(
     text: string,
     signal?: AbortSignalLike,
     cwd?: string,
+    selection?: PolicySelection,
   ): Promise<ProcessedResult | undefined>;
   recordDelivery(
     original: string | readonly string[],
@@ -597,12 +608,36 @@ export function createBridge(
     });
   }
 
+  async function selectPolicy(
+    session: string,
+    tool: ToolInput,
+    cwd?: string,
+    signal?: AbortSignalLike,
+  ): Promise<PolicySelection> {
+    try {
+      const request: CoreRequest = {
+        version: 2,
+        id: "",
+        host,
+        session,
+        tool,
+        text: "",
+        ...(cwd === undefined ? {} : { context: { cwd } }),
+      };
+      const response = await exchange({ type: "resolve_policy", request }, signal, 5_000);
+      return response?.selection ?? "builtin";
+    } catch {
+      return "builtin";
+    }
+  }
+
   async function processParts(
     session: string,
     tool: ToolInput,
     texts: string[],
     cwd: string | undefined,
     signal?: AbortSignalLike,
+    selection?: PolicySelection,
   ): Promise<Array<ProcessedResult | undefined>> {
     const request: CoreRequest = {
       version: 2,
@@ -613,7 +648,7 @@ export function createBridge(
       text: "",
       ...(cwd === undefined ? {} : { context: { cwd } }),
     };
-    const response = await exchange({ type: "process_parts", request, texts }, signal);
+    const response = await exchange({ type: "process_parts", request, texts, selection }, signal);
     if (!Array.isArray(response?.parts) || response.parts.length !== texts.length)
       return texts.map(() => undefined);
     return response.parts.map(processedResult);
@@ -643,7 +678,10 @@ export function createBridge(
     text: string,
     signal?: AbortSignalLike,
     cwd?: string,
+    selection?: PolicySelection,
   ): Promise<ProcessedResult | undefined> {
+    if (selection !== undefined)
+      return (await processParts(session, tool, [text], cwd, signal, selection))[0];
     const payload: CoreRequest = {
       version: 2,
       id: "",
@@ -859,6 +897,7 @@ export function createBridge(
 
   return {
     rewrite,
+    selectPolicy,
     process,
     processParts,
     recordDelivery,
