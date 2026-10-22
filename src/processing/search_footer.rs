@@ -1,5 +1,9 @@
 // Only verified host suffixes are split; all other text stays with the body parser.
-pub(super) fn split<'a>(text: &'a str, counts: &str, line_truncation: bool) -> (&'a str, &'a str) {
+pub(super) fn split<'a>(
+    text: &'a str,
+    count_notice_suffix: &str,
+    line_truncation: bool,
+) -> (&'a str, &'a str) {
     let records: Vec<_> = text.split_inclusive('\n').collect();
     let Some(index) = records.iter().rposition(|raw| !blank(raw)) else {
         return (text, "");
@@ -17,7 +21,7 @@ pub(super) fn split<'a>(text: &'a str, counts: &str, line_truncation: bool) -> (
     let Some(notice) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
         return (text, "");
     };
-    if !valid_notice(notice, counts, line_truncation) {
+    if !valid_notice(notice, count_notice_suffix, line_truncation) {
         return (text, "");
     }
     let body_len = records[..index - 1].iter().map(|raw| raw.len()).sum();
@@ -28,9 +32,9 @@ fn blank(raw: &str) -> bool {
     matches!(raw, "\n" | "\r\n")
 }
 
-fn valid_notice(notice: &str, counts: &str, line_truncation: bool) -> bool {
+fn valid_notice(notice: &str, count_notice_suffix: &str, line_truncation: bool) -> bool {
     let mut rest = notice;
-    if let Some((count, suffix)) = rest.split_once(counts)
+    if let Some((count, suffix)) = rest.split_once(count_notice_suffix)
         && positive_count(count).is_some()
     {
         rest = suffix;
@@ -45,7 +49,7 @@ fn valid_notice(notice: &str, counts: &str, line_truncation: bool) -> bool {
                 return false;
             }
             rest = suffix;
-        } else if counts.starts_with(" matches") {
+        } else if count_notice_suffix.starts_with(" matches") {
             return false;
         }
         if rest.is_empty() {
