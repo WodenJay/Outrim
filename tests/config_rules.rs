@@ -101,6 +101,23 @@ fn program_matching_resolves_paths_and_preserves_platform_names() {
             Processor::new(home.path()).process(input.clone()).text,
             input.text
         );
+        for pattern in [
+            r".\\bin\\cust*.exe".to_owned(),
+            format!(
+                r"{}\\BIN\\cust*.EXE",
+                project.path().display().to_string().replace('\\', r"\\")
+            ),
+        ] {
+            config(
+                project.path(),
+                json!([{"match": {"command": [{"glob": pattern}]}, "compression": "off"}]),
+            );
+            assert_eq!(
+                Processor::new(home.path()).process(input.clone()).text,
+                input.text,
+                "{pattern}"
+            );
+        }
     }
 }
 

@@ -246,10 +246,17 @@ fn program_matches(pattern: &Pattern, program: &str, cwd: &Path) -> bool {
                 } else {
                     cwd.into_owned()
                 };
-                let path = if Path::new(&value.glob).is_absolute() {
-                    value.glob.clone()
+                // Normalize escaped native separators without changing
+                // escapes that make wildcard characters literal.
+                let glob = if cfg!(windows) {
+                    value.glob.replace("\\\\", "/")
                 } else {
-                    format!("{cwd}/{}", value.glob)
+                    value.glob.clone()
+                };
+                let path = if Path::new(&glob).is_absolute() {
+                    glob
+                } else {
+                    format!("{cwd}/{glob}")
                 };
                 // Resolve dot components without consuming glob escape characters.
                 let mut components = Vec::new();
