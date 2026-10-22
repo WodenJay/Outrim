@@ -404,12 +404,15 @@ fn passthrough_preserves_execution_without_collecting() {
     child.stdin.take().unwrap().write_all(b"stdin\n").unwrap();
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(37), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let directory = stdout
+        .strip_prefix("stdin\n[\"space and ; $literal\", \"--help\"]\ninherited\n")
+        .unwrap()
+        .strip_suffix('\n')
+        .unwrap();
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!(
-            "stdin\n[\"space and ; $literal\", \"--help\"]\ninherited\n{}\n",
-            home.path().display()
-        )
+        fs::canonicalize(directory).unwrap(),
+        fs::canonicalize(home.path()).unwrap()
     );
     assert_eq!(output.stderr, b"separate stderr\n");
     assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
