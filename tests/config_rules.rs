@@ -206,6 +206,27 @@ fn explicit_log_selection_recognizes_custom_reporters_and_preserves_diagnostics(
 }
 
 #[test]
+fn user_config_is_not_a_project_config_through_a_path_alias() {
+    let outer = tempfile::tempdir().unwrap();
+    let home = outer.path().join("user");
+    let cwd = home.join("work");
+    fs::create_dir_all(home.join("alias")).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    config(&home, json!([{"match": {}, "compression": "off"}]));
+    config(
+        outer.path(),
+        json!([{"match": {}, "compression": "json_compact"}]),
+    );
+    assert_eq!(
+        Processor::new(&home.join("alias/.."))
+            .process(request(&cwd))
+            .applied_rule
+            .as_deref(),
+        Some("json_compact")
+    );
+}
+
+#[test]
 fn project_builtin_rule_overrides_global_off_and_edits_apply_next_call() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();

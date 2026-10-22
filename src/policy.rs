@@ -343,10 +343,15 @@ impl Rule {
 
 pub fn resolve(home: &Path, context: Option<&CallContext>, tool: &Tool) -> Selection {
     let global = home.join(".outrim/config.json");
+    let global_identity = global.canonicalize().ok();
     let project = context.and_then(|context| {
         context.cwd.ancestors().find_map(|directory| {
             let path = directory.join(".outrim/config.json");
-            (path != global && path.try_exists().unwrap_or(true)).then_some(path)
+            let is_global = path == global
+                || global_identity
+                    .as_ref()
+                    .is_some_and(|global| path.canonicalize().ok().as_ref() == Some(global));
+            (!is_global && path.try_exists().unwrap_or(true)).then_some(path)
         })
     });
     for path in project.iter().chain(std::iter::once(&global)) {
