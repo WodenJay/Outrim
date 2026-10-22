@@ -229,12 +229,33 @@ fn program_matches(pattern: &Pattern, program: &str, cwd: &Path) -> bool {
         let expected = match pattern {
             Pattern::Literal(value) => program_path(value, cwd),
             Pattern::Glob(value) => {
-                let base = if Path::new(&value.glob).is_absolute() {
-                    String::new()
+                let cwd = cwd.to_string_lossy();
+                let cwd = if cfg!(windows) {
+                    cwd.replace('\\', "/")
                 } else {
-                    format!("{}/", cwd.to_string_lossy().replace('\\', "/"))
+                    cwd.into_owned()
                 };
-                format!("{base}{}", value.glob)
+                let path = if Path::new(&value.glob).is_absolute() {
+                    value.glob.clone()
+                } else {
+                    format!("{cwd}/{}", value.glob)
+                };
+                // Resolve dot components without consuming glob escape characters.
+                let mut components = Vec::new();
+                for component in path.split('/') {
+                    match component {
+                        "." => {}
+                        ".." if components.last().is_some_and(|part: &&str| {
+                            !part.is_empty() && !part.ends_with(':')
+                        }) =>
+                        {
+                            components.pop();
+                        }
+                        ".." => {}
+                        _ => components.push(component),
+                    }
+                }
+                components.join("/")
             }
         };
         (expected, program_path(program, cwd))

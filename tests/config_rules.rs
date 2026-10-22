@@ -66,6 +66,45 @@ fn ordered_command_tool_and_input_conditions_use_literal_argv_and_explicit_globs
 }
 
 #[test]
+fn program_matching_resolves_paths_and_preserves_platform_names() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut input = request(project.path());
+    input.context.as_mut().unwrap().command = Some(vec!["./bin/custom".into(), "report".into()]);
+    for (program, matches) in [
+        (json!("custom"), true),
+        (json!("CUSTOM.EXE"), cfg!(windows)),
+        (json!("bin/custom"), true),
+        (json!("other/custom"), false),
+        (json!(project.path().join("bin/custom")), true),
+        (json!({"glob": "./bin/cust*"}), true),
+        (json!({"glob": "bin/../bin/cust*"}), true),
+        (json!({"glob": "bin/cust*"}), true),
+    ] {
+        config(
+            project.path(),
+            json!([{"match": {"command": [program]}, "compression": "off"}]),
+        );
+        assert_eq!(
+            Processor::new(home.path()).process(input.clone()).text == input.text,
+            matches,
+            "{program}"
+        );
+    }
+    if cfg!(windows) {
+        input.context.as_mut().unwrap().command = Some(vec![r".\BIN\CUSTOM.EXE".into()]);
+        config(
+            project.path(),
+            json!([{"match": {"command": [r"bin\custom"]}, "compression": "off"}]),
+        );
+        assert_eq!(
+            Processor::new(home.path()).process(input.clone()).text,
+            input.text
+        );
+    }
+}
+
+#[test]
 fn explicit_methods_override_protection_without_substitution() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
