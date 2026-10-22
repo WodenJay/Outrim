@@ -204,7 +204,15 @@ fn simple(
     let words = literals(original.trim(), powershell)?;
     let program = words.first()?;
     let name = command::program_name(program);
-    // Never turn shells, interpreters, builtins or interactive editors into log sources.
+    // Shells, builtins and interactive editors cannot be captured safely.
+    // Interpreters with arguments may opt in below, but gain no builtin source.
+    if matches!(
+        name.as_str(),
+        "python" | "python3" | "node" | "deno" | "ruby" | "perl" | "lua"
+    ) && words.len() == 1
+    {
+        return None;
+    }
     if matches!(
         name.as_str(),
         "outrim"
@@ -215,13 +223,6 @@ fn simple(
             | "cmd"
             | "powershell"
             | "pwsh"
-            | "python"
-            | "python3"
-            | "node"
-            | "deno"
-            | "ruby"
-            | "perl"
-            | "lua"
             | "irb"
             | "vim"
             | "nvim"

@@ -76,6 +76,15 @@ fn planning_preserves_partial_units_without_execution_or_content() {
 
 #[test]
 fn custom_program_policy_uses_runtime_cwd_original_identity_and_refreshes() {
+    check_program_policy("custom");
+}
+
+#[test]
+fn configured_interpreters_opt_in_without_builtin_log_classification() {
+    check_program_policy("python");
+}
+
+fn check_program_policy(name: &str) {
     for dialect in if cfg!(windows) {
         vec!["bash", "powershell"]
     } else {
@@ -86,7 +95,7 @@ fn custom_program_policy_uses_runtime_cwd_original_identity_and_refreshes() {
         fs::create_dir_all(project.join(".outrim")).unwrap();
         let custom = home
             .path()
-            .join(format!("custom{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
         fs::copy(fixture(), &custom).unwrap();
         let target = custom.to_str().unwrap().replace('\\', "/");
         let invoke = format!(
@@ -109,7 +118,7 @@ fn custom_program_policy_uses_runtime_cwd_original_identity_and_refreshes() {
             &path,
             json!({"rules": [{"match": {
             "tool": "provider.shell", "input": {"marker": true},
-            "command": ["custom", "json"], "exact": true
+            "command": [name, "json"], "exact": true
         }, "compression": "json_compact"}]})
             .to_string(),
         )
@@ -130,7 +139,7 @@ fn custom_program_policy_uses_runtime_cwd_original_identity_and_refreshes() {
             assert!(actual.len() < expected.len());
         }
         // Explicit exec selects the same command policy; only host-specific conditions differ.
-        fs::write(&path, json!({"rules": [{"match": {"command": ["custom", "json"]}, "compression": "json_compact"}]}).to_string()).unwrap();
+        fs::write(&path, json!({"rules": [{"match": {"command": [name, "json"]}, "compression": "json_compact"}]}).to_string()).unwrap();
         let explicit = Command::new(env!("CARGO_BIN_EXE_outrim"))
             .args(["exec", "--"])
             .arg(&custom)
