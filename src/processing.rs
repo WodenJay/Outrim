@@ -11,7 +11,7 @@ mod search_hits;
 
 use crate::{
     gain,
-    policy::{self, Selection},
+    policy::{self, Method, Selection},
     protocol::{self, Disposition, Request, Response, Source, VERSION},
     recording,
 };
@@ -122,6 +122,44 @@ impl Processor {
         }
         if matches!(selection, Selection::Off) {
             response.reason = Some("compression_disabled".into());
+            return response;
+        }
+        if let Selection::Methods(methods) = selection {
+            let mut candidates = Vec::new();
+            for method in methods {
+                match method {
+                    Method::LogCompaction => {
+                        if let Some(text) = log_compaction::selected(&response.text) {
+                            candidates.push(("log_compaction", text));
+                        }
+                    }
+                    Method::SearchHitGroups => {
+                        if let Some(text) = search_hits::group_search_hits(&response.text) {
+                            candidates.push(("search_hit_groups", text));
+                        }
+                    }
+                    Method::PathPrefixGroups => {
+                        if let Some(text) = path_list::group_prefixes(&response.text) {
+                            candidates.push(("path_prefix_groups", text));
+                        }
+                    }
+                    Method::JsonCompact | Method::JsonToon => {
+                        if let Some(json) = json::selected_candidates(
+                            &response.text,
+                            matches!(method, Method::JsonCompact),
+                            matches!(method, Method::JsonToon),
+                        ) {
+                            candidates.extend(json);
+                        }
+                    }
+                }
+            }
+            if candidates.is_empty() {
+                response.reason = Some("selected_methods_not_applicable".into());
+            } else {
+                self.originals
+                    .compress(request.host, &request.session, candidates, &mut response);
+            }
             return response;
         }
         // Search paths are query scope only when the output parses as hit records.

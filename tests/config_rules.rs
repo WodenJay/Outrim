@@ -21,6 +21,152 @@ fn request(cwd: &Path) -> Request {
 }
 
 #[test]
+fn ordered_command_tool_and_input_conditions_use_literal_argv_and_explicit_globs() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut input = request(project.path());
+    input.context.as_mut().unwrap().command =
+        Some(vec!["custom".into(), "report".into(), "a b\"c*".into()]);
+    input.tool.name = "provider.custom".into();
+    input.tool.input =
+        json!({"options": {"path": "data/file.json", "all": true}, "numbers": [1,2]});
+    for (condition, matches) in [
+        (json!({"command": ["custom", "report"]}), true),
+        (
+            json!({"command": ["custom", "report"], "exact": true}),
+            false,
+        ),
+        (
+            json!({"command": ["custom", "report", "a b\"c*"], "exact": true}),
+            true,
+        ),
+        (json!({"command": ["custom", "report", "*"]}), false),
+        (
+            json!({"command": ["custom", "report", {"glob": "a ?*\\*"}]}),
+            true,
+        ),
+        (json!({"tool": "custom"}), false),
+        (
+            json!({"tool": {"glob": "provider.*"}, "input": {"options": {"path": {"glob": "data/*.json"}}}}),
+            true,
+        ),
+        (
+            json!({"tool": "provider.custom", "input": {"missing": null}}),
+            false,
+        ),
+        (json!({"input": {"numbers": [1]}}), false),
+    ] {
+        config(
+            project.path(),
+            json!([{"match": condition, "compression": "off"}]),
+        );
+        let response = Processor::new(home.path()).process(input.clone());
+        assert_eq!(response.text == input.text, matches, "{condition}");
+    }
+}
+
+#[test]
+fn explicit_methods_override_protection_without_substitution() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut input = request(project.path());
+    input.tool.source = Source::SourceCode;
+    input.tool.input = json!({"path": "outside/config.json"});
+    for (methods, expected) in [
+        (json!("json_compact"), Some("json_compact")),
+        (json!("json_toon"), Some("json_toon")),
+        (json!(["json_toon", "json_compact"]), Some("json_toon")),
+        (json!("log_compaction"), None),
+    ] {
+        config(
+            project.path(),
+            json!([
+                {"match": {}, "compression": methods},
+                {"match": {}, "compression": "json_compact"}
+            ]),
+        );
+        let response = Processor::new(home.path()).process(input.clone());
+        assert_eq!(response.applied_rule.as_deref(), expected, "{methods}");
+        if let Some(path) = response.original_path {
+            assert_eq!(fs::read_to_string(path).unwrap(), input.text);
+            assert!(response.text.chars().count() < input.text.chars().count());
+        } else {
+            assert_eq!(response.text, input.text);
+        }
+        assert!(
+            response
+                .candidates
+                .iter()
+                .all(|candidate| methods.as_array().map_or_else(
+                    || methods.as_str() == Some(candidate.rule.as_str()),
+                    |methods| methods.contains(&json!(candidate.rule))
+                ))
+        );
+    }
+}
+
+#[test]
+fn nearest_project_does_not_merge_ancestors_and_invalid_files_fail_open() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let nested = project.path().join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    config(
+        home.path(),
+        json!([{"match": {}, "compression": "json_compact"}]),
+    );
+    config(project.path(), json!([{"match": {}, "compression": "off"}]));
+    config(
+        &nested,
+        json!([{"match": {"tool": "other"}, "compression": "off"}]),
+    );
+    let processor = Processor::new(home.path());
+    let input = request(&nested);
+    assert_eq!(
+        processor.process(input.clone()).applied_rule.as_deref(),
+        Some("json_compact")
+    );
+    for invalid in [
+        "not json".to_owned(),
+        json!({"rules": [{"match": {}, "compression": "off"}, {"match": {}, "compression": "unknown"}]}).to_string(),
+        json!({"rules": [{"match": {"command": []}, "compression": "off"}]}).to_string(),
+        json!({"rules": [{"match": {}, "compression": []}]}).to_string(),
+        json!({"rules": [{"match": {}, "compression": ["off", "json_compact"]}]}).to_string(),
+        json!({"rules": [{"match": {"tool": {"glob": "trailing\\"}}}]}).to_string(),
+    ] {
+        fs::write(nested.join(".outrim/config.json"), invalid).unwrap();
+        assert_eq!(processor.process(input.clone()).applied_rule.as_deref(), Some("json_compact"));
+    }
+}
+
+#[test]
+fn explicit_log_selection_recognizes_custom_reporters_and_preserves_diagnostics() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    config(
+        project.path(),
+        json!([{"match": {}, "compression": "log_compaction"}]),
+    );
+    let mut input = request(project.path());
+    input.tool.source = Source::Unknown;
+    input.tool.input = json!({"argv": ["custom", "report"]});
+    input.text = format!(
+        "running 81 tests\n{}test broken ... FAILED\ntest result: FAILED. 80 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\nopaque diagnostic\n",
+        (0..80)
+            .map(|i| format!("test check_{i} ... ok\n"))
+            .collect::<String>()
+    );
+    let response = Processor::new(home.path()).process(input.clone());
+    assert_eq!(response.applied_rule.as_deref(), Some("log_compaction"));
+    assert!(response.text.contains("test broken ... FAILED"));
+    assert!(response.text.contains("opaque diagnostic"));
+    assert_eq!(
+        fs::read_to_string(response.original_path.unwrap()).unwrap(),
+        input.text
+    );
+}
+
+#[test]
 fn project_builtin_rule_overrides_global_off_and_edits_apply_next_call() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();

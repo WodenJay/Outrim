@@ -31,6 +31,23 @@ pub(super) fn compact(tool: &Tool, text: &str) -> Option<String> {
     (candidate != text).then_some(candidate)
 }
 
+pub(super) fn selected(text: &str) -> Option<String> {
+    let lines: Vec<_> = text.split_inclusive('\n').collect();
+    let view = lines
+        .iter()
+        .map(|line| recognition(line))
+        .collect::<Option<Vec<_>>>()?;
+    // Only existing, recognized reporter records are folded; opaque text survives.
+    [
+        cargo::compact(&lines, &view, true),
+        gh::compact(&lines, &view),
+        bun::compact(&lines, &view),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|candidate| candidate != text)
+}
+
 // Host adapters already reject compound commands. Here accept only plain words,
 // or structured argv; this is intentionally not another shell parser.
 fn command(tool: &Tool) -> Option<Vec<String>> {

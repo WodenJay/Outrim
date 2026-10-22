@@ -49,7 +49,249 @@ struct Rule {
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Condition {
-    tool: Option<String>,
+    tool: Option<Pattern>,
+    command: Option<Vec<Pattern>>,
+    #[serde(default)]
+    exact: bool,
+    input: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Pattern {
+    Literal(String),
+    Glob(Glob),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Glob {
+    glob: String,
+}
+
+impl Pattern {
+    fn text(&self) -> &str {
+        match self {
+            Self::Literal(value) => value,
+            Self::Glob(value) => &value.glob,
+        }
+    }
+
+    fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::Literal(literal) => literal == value,
+            Self::Glob(pattern) => glob_matches(&pattern.glob, value),
+        }
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if let Self::Glob(pattern) = self {
+            validate_glob(&pattern.glob)?;
+        }
+        Ok(())
+    }
+}
+
+impl Condition {
+    fn validate(&self) -> Result<(), String> {
+        if self.exact && self.command.is_none() {
+            return Err("exact requires command".into());
+        }
+        if let Some(command) = &self.command {
+            if command.is_empty() || command[0].text().is_empty() {
+                return Err("command requires a program".into());
+            }
+            for pattern in command {
+                pattern.validate()?;
+            }
+        }
+        if let Some(tool) = &self.tool {
+            tool.validate()?;
+        }
+        if let Some(input) = &self.input {
+            validate_input(&serde_json::Value::Object(input.clone()))?;
+        }
+        Ok(())
+    }
+
+    fn matches(&self, context: Option<&CallContext>, tool: &Tool) -> bool {
+        if self
+            .tool
+            .as_ref()
+            .is_some_and(|pattern| !pattern.matches(&tool.name))
+        {
+            return false;
+        }
+        if let Some(input) = &self.input
+            && !input_matches(&serde_json::Value::Object(input.clone()), &tool.input)
+        {
+            return false;
+        }
+        if let Some(patterns) = &self.command {
+            let Some(context) = context else {
+                return false;
+            };
+            let Some(argv) = context.command.as_ref() else {
+                return false;
+            };
+            if argv.len() < patterns.len() || (self.exact && argv.len() != patterns.len()) {
+                return false;
+            }
+            if !program_matches(&patterns[0], &argv[0], &context.cwd) {
+                return false;
+            }
+            if !patterns[1..]
+                .iter()
+                .zip(&argv[1..])
+                .all(|(pattern, value)| pattern.matches(value))
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn validate_glob(pattern: &str) -> Result<(), String> {
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.next().is_none() {
+            return Err("glob ends with an escape".into());
+        }
+    }
+    Ok(())
+}
+
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    // A rolling row avoids recursive/exponential backtracking for user patterns.
+    let chars: Vec<_> = value.chars().collect();
+    let mut row = vec![false; chars.len() + 1];
+    row[0] = true;
+    let mut pattern = pattern.chars();
+    while let Some(token) = pattern.next() {
+        if token == '*' {
+            for index in 1..row.len() {
+                row[index] |= row[index - 1];
+            }
+        } else {
+            let literal = if token == '\\' {
+                pattern.next()
+            } else {
+                Some(token)
+            };
+            let wildcard = token == '?';
+            for index in (1..row.len()).rev() {
+                row[index] = row[index - 1] && (wildcard || literal == Some(chars[index - 1]));
+            }
+            row[0] = false;
+        }
+    }
+    row[chars.len()]
+}
+
+fn validate_input(value: &serde_json::Value) -> Result<(), String> {
+    if let Some(object) = value.as_object() {
+        if object.contains_key("glob") {
+            let pattern: Glob =
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+            validate_glob(&pattern.glob)?;
+        } else {
+            for value in object.values() {
+                validate_input(value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn input_matches(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
+    if let Some(object) = expected.as_object() {
+        if let Some(pattern) = object.get("glob").and_then(serde_json::Value::as_str) {
+            return actual
+                .as_str()
+                .is_some_and(|value| glob_matches(pattern, value));
+        }
+        return actual.as_object().is_some_and(|actual| {
+            object.iter().all(|(key, value)| {
+                actual
+                    .get(key)
+                    .is_some_and(|actual| input_matches(value, actual))
+            })
+        });
+    }
+    expected == actual
+}
+
+fn program_matches(pattern: &Pattern, program: &str, cwd: &Path) -> bool {
+    let has_directory =
+        |value: &str| value.contains('/') || (cfg!(windows) && value.contains('\\'));
+    let (expected, actual) = if has_directory(pattern.text()) {
+        let expected = match pattern {
+            Pattern::Literal(value) => program_path(value, cwd),
+            Pattern::Glob(value) => {
+                let base = if Path::new(&value.glob).is_absolute() {
+                    String::new()
+                } else {
+                    format!("{}/", cwd.to_string_lossy().replace('\\', "/"))
+                };
+                format!("{base}{}", value.glob)
+            }
+        };
+        (expected, program_path(program, cwd))
+    } else {
+        (
+            pattern.text().to_owned(),
+            Path::new(program)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        )
+    };
+    let expected = native_program(expected, matches!(pattern, Pattern::Glob(_)));
+    let actual = native_program(actual, false);
+    match pattern {
+        Pattern::Literal(_) => expected == actual,
+        Pattern::Glob(_) => glob_matches(&expected, &actual),
+    }
+}
+
+fn program_path(program: &str, cwd: &Path) -> String {
+    let path = cwd.join(program);
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component),
+        }
+    }
+    normalized.to_string_lossy().into_owned()
+}
+
+fn native_program(value: String, glob: bool) -> String {
+    #[cfg(windows)]
+    {
+        let value = if glob {
+            value
+        } else {
+            value.replace('\\', "/")
+        }
+        .to_lowercase();
+        for extension in [".exe", ".com", ".cmd", ".bat"] {
+            if let Some(value) = value.strip_suffix(extension) {
+                return value.to_owned();
+            }
+        }
+        value
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = glob;
+        value
+    }
 }
 
 #[derive(Deserialize)]
@@ -61,6 +303,7 @@ enum Compression {
 
 impl Rule {
     fn selection(&self) -> Result<Selection, String> {
+        self.condition.validate()?;
         match &self.compression {
             None => Ok(Selection::Builtin),
             Some(Compression::One(value)) if value == "off" => Ok(Selection::Off),
@@ -104,11 +347,7 @@ pub fn resolve(home: &Path, context: Option<&CallContext>, tool: &Tool) -> Selec
                 .iter()
                 .zip(selections)
                 .find_map(|(rule, selection)| {
-                    rule.condition
-                        .tool
-                        .as_ref()
-                        .is_none_or(|name| name == &tool.name)
-                        .then_some(selection)
+                    rule.condition.matches(context, tool).then_some(selection)
                 }))
         })();
         match result {

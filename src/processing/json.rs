@@ -7,18 +7,30 @@ pub(crate) fn candidates(tool: &Tool, text: &str) -> Option<Vec<(&'static str, S
     if !matches!(tool.source, Source::Unknown | Source::Search) {
         return None;
     }
+    selected_candidates(text, true, true)
+}
+
+pub(super) fn selected_candidates(
+    text: &str,
+    use_compact: bool,
+    use_toon: bool,
+) -> Option<Vec<(&'static str, String)>> {
     let value = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(value) => value,
         Err(_) if matches!(text.trim_start().chars().next(), Some('{') | Some('[')) => {
-            return Some(vec![("json_compact", text.to_owned())]);
+            return use_compact.then(|| vec![("json_compact", text.to_owned())]);
         }
         Err(_) => return None,
     };
     let (compact, toon_numbers_safe) = compact_json(text);
-    let mut candidates = vec![("json_compact", compact)];
+    let mut candidates = Vec::new();
+    if use_compact {
+        candidates.push(("json_compact", compact));
+    }
 
     // Value parsing can round numeric literals and discard duplicate object keys.
-    if toon_numbers_safe
+    if use_toon
+        && toon_numbers_safe
         && serde_json::from_str::<UniqueJson>(text).is_ok()
         && let Ok(toon) = toon_format::encode_default(&value)
         && toon_format::decode_default::<serde_json::Value>(&toon)
