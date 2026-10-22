@@ -78,6 +78,31 @@ function event(overrides = {}) {
 const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_compaction" });
 
 describe("Pi execution adapter", () => {
+  it("keeps a failed policy snapshot off even if the bridge recovers", async () => {
+    for (const failure of ["spawn", "missing-selection"]) {
+      let first = true;
+      const child = new FakeChild();
+      child.selection = undefined;
+      const h = harness({
+        spawnProcess: () => {
+          if (first && failure === "spawn") {
+            first = false;
+            throw new Error("bridge unavailable");
+          }
+          return child;
+        },
+      });
+      const e = event({ toolName: "read", input: { path: "data.json" } });
+      await h.call(e);
+      child.selection = "builtin";
+      const pending = h.result(e);
+      const batch = child.writes.find((message) => message.type === "process_parts");
+      expect(batch.selection).toBe("off");
+      child.respond(batch, { parts: [{ text: "original 🦀", disposition: "unchanged" }] });
+      await pending;
+      h.handlers.get("session_shutdown")();
+    }
+  });
   it("pins policy before execution and refreshes only for the next call", async () => {
     const h = harness();
     const e = event({ toolName: "read", input: { path: "data.json" } });

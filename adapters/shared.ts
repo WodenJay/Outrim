@@ -625,9 +625,9 @@ export function createBridge(
         ...(cwd === undefined ? {} : { context: { cwd } }),
       };
       const response = await exchange({ type: "resolve_policy", request }, signal, 5_000);
-      return response?.selection ?? "builtin";
+      return response?.selection ?? "off";
     } catch {
-      return "builtin";
+      return "off";
     }
   }
 

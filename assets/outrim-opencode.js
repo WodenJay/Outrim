@@ -385,9 +385,9 @@ function createBridge(host, executable, spawnProcess) {
         ...cwd === undefined ? {} : { context: { cwd } }
       };
       const response = await exchange({ type: "resolve_policy", request }, signal, 5000);
-      return response?.selection ?? "builtin";
+      return response?.selection ?? "off";
     } catch {
-      return "builtin";
+      return "off";
     }
   }
   async function processParts(session, tool, texts, cwd, signal, selection) {
@@ -504,7 +504,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "b4fbf513c85c6ffaf715a8b8e4d8366fabe71748ef4e60562cd42b12e27411ee",
+        adapter_build: "9a3b2d01c1a92f532b0b00f002d17b230911ac52d44c2e486d34c23f412cf796",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
