@@ -18,6 +18,13 @@ const STATS_FILE: &str = "gain.json";
 const LOCK_FILE: &str = "gain.lock";
 const SAVINGS_BAR_WIDTH: usize = 24;
 const RULE_BAR_WIDTH: usize = 10;
+const RULE_DISPLAY_NAMES: &[(&str, &str)] = &[
+    ("log_compaction", "Log compaction"),
+    ("search_hit_groups", "Search groups"),
+    ("path_prefix_groups", "Path prefix groups"),
+    ("json_compact", "JSON compact"),
+    ("json_toon", "JSON TOON"),
+];
 
 pub(crate) struct Store {
     directory: PathBuf,
@@ -251,7 +258,7 @@ fn render_stats(stats: &Stats) -> String {
     let largest_saving = rules.first().map_or(0, |(_, rule)| saved_chars_for(rule));
     for (name, rule) in rules {
         let saved = saved_chars_for(rule);
-        let label = crate::rules::DISPLAY_NAMES
+        let label = RULE_DISPLAY_NAMES
             .iter()
             .find_map(|(id, label)| (*id == name).then_some(*label))
             .unwrap_or(name);
