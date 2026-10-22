@@ -112,42 +112,26 @@ impl Store {
 }
 
 #[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 struct Stats {
-    outputs: u64,
-    before_chars: u64,
-    after_chars: u64,
     rules: BTreeMap<String, RuleStats>,
-    outcomes: OutcomeCounts,
+    outcomes: BTreeMap<Disposition, u64>,
     recovery_chars: u64,
     recovery_events: BTreeSet<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 struct RuleStats {
     count: u64,
     before_chars: u64,
     after_chars: u64,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
-struct OutcomeCounts {
-    compressed: u64,
-    protected: u64,
-    recovery_skipped: u64,
-    not_shorter: u64,
-    no_match: u64,
-    failed_open: u64,
-}
-
 impl Stats {
     fn record(&mut self, delivery: &RecordDeliveryRequest) {
-        self.outputs = self.outputs.saturating_add(1);
-        self.before_chars = self.before_chars.saturating_add(delivery.before_chars);
-        self.after_chars = self.after_chars.saturating_add(delivery.after_chars);
-        self.outcomes.record(delivery.disposition);
+        let count = self.outcomes.entry(delivery.disposition).or_default();
+        *count = count.saturating_add(1);
 
         if delivery.disposition == Disposition::Compressed {
             let rule = self
@@ -158,20 +142,6 @@ impl Stats {
             rule.before_chars = rule.before_chars.saturating_add(delivery.before_chars);
             rule.after_chars = rule.after_chars.saturating_add(delivery.after_chars);
         }
-    }
-}
-
-impl OutcomeCounts {
-    fn record(&mut self, disposition: Disposition) {
-        let count = match disposition {
-            Disposition::Compressed => &mut self.compressed,
-            Disposition::Protected => &mut self.protected,
-            Disposition::RecoverySkipped => &mut self.recovery_skipped,
-            Disposition::NotShorter => &mut self.not_shorter,
-            Disposition::NoMatch => &mut self.no_match,
-            Disposition::FailedOpen => &mut self.failed_open,
-        };
-        *count = count.saturating_add(1);
     }
 }
 
@@ -221,67 +191,55 @@ pub fn render(home: &Path) -> io::Result<String> {
 }
 
 fn render_stats(stats: &Stats) -> String {
-    if stats.outputs == 0 && stats.recovery_events.is_empty() {
+    if stats.outcomes.is_empty() && stats.recovery_events.is_empty() {
         return "No gain data.\n".into();
     }
 
-    let before_tokens = estimate_tokens(stats.before_chars);
-    let after_tokens = estimate_tokens(stats.after_chars);
-    let saved_chars = stats.before_chars.saturating_sub(stats.after_chars);
-    let saved_tokens = before_tokens.saturating_sub(after_tokens);
-    let savings_rate = percentage(saved_chars, stats.before_chars);
+    let before_chars: u64 = stats.rules.values().map(|rule| rule.before_chars).sum();
+    let after_chars = stats.rules.values().map(|rule| rule.after_chars).sum();
+    let saved_chars = before_chars.saturating_sub(after_chars);
+    let savings_rate = percentage(saved_chars, before_chars);
+    let outputs = stats.outcomes.values().sum();
     let mut report = String::new();
 
     writeln!(report, "Gain\n").unwrap();
-    writeln!(report, "Outputs: {}", format_number(stats.outputs)).unwrap();
+    writeln!(report, "Processed outputs: {}", format_number(outputs)).unwrap();
     writeln!(
         report,
-        "Compression savings: {} chars",
-        format_number(saved_chars)
+        "Compression savings: {} tokens",
+        format_tokens(estimate_tokens(saved_chars))
     )
     .unwrap();
+    writeln!(report, "Compression rate: {savings_rate:.0}%").unwrap();
     writeln!(
         report,
-        "Recovery cost: {} chars",
-        format_number(stats.recovery_chars)
+        "Recovery cost: {} tokens",
+        format_tokens(estimate_tokens(stats.recovery_chars))
     )
     .unwrap();
     let net = i128::from(saved_chars) - i128::from(stats.recovery_chars);
     writeln!(
         report,
-        "Net savings: {}{} chars",
+        "Net savings: {}{} tokens",
         if net < 0 { "-" } else { "" },
-        format_number(net.unsigned_abs() as u64)
-    )
-    .unwrap();
-    writeln!(report, "Tokens (est.)").unwrap();
-    writeln!(report, "  Before: {}", format_number(before_tokens)).unwrap();
-    writeln!(report, "  After:  {}", format_number(after_tokens)).unwrap();
-    writeln!(
-        report,
-        "  Saved:  {} ({savings_rate:.1}%)",
-        format_number(saved_tokens)
+        format_tokens(estimate_tokens(net.unsigned_abs() as u64))
     )
     .unwrap();
     writeln!(
         report,
         "\nSavings: {}",
-        bar(saved_chars, stats.before_chars, SAVINGS_BAR_WIDTH)
+        bar(saved_chars, before_chars, SAVINGS_BAR_WIDTH)
     )
     .unwrap();
 
     writeln!(report, "\nBy rule").unwrap();
     writeln!(
         report,
-        "{:<22} {:>7} {:>10} {:>10} {:>10} {:>7}  Impact",
-        "Rule", "Count", "Before", "After", "Saved", "Rate"
+        "{:<22} {:>7} {:>10} {:>6}  Impact",
+        "Rule", "Count", "Saved", "Rate"
     )
     .unwrap();
-    let mut rules: Vec<_> = stats
-        .rules
-        .iter()
-        .filter(|(name, _)| name.as_str() != "generic_line_fallback")
-        .collect();
+    let mut rules: Vec<_> = stats.rules.iter().collect();
     rules.sort_by(|(left_name, left), (right_name, right)| {
         saved_chars_for(right)
             .cmp(&saved_chars_for(left))
@@ -293,17 +251,15 @@ fn render_stats(stats: &Stats) -> String {
     let largest_saving = rules.first().map_or(0, |(_, rule)| saved_chars_for(rule));
     for (name, rule) in rules {
         let saved = saved_chars_for(rule);
-        let label = rule_label(name);
+        let label = crate::rules::DISPLAY_NAMES
+            .iter()
+            .find_map(|(id, label)| (*id == name).then_some(*label))
+            .unwrap_or(name);
         writeln!(
             report,
-            "{label:<22} {:>7} {:>10} {:>10} {:>10} {:>6.1}%  {}",
+            "{label:<22} {:>7} {:>10} {:>5.0}%  {}",
             format_number(rule.count),
-            format_number(estimate_tokens(rule.before_chars)),
-            format_number(estimate_tokens(rule.after_chars)),
-            format_number(
-                estimate_tokens(rule.before_chars)
-                    .saturating_sub(estimate_tokens(rule.after_chars)),
-            ),
+            format_tokens(estimate_tokens(saved)),
             percentage(saved, rule.before_chars),
             bar(saved, largest_saving, RULE_BAR_WIDTH)
         )
@@ -311,14 +267,15 @@ fn render_stats(stats: &Stats) -> String {
     }
 
     writeln!(report, "\nOutcomes").unwrap();
-    for (label, count) in [
-        ("Compressed", stats.outcomes.compressed),
-        ("Protected", stats.outcomes.protected),
-        ("Recovery skipped", stats.outcomes.recovery_skipped),
-        ("No reduction", stats.outcomes.not_shorter),
-        ("No matching rule", stats.outcomes.no_match),
-        ("Failed open", stats.outcomes.failed_open),
+    for (disposition, label) in [
+        (Disposition::Compressed, "Compressed"),
+        (Disposition::Protected, "Protected"),
+        (Disposition::RecoverySkipped, "Recovery skipped"),
+        (Disposition::NotShorter, "No reduction"),
+        (Disposition::NoMatch, "No matching rule"),
+        (Disposition::FailedOpen, "Failed open"),
     ] {
+        let count = stats.outcomes.get(&disposition).copied().unwrap_or(0);
         writeln!(report, "  {label}: {}", format_number(count)).unwrap();
     }
     report
@@ -377,13 +334,17 @@ fn format_number(number: u64) -> String {
     formatted
 }
 
-fn rule_label(rule: &str) -> &str {
-    match rule {
-        "log_tail" => "Log tail",
-        "log_compaction" => "Log compaction",
-        "json_compact" => "JSON compact",
-        "json_toon" => "JSON TOON",
-        "search_hit_groups" => "Search groups",
-        _ => rule,
+fn format_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        return tokens.to_string();
     }
+    let (value, suffix) = if tokens < 999_950 {
+        (format!("{:.1}", tokens as f64 / 1_000.0), "k")
+    } else {
+        (format!("{:.2}", tokens as f64 / 1_000_000.0), "M")
+    };
+    format!(
+        "{}{suffix}",
+        value.trim_end_matches('0').trim_end_matches('.')
+    )
 }

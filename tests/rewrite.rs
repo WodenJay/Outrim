@@ -112,10 +112,8 @@ fn compound_commands_preserve_short_circuiting_and_distinct_stream_records() {
         );
         assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
         assert!(String::from_utf8_lossy(&output.stdout).contains("fallback"));
-        let gain: Value =
-            serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap())
-                .unwrap();
-        assert_eq!(gain["outputs"], 6);
+        let gain = outrim::gain::render(home.path()).unwrap();
+        assert!(gain.contains("Processed outputs: 6"), "{gain}");
         let events = events(home.path());
         assert_eq!(events.len(), 6);
         let units: std::collections::HashSet<_> = events
@@ -451,10 +449,8 @@ fn rewritten_commands_preserve_arguments_environment_directory_and_status() {
         assert_eq!(wrapped.stdout, direct.stdout, "{dialect}: {wrapped:?}");
         assert_eq!(wrapped.stderr, direct.stderr);
         assert_eq!(wrapped.status.code(), direct.status.code());
-        let gain: Value =
-            serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap())
-                .unwrap();
-        assert_eq!(gain["outputs"], 2);
+        let gain = outrim::gain::render(home.path()).unwrap();
+        assert!(gain.contains("Processed outputs: 2"), "{gain}");
     }
 }
 
@@ -487,10 +483,8 @@ fn rewritten_custom_build_streams_stay_unchanged_with_one_sample_each() {
         assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
         assert_eq!(output.stdout, original.stdout);
         assert_eq!(output.stderr, original.stderr);
-        let gain: Value =
-            serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap())
-                .unwrap();
-        assert_eq!(gain["outputs"], 2);
+        let gain = outrim::gain::render(home.path()).unwrap();
+        assert!(gain.contains("Processed outputs: 2"), "{gain}");
         let records = home.path().join(".outrim/records");
         let events: Vec<Value> = fs::read_dir(records)
             .unwrap()

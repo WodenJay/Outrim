@@ -10,6 +10,7 @@ mod processing;
 pub mod protocol;
 mod recording;
 pub mod rewrite;
+mod rules;
 mod storage;
 
 pub use processing::Processor;

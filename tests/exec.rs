@@ -354,7 +354,7 @@ fn concurrent_executions_keep_all_samples_and_originals() {
     assert!(
         String::from_utf8(summary.stdout)
             .unwrap()
-            .contains("Outputs: 8")
+            .contains("Processed outputs: 8")
     );
     assert_eq!(gain.matches(" · stdout · compressed").count(), 4, "{gain}");
     assert_eq!(gain.matches(" · stderr · compressed").count(), 4, "{gain}");
@@ -406,7 +406,7 @@ fn captured_streams_have_independent_recovery_and_gain() {
     assert!(recovered.stderr.is_empty());
     let gain = wrapper(home.path()).arg("gain").output().unwrap();
     let gain = String::from_utf8(gain.stdout).unwrap();
-    assert!(gain.contains("Outputs: 3"));
+    assert!(gain.contains("Processed outputs: 3"));
     assert!(gain.contains("Recovery skipped: 1"), "{gain}");
     assert_eq!(
         fs::read_to_string(home.path().join("executed")).unwrap(),

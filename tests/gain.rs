@@ -56,6 +56,214 @@ fn gain_command(home: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn gain_derives_a_token_only_summary_from_current_rules() {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".outrim")).unwrap();
+    fs::write(
+        home.path().join(".outrim/gain.json"),
+        json!({
+            "rules": {
+                "log_compaction": { "count": 69, "before_chars": 240000, "after_chars": 48000 },
+                "search_hit_groups": { "count": 33, "before_chars": 140000, "after_chars": 122000 },
+                "path_prefix_groups": { "count": 6, "before_chars": 9280, "after_chars": 8816 }
+            },
+            "outcomes": { "compressed": 108, "protected": 376, "recovery_skipped": 12,
+                "not_shorter": 123, "no_match": 418, "failed_open": 0 },
+            "recovery_chars": 0, "recovery_events": []
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = gain_command(home.path(), &[]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        concat!(
+            "Gain\n\n",
+            "Processed outputs: 1,037\n",
+            "Compression savings: 52.6k tokens\n",
+            "Compression rate: 54%\n",
+            "Recovery cost: 0 tokens\n",
+            "Net savings: 52.6k tokens\n",
+            "\nSavings: █████████████░░░░░░░░░░░\n",
+            "\nBy rule\n",
+            "Rule                     Count      Saved   Rate  Impact\n",
+            "Log compaction              69        48k    80%  ██████████\n",
+            "Search groups               33       4.5k    13%  █░░░░░░░░░\n",
+            "Path prefix groups           6        116     5%  █░░░░░░░░░\n",
+            "\nOutcomes\n",
+            "  Compressed: 108\n",
+            "  Protected: 376\n",
+            "  Recovery skipped: 12\n",
+            "  No reduction: 123\n",
+            "  No matching rule: 418\n",
+            "  Failed open: 0\n"
+        )
+    );
+}
+
+#[test]
+fn gain_formats_token_boundaries_and_preserves_unknown_rule_labels() {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".outrim")).unwrap();
+    for (chars, saved) in [
+        (3993, "998"),
+        (3994, "999"),
+        (3998, "1k"),
+        (192000, "48k"),
+        (3999796, "999.9k"),
+        (3999800, "1M"),
+        (4000000, "1M"),
+        (7076000, "1.77M"),
+        (4400000, "1.1M"),
+    ] {
+        fs::write(home.path().join(".outrim/gain.json"), json!({
+            "rules": { "custom_rule": { "count": 1234, "before_chars": chars, "after_chars": 0 } },
+            "outcomes": { "compressed": 1234 },
+            "recovery_chars": 0, "recovery_events": []
+        }).to_string()).unwrap();
+        let output = gain_command(home.path(), &[]);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                concat!(
+                    "Gain\n\n",
+                    "Processed outputs: 1,234\n",
+                    "Compression savings: {saved} tokens\n",
+                    "Compression rate: 100%\n",
+                    "Recovery cost: 0 tokens\n",
+                    "Net savings: {saved} tokens\n",
+                    "\nSavings: ████████████████████████\n",
+                    "\nBy rule\n",
+                    "Rule                     Count      Saved   Rate  Impact\n",
+                    "custom_rule              1,234 {saved:>10}   100%  ██████████\n",
+                    "\nOutcomes\n",
+                    "  Compressed: 1,234\n",
+                    "  Protected: 0\n",
+                    "  Recovery skipped: 0\n",
+                    "  No reduction: 0\n",
+                    "  No matching rule: 0\n",
+                    "  Failed open: 0\n"
+                ),
+                saved = saved
+            ),
+            "{chars} characters"
+        );
+    }
+}
+
+#[test]
+fn gain_distinguishes_empty_outcomes_from_recovery_and_zero_count_data() {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".outrim")).unwrap();
+    for (outcomes, events, recovery, expected) in [
+        (json!({}), json!([]), 0, "No gain data.\n".to_owned()),
+        (
+            json!({"protected": 0}),
+            json!([]),
+            0,
+            zero_output_report("0", "0"),
+        ),
+        (
+            json!({}),
+            json!(["unattributed-event"]),
+            0,
+            zero_output_report("0", "0"),
+        ),
+        (
+            json!({}),
+            json!(["confirmed-event"]),
+            4938000,
+            zero_output_report("1.23M", "-1.23M"),
+        ),
+    ] {
+        fs::write(
+            home.path().join(".outrim/gain.json"),
+            json!({
+                "rules": {}, "outcomes": outcomes,
+                "recovery_chars": recovery, "recovery_events": events
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let output = gain_command(home.path(), &[]);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
+
+fn zero_output_report(recovery: &str, net: &str) -> String {
+    format!(
+        concat!(
+            "Gain\n\n",
+            "Processed outputs: 0\n",
+            "Compression savings: 0 tokens\n",
+            "Compression rate: 0%\n",
+            "Recovery cost: {recovery} tokens\n",
+            "Net savings: {net} tokens\n",
+            "\nSavings: ░░░░░░░░░░░░░░░░░░░░░░░░\n",
+            "\nBy rule\n",
+            "Rule                     Count      Saved   Rate  Impact\n",
+            "No compressed outputs.\n",
+            "\nOutcomes\n",
+            "  Compressed: 0\n",
+            "  Protected: 0\n",
+            "  Recovery skipped: 0\n",
+            "  No reduction: 0\n",
+            "  No matching rule: 0\n",
+            "  Failed open: 0\n"
+        ),
+        recovery = recovery,
+        net = net
+    )
+}
+
+#[test]
+fn gain_rejects_old_incomplete_and_invalid_statistics_without_overwriting() {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(home.path().join(".outrim")).unwrap();
+    let path = home.path().join(".outrim/gain.json");
+    let complete = json!({
+        "rules": { "json_toon": { "count": 1, "before_chars": 100, "after_chars": 20 } },
+        "outcomes": { "compressed": 1 }, "recovery_chars": 0, "recovery_events": []
+    });
+    let mut invalid = vec!["{invalid}".to_owned()];
+    let mut old = complete.clone();
+    old["outputs"] = json!(1);
+    old["before_chars"] = json!(100);
+    old["after_chars"] = json!(20);
+    invalid.push(old.to_string());
+    for field in ["rules", "outcomes", "recovery_chars", "recovery_events"] {
+        let mut missing = complete.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        invalid.push(missing.to_string());
+    }
+    for field in ["count", "before_chars", "after_chars"] {
+        let mut missing = complete.clone();
+        missing["rules"]["json_toon"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        invalid.push(missing.to_string());
+    }
+    for text in invalid {
+        fs::write(&path, &text).unwrap();
+        let output = gain_command(home.path(), &[]);
+        assert!(!output.status.success(), "{text}: {output:?}");
+        assert!(!output.stderr.is_empty());
+        assert!(output.stdout.is_empty());
+        let mut bridge = Bridge::start(home.path());
+        assert_eq!(
+            bridge.exchange(&delivery_request("invalid-stats", "no_match", None, 10, 10))["acknowledged"],
+            false
+        );
+        bridge.stop();
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[test]
 fn recording_is_explicit_persistent_and_detail_is_read_only() {
     let home = tempfile::tempdir().unwrap();
     let detail = gain_command(home.path(), &["--detail"]);
@@ -116,7 +324,7 @@ fn recovery_cost_is_independent_deduplicated_and_can_exceed_savings() {
         let mut bridge = Bridge::start(home.path());
         let delivery = json!({
             "type": "record_delivery", "version": 2, "id": "delivery",
-            "disposition": "compressed", "applied_rule": "log_tail",
+            "disposition": "compressed", "applied_rule": "log_compaction",
             "before_chars": 1000, "after_chars": 200
         });
         assert_eq!(bridge.exchange(&delivery)["acknowledged"], true);
@@ -137,11 +345,11 @@ fn recovery_cost_is_independent_deduplicated_and_can_exceed_savings() {
         bridge.stop();
         let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
         assert!(
-            report.contains("Compression savings: 800 chars"),
+            report.contains("Compression savings: 200 tokens"),
             "{report}"
         );
-        assert!(report.contains("Recovery cost: 1,200 chars"), "{report}");
-        assert!(report.contains("Net savings: -400 chars"), "{report}");
+        assert!(report.contains("Recovery cost: 300 tokens"), "{report}");
+        assert!(report.contains("Net savings: -100 tokens"), "{report}");
         assert_eq!(home.path().join(".outrim/records").exists(), recording);
     }
 }
@@ -455,9 +663,12 @@ fn gain_counts_an_acknowledged_delivery_and_attributes_its_rule() {
     let stats_path = home.path().join(".outrim/gain.json");
     let persisted = fs::read_to_string(&stats_path).unwrap();
     let stats: Value = serde_json::from_str(&persisted).unwrap();
-    assert_eq!(stats["before_chars"], count_codepoints(&text));
     assert_eq!(
-        stats["after_chars"],
+        stats["rules"]["log_compaction"]["before_chars"],
+        count_codepoints(&text)
+    );
+    assert_eq!(
+        stats["rules"]["log_compaction"]["after_chars"],
         count_codepoints(response["text"].as_str().unwrap())
     );
     assert!(!persisted.contains("old log line"));
@@ -486,8 +697,8 @@ fn gain_counts_an_acknowledged_delivery_and_attributes_its_rule() {
         .unwrap();
     assert!(output.status.success());
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(report.contains("Outputs: 1"), "{report}");
-    assert!(report.contains("Tokens (est.)"), "{report}");
+    assert!(report.contains("Processed outputs: 1"), "{report}");
+    assert!(report.contains("Compression rate:"), "{report}");
     assert!(report.contains("Log compaction"), "{report}");
     assert!(report.contains("Compressed: 1"), "{report}");
 }
@@ -510,7 +721,7 @@ fn gain_persists_deliveries_across_bridge_restarts() {
         .unwrap();
     assert!(output.status.success());
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(report.contains("Outputs: 2"), "{report}");
+    assert!(report.contains("Processed outputs: 2"), "{report}");
     assert!(report.contains("No matching rule: 2"), "{report}");
 }
 
@@ -545,7 +756,7 @@ fn clear_removes_statistics_but_preserves_recovery_and_settings() {
         bridge.exchange(&delivery_request(
             "new",
             "compressed",
-            Some("log_tail"),
+            Some("log_compaction"),
             100,
             50
         ))["acknowledged"],
@@ -561,8 +772,8 @@ fn clear_removes_statistics_but_preserves_recovery_and_settings() {
     bridge.stop();
     let stats: Value =
         serde_json::from_slice(&fs::read(directory.join("gain.json")).unwrap()).unwrap();
-    assert_eq!(stats["outputs"], 1);
-    assert_eq!(stats["before_chars"], 100);
+    assert_eq!(stats["outcomes"]["compressed"], 1);
+    assert_eq!(stats["rules"]["log_compaction"]["before_chars"], 100);
     assert_eq!(fs::read_dir(directory.join("records")).unwrap().count(), 1);
 }
 
@@ -606,29 +817,6 @@ fn clear_rejects_piped_confirmation_without_deleting_data() {
 }
 
 #[test]
-fn retired_rules_are_hidden_without_changing_totals_or_saved_data() {
-    let home = tempfile::tempdir().unwrap();
-    let directory = home.path().join(".outrim");
-    fs::create_dir(&directory).unwrap();
-    let path = directory.join("gain.json");
-    let mut stats = json!({
-        "outputs": 3, "before_chars": 1200, "after_chars": 400,
-        "outcomes": { "compressed": 3 },
-        "rules": {
-            "log_tail": { "count": 1, "before_chars": 400, "after_chars": 200 }
-        }
-    });
-    fs::write(&path, stats.to_string()).unwrap();
-    let expected = outrim::gain::render(home.path()).unwrap();
-    stats["rules"]["generic_line_fallback"] =
-        json!({ "count": 2, "before_chars": 800, "after_chars": 200 });
-    let saved = stats.to_string();
-    fs::write(&path, &saved).unwrap();
-    assert_eq!(outrim::gain::render(home.path()).unwrap(), expected);
-    assert_eq!(fs::read_to_string(path).unwrap(), saved);
-}
-
-#[test]
 fn gain_shows_empty_state_without_creating_data_directory() {
     let home = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_outrim"))
@@ -640,6 +828,7 @@ fn gain_shows_empty_state_without_creating_data_directory() {
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, b"No gain data.\n");
     assert!(!home.path().join(".outrim").exists());
 }
 
@@ -670,7 +859,13 @@ fn gain_aggregates_all_delivery_outcomes_across_writes() {
     let deliveries = [
         ("compressed-1", "compressed", Some("json_compact"), 100, 40),
         ("compressed-2", "compressed", Some("json_compact"), 120, 60),
-        ("compressed-3", "compressed", Some("log_tail"), 100, 50),
+        (
+            "compressed-3",
+            "compressed",
+            Some("log_compaction"),
+            100,
+            50,
+        ),
         ("protected", "protected", None, 50, 50),
         ("recovery", "recovery_skipped", None, 70, 70),
         ("not-shorter", "not_shorter", None, 80, 80),
@@ -701,8 +896,9 @@ fn gain_aggregates_all_delivery_outcomes_across_writes() {
     assert!(output.status.success());
     let report = String::from_utf8(output.stdout).unwrap();
     for expected in [
-        "Outputs: 8",
-        "Saved:  42",
+        "Processed outputs: 8",
+        "Compression savings: 43 tokens",
+        "Compression rate: 53%",
         "JSON compact",
         "Compressed: 3",
         "Protected: 1",
@@ -716,18 +912,18 @@ fn gain_aggregates_all_delivery_outcomes_across_writes() {
             "missing {expected:?} in:\n{report}"
         );
     }
-    assert!(report.find("JSON compact").unwrap() < report.find("Log tail").unwrap());
+    assert!(report.find("JSON compact").unwrap() < report.find("Log compaction").unwrap());
     let json_rule = report
         .lines()
         .find(|line| line.contains("JSON compact"))
         .unwrap();
     let log_rule = report
         .lines()
-        .find(|line| line.contains("Log tail"))
+        .find(|line| line.contains("Log compaction"))
         .unwrap();
-    assert!(json_rule.contains("54.5%"), "{json_rule}");
+    assert!(json_rule.contains("55%"), "{json_rule}");
     assert!(json_rule.ends_with("██████████"), "{json_rule}");
-    assert!(log_rule.contains("50.0%"), "{log_rule}");
+    assert!(log_rule.contains("50%"), "{log_rule}");
     assert!(log_rule.ends_with("████░░░░░░"), "{log_rule}");
 }
 
@@ -788,7 +984,7 @@ fn gain_retries_when_a_reader_temporarily_blocks_replacement() {
         .unwrap();
     assert!(output.status.success());
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(report.contains("Outputs: 2"), "{report}");
+    assert!(report.contains("Processed outputs: 2"), "{report}");
 }
 
 #[test]
@@ -846,7 +1042,7 @@ fn gain_aggregates_concurrent_bridge_processes() {
         .unwrap();
     assert!(output.status.success());
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(report.contains("Outputs: 200"), "{report}");
+    assert!(report.contains("Processed outputs: 200"), "{report}");
     assert!(report.contains("No matching rule: 200"), "{report}");
 }
 
