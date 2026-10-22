@@ -67,6 +67,32 @@ pub(crate) fn commit(mut file: NamedTempFile, text: &str) -> io::Result<PathBuf>
     Ok(path)
 }
 
+#[cfg(not(windows))]
+pub(crate) fn replace(file: NamedTempFile, path: &Path) -> io::Result<()> {
+    file.persist(path).map(|_| ()).map_err(|error| error.error)
+}
+
+#[cfg(windows)]
+pub(crate) fn replace(mut file: NamedTempFile, path: &Path) -> io::Result<()> {
+    use std::{thread, time::Duration};
+
+    // Windows can deny replacement while a reader holds the file open; retry for 195ms.
+    const RETRY_DELAYS_MS: [u64; 7] = [5, 10, 20, 40, 40, 40, 40];
+
+    for delay_ms in RETRY_DELAYS_MS {
+        match file.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.error.kind() == io::ErrorKind::PermissionDenied => {
+                file = error.file;
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
+
+    file.persist(path).map(|_| ()).map_err(|error| error.error)
+}
+
 #[cfg(windows)]
 pub(crate) use windows::private_directory;
 

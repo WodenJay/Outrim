@@ -22,10 +22,7 @@ pub struct Processor {
 
 impl Processor {
     pub fn new(user_home: &Path) -> Self {
-        Self::with_recording(
-            user_home,
-            gain::recording_enabled(user_home).unwrap_or(false),
-        )
+        Self::with_recording(user_home, recording::enabled(user_home).unwrap_or(false))
     }
 
     /// Use the host's startup setting, including when it restarts its bridge.

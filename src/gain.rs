@@ -12,8 +12,7 @@ use std::{
 };
 use tempfile::NamedTempFile;
 
-#[cfg(windows)]
-use std::{thread, time::Duration};
+pub use crate::recording::{render_detail, set_recording};
 
 const STATS_FILE: &str = "gain.json";
 const LOCK_FILE: &str = "gain.lock";
@@ -86,10 +85,7 @@ impl Store {
         serde_json::to_writer(file.as_file_mut(), stats).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
         file.as_file().sync_all()?;
-        #[cfg(windows)]
-        persist_tempfile_with_retry(file, &self.path)?;
-        #[cfg(not(windows))]
-        file.persist(&self.path).map_err(|error| error.error)?;
+        storage::replace(file, &self.path)?;
         #[cfg(unix)]
         File::open(&self.directory)?.sync_all()?;
         Ok(())
@@ -172,166 +168,6 @@ fn valid_delivery(delivery: &RecordDeliveryRequest) -> bool {
         }
         _ => delivery.applied_rule.is_none() && delivery.after_chars == delivery.before_chars,
     }
-}
-
-pub fn set_recording(home: &Path, enabled: bool) -> io::Result<String> {
-    let directory = home.join(".outrim");
-    storage::private_directory(&directory)?;
-    let mut file = NamedTempFile::new_in(&directory)?;
-    serde_json::to_writer(&mut file, &serde_json::json!({ "recording": enabled }))?;
-    file.write_all(b"\n")?;
-    file.as_file().sync_all()?;
-    let path = directory.join("recording.json");
-    #[cfg(windows)]
-    persist_tempfile_with_retry(file, &path)?;
-    #[cfg(not(windows))]
-    file.persist(path).map_err(|error| error.error)?;
-    Ok(format!(
-        "Recording {}. Restart hosts to apply.\n",
-        if enabled { "on" } else { "off" }
-    ))
-}
-
-pub(crate) fn recording_enabled(home: &Path) -> io::Result<bool> {
-    #[derive(Deserialize)]
-    struct Settings {
-        recording: bool,
-    }
-    match fs::read(home.join(".outrim/recording.json")) {
-        Ok(bytes) => Ok(serde_json::from_slice::<Settings>(&bytes)?.recording),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
-    let mut report = format!(
-        "Recording: {}\nDirectory: {}\n\n",
-        if recording_enabled(home)? {
-            "on"
-        } else {
-            "off"
-        },
-        home.join(".outrim").join("records").display()
-    );
-    let events = crate::recording::events(home)?;
-    if let Some(session) = session {
-        writeln!(report, "Session: {session}").unwrap();
-        let mut found = false;
-        for (directory, event) in events
-            .iter()
-            .filter(|(_, event)| event.session.as_deref() == Some(session))
-        {
-            found = true;
-            writeln!(
-                report,
-                "\n{} #{} · {} · call {}",
-                event.instance_id,
-                event.sequence,
-                event.tool_name,
-                event.tool_call_id.as_deref().unwrap_or("unknown")
-            )
-            .unwrap();
-            writeln!(
-                report,
-                "  Outcome: {} · rule {} · chars {} → {}",
-                serde_json::to_value(&event.outcome)?
-                    .as_str()
-                    .unwrap_or("unknown"),
-                event.applied_rule.as_deref().unwrap_or("none"),
-                event
-                    .before_chars
-                    .map_or_else(|| "unknown".into(), |value| value.to_string()),
-                event
-                    .after_chars
-                    .map_or_else(|| "unknown".into(), |value| value.to_string())
-            )
-            .unwrap();
-            if let Some(reason) = &event.reason {
-                writeln!(report, "  Reason: {reason}").unwrap();
-            }
-            if let Some(execution) = &event.execution {
-                writeln!(
-                    report,
-                    "  Execution: {} · {} · recording {}",
-                    execution.unit_id,
-                    serde_json::to_value(execution.stream)?
-                        .as_str()
-                        .unwrap_or("unknown"),
-                    execution.recording
-                )
-                .unwrap();
-            }
-            for reference in &event.original_references {
-                writeln!(
-                    report,
-                    "  Original reference: {} · record {}",
-                    reference.original_path,
-                    reference.record_id.as_deref().unwrap_or("unavailable")
-                )
-                .unwrap();
-            }
-            writeln!(
-                report,
-                "  Events: {}",
-                directory.join("events.jsonl").display()
-            )
-            .unwrap();
-            writeln!(
-                report,
-                "  Arguments: {}",
-                directory.join(&event.content.arguments).display()
-            )
-            .unwrap();
-            if let Some(path) = &event.content.original {
-                writeln!(report, "  Original: {}", directory.join(path).display()).unwrap();
-            }
-            if let Some(path) = &event.content.r#final {
-                writeln!(report, "  Final: {}", directory.join(path).display()).unwrap();
-            }
-        }
-        if !found {
-            writeln!(report, "No records for this session.").unwrap();
-        }
-    } else {
-        let mut sessions = BTreeMap::new();
-        for (directory, event) in &events {
-            *sessions.entry(event.session.as_deref()).or_insert(0_u64) += 1;
-            if let Some(execution) = &event.execution {
-                writeln!(
-                    report,
-                    "Execution: {} · {} · {} · chars {} → {}\n  Events: {}",
-                    execution.unit_id,
-                    serde_json::to_value(execution.stream)?
-                        .as_str()
-                        .unwrap_or("unknown"),
-                    serde_json::to_value(&event.outcome)?
-                        .as_str()
-                        .unwrap_or("unknown"),
-                    event
-                        .before_chars
-                        .map_or_else(|| "unmeasured".into(), |count| count.to_string()),
-                    event
-                        .after_chars
-                        .map_or_else(|| "unmeasured".into(), |count| count.to_string()),
-                    directory.join("events.jsonl").display()
-                )
-                .unwrap();
-            }
-        }
-        if sessions.is_empty() {
-            writeln!(report, "No recorded sessions.").unwrap();
-        }
-        for (session, count) in sessions {
-            writeln!(
-                report,
-                "Session: {} · {count} records",
-                session.unwrap_or("unknown")
-            )
-            .unwrap();
-        }
-    }
-    Ok(report)
 }
 
 pub fn clear(home: &Path) -> io::Result<()> {
@@ -445,25 +281,6 @@ fn render_stats(stats: &Stats) -> String {
         writeln!(report, "  {label}: {}", format_number(count)).unwrap();
     }
     report
-}
-
-#[cfg(windows)]
-fn persist_tempfile_with_retry(mut file: NamedTempFile, path: &Path) -> io::Result<()> {
-    // Windows can deny replacement while a reader holds gain.json open; retry for 195ms.
-    const RETRY_DELAYS_MS: [u64; 7] = [5, 10, 20, 40, 40, 40, 40];
-
-    for delay_ms in RETRY_DELAYS_MS {
-        match file.persist(path) {
-            Ok(_) => return Ok(()),
-            Err(error) if error.error.kind() == io::ErrorKind::PermissionDenied => {
-                file = error.file;
-                thread::sleep(Duration::from_millis(delay_ms));
-            }
-            Err(error) => return Err(error.error),
-        }
-    }
-
-    file.persist(path).map(|_| ()).map_err(|error| error.error)
 }
 
 fn exists(path: &Path) -> io::Result<bool> {

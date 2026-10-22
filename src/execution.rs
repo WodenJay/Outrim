@@ -1,5 +1,5 @@
 //! Stream delivery shared by explicit execution and future host execution adapters.
-use crate::{Processor, command, gain, protocol::*};
+use crate::{Processor, command, protocol::*, recording};
 use std::{
     ffi::OsString,
     io::{self, Write},
@@ -51,7 +51,7 @@ impl Execution {
     pub fn new(home: &Path, arguments: &[OsString], context: Context) -> Self {
         let recording = context
             .recording
-            .unwrap_or_else(|| gain::recording_enabled(home).unwrap_or(false));
+            .unwrap_or_else(|| recording::enabled(home).unwrap_or(false));
         let tool = Tool {
             name: "exec".into(),
             input: serde_json::json!({"argv": arguments.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>()}),

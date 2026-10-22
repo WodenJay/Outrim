@@ -218,6 +218,53 @@ fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
 }
 
 #[test]
+fn recording_detail_ignores_unfinished_lines_but_rejects_invalid_complete_events() {
+    let home = tempfile::tempdir().unwrap();
+    outrim::gain::set_recording(home.path(), true).unwrap();
+    let mut bridge = Bridge::start(home.path());
+    assert_eq!(
+        bridge.exchange(&json!({
+            "type": "record_observation", "version": 2, "id": "observe",
+            "host": "pi", "session": "reader-test",
+            "tool": tool_request("unused", "small")["tool"],
+            "original_text": "small", "final_text": "small", "outcome": "not_shorter",
+            "candidates": []
+        }))["acknowledged"],
+        true
+    );
+    bridge.stop();
+    let instance = fs::read_dir(home.path().join(".outrim/records"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let path = instance.join("events.jsonl");
+    let complete = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("{complete}{{\"format_version\":")).unwrap();
+    let report = outrim::gain::render_detail(home.path(), Some("reader-test")).unwrap();
+    assert_eq!(report.matches("Outcome:").count(), 1);
+    assert!(
+        outrim::gain::render_detail(home.path(), None)
+            .unwrap()
+            .contains("1 records")
+    );
+
+    fs::write(&path, format!("{complete}{{invalid}}\n")).unwrap();
+    assert!(outrim::gain::render_detail(home.path(), None).is_err());
+
+    let mut event: Value = serde_json::from_str(complete.trim_end()).unwrap();
+    event["format_version"] = json!(2);
+    fs::write(&path, format!("{event}\n")).unwrap();
+    assert_eq!(
+        outrim::gain::render_detail(home.path(), None)
+            .unwrap_err()
+            .to_string(),
+        "Unsupported recording format"
+    );
+}
+
+#[test]
 fn recording_instances_remain_distinct_and_portable() {
     let home = tempfile::tempdir().unwrap();
     assert!(

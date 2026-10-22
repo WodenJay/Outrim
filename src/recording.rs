@@ -1,5 +1,12 @@
 //! Opt-in local facts. Each bridge owns one append-only instance; content paths
 //! are relative to that instance and independent of recovery-file lifetimes.
+mod report;
+mod settings;
+
+pub use report::render_detail;
+pub(crate) use settings::enabled;
+pub use settings::set_recording;
+
 use crate::{
     protocol::{RecordObservationRequest, VERSION},
     storage,
@@ -29,47 +36,47 @@ struct Instance {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Event {
-    pub format_version: u32,
-    pub event_id: String,
-    pub instance_id: String,
-    pub sequence: u64,
-    pub timestamp_unix_ms: u128,
-    pub host: crate::protocol::Host,
-    pub session: Option<String>,
-    pub tool_call_id: Option<String>,
-    pub tool_name: String,
-    pub source: crate::protocol::Source,
-    pub exit_code: Option<i32>,
-    pub outrim_version: String,
-    pub build: Option<String>,
-    pub rules_config: String,
-    pub outcome: crate::protocol::ObservationOutcome,
-    pub reason: Option<String>,
-    pub applied_rule: Option<String>,
-    pub candidates: Vec<crate::protocol::Candidate>,
+struct Event {
+    format_version: u32,
+    event_id: String,
+    instance_id: String,
+    sequence: u64,
+    timestamp_unix_ms: u128,
+    host: crate::protocol::Host,
+    session: Option<String>,
+    tool_call_id: Option<String>,
+    tool_name: String,
+    source: crate::protocol::Source,
+    exit_code: Option<i32>,
+    outrim_version: String,
+    build: Option<String>,
+    rules_config: String,
+    outcome: crate::protocol::ObservationOutcome,
+    reason: Option<String>,
+    applied_rule: Option<String>,
+    candidates: Vec<crate::protocol::Candidate>,
     #[serde(default)]
-    pub parts: Vec<crate::protocol::ProcessingPart>,
-    pub before_chars: Option<usize>,
-    pub after_chars: Option<usize>,
-    pub original_path: Option<String>,
-    pub original_references: Vec<OriginalReference>,
-    pub content: Content,
+    parts: Vec<crate::protocol::ProcessingPart>,
+    before_chars: Option<usize>,
+    after_chars: Option<usize>,
+    original_path: Option<String>,
+    original_references: Vec<OriginalReference>,
+    content: Content,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution: Option<crate::protocol::ExecutionMetadata>,
+    execution: Option<crate::protocol::ExecutionMetadata>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Content {
-    pub arguments: String,
-    pub original: Option<String>,
-    pub r#final: Option<String>,
+struct Content {
+    arguments: String,
+    original: Option<String>,
+    r#final: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct OriginalReference {
-    pub original_path: String,
-    pub record_id: Option<String>,
+struct OriginalReference {
+    original_path: String,
+    record_id: Option<String>,
 }
 
 impl Recorder {
@@ -201,7 +208,7 @@ impl Instance {
     }
 }
 
-pub(crate) fn events(home: &Path) -> io::Result<Vec<(PathBuf, Event)>> {
+fn events(home: &Path) -> io::Result<Vec<(PathBuf, Event)>> {
     let root = home.join(".outrim").join("records");
     let instances = match fs::read_dir(root) {
         Ok(entries) => entries,
