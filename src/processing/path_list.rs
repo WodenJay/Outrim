@@ -1,4 +1,4 @@
-use crate::search::{is_search_record, valid_search_path};
+use super::search_hits::{is_search_record, valid_search_path};
 
 pub(crate) fn group_prefixes(text: &str) -> Option<String> {
     let records: Vec<_> = text.split_inclusive('\n').collect();
