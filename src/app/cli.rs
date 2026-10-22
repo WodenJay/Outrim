@@ -1,3 +1,4 @@
+use outrim::install::Agent;
 use std::ffi::{OsStr, OsString};
 
 pub(crate) enum Command {
@@ -24,11 +25,6 @@ pub(crate) enum Gain {
     Detail(Option<String>),
     Record(bool),
     Clear,
-}
-
-pub(crate) enum Agent {
-    Pi,
-    OpenCode,
 }
 
 const TOP: &str = "Usage: outrim <command>";

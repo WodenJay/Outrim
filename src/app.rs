@@ -1,3 +1,4 @@
+use outrim::install::Agent;
 use std::{
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
@@ -36,12 +37,7 @@ pub(crate) fn run() -> ExitCode {
             ExitCode::SUCCESS
         }
         cli::Command::Install { agent, remove } => finish(run_install(agent, remove)),
-        cli::Command::Upgrade => finish(user_home().and_then(|home| {
-            upgrade::run(
-                &configured_pi_agent_dir(&home),
-                &configured_opencode_config_dir(&home),
-            )
-        })),
+        cli::Command::Upgrade => finish(user_home().and_then(|home| upgrade::run(&home))),
         cli::Command::Gain(operation) => finish(run_gain(operation)),
         cli::Command::Bridge(recording) => finish(run_bridge(recording)),
         cli::Command::ObserveFallback(context) => {
@@ -73,27 +69,17 @@ fn user_home() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Home directory unavailable"))
 }
 
-fn configured_pi_agent_dir(user_home: &Path) -> PathBuf {
-    let configured_dir = std::env::var_os("PI_CODING_AGENT_DIR");
-    outrim::install::pi_agent_dir(user_home, configured_dir.as_deref())
+fn configured_agent_dir(agent: Agent, user_home: &Path) -> PathBuf {
+    let configured = std::env::var_os(agent.config_variable());
+    agent.directory(user_home, configured.as_deref())
 }
 
-fn configured_opencode_config_dir(user_home: &Path) -> PathBuf {
-    let configured_home = std::env::var_os("XDG_CONFIG_HOME");
-    outrim::install::opencode_config_dir(user_home, configured_home.as_deref())
-}
-
-fn run_install(agent: cli::Agent, remove: bool) -> io::Result<()> {
+fn run_install(agent: Agent, remove: bool) -> io::Result<()> {
     let home = user_home()?;
-    let (name, directory) = match agent {
-        cli::Agent::Pi => ("Pi", configured_pi_agent_dir(&home)),
-        cli::Agent::OpenCode => ("OpenCode", configured_opencode_config_dir(&home)),
-    };
+    let name = agent.name();
+    let directory = configured_agent_dir(agent, &home);
     if remove {
-        let path = match agent {
-            cli::Agent::Pi => outrim::install::uninstall_pi_extension(&directory)?,
-            cli::Agent::OpenCode => outrim::install::uninstall_opencode_plugin(&directory)?,
-        };
+        let path = agent.uninstall(&directory)?;
         if let Some(path) = path {
             println!(
                 "Removed {name} integration: {}\nRestart {name}.",
@@ -104,12 +90,7 @@ fn run_install(agent: cli::Agent, remove: bool) -> io::Result<()> {
         }
     } else {
         let executable = std::env::current_exe()?;
-        let path = match agent {
-            cli::Agent::Pi => outrim::install::install_pi_extension(&directory, &executable)?,
-            cli::Agent::OpenCode => {
-                outrim::install::install_opencode_plugin(&directory, &executable)?
-            }
-        };
+        let path = agent.install(&directory, &executable)?;
         println!(
             "Installed {name} integration: {}\nRestart {name}.",
             path.display()

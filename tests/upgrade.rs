@@ -145,6 +145,27 @@ fn asset_name() -> String {
 }
 
 #[test]
+fn upgrade_render_keeps_the_positional_protocol_for_older_binaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("custom tools 🦀/outrim.exe");
+    let output = Command::new(env!("CARGO_BIN_EXE_outrim"))
+        .arg("__upgrade-render")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let templates: [String; 2] = serde_json::from_slice(&output.stdout).unwrap();
+    for (template, marker) in templates.iter().zip([
+        "outrim-managed: pi-extension",
+        "outrim-managed: opencode-plugin",
+    ]) {
+        assert!(template.contains(marker));
+        assert!(template.contains(&serde_json::to_string(&executable).unwrap()));
+        assert!(!template.contains("__OUTRIM_EXECUTABLE__"));
+    }
+}
+
+#[test]
 fn checksum_failure_preserves_every_formal_target() {
     let release = Release::serve("999.0.0", Some(b"invalid binary".to_vec()), true);
     for alias in ["upgrade", "update"] {

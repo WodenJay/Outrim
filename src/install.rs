@@ -4,125 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const PI_EXTENSION_NAME: &str = "outrim.js";
-const PI_EXTENSION_MARKER: &str = "outrim-managed: pi-extension";
-const OPENCODE_PLUGIN_NAME: &str = "outrim.js";
-const OPENCODE_PLUGIN_MARKER: &str = "outrim-managed: opencode-plugin";
 const EXECUTABLE_PLACEHOLDER: &str = "__OUTRIM_EXECUTABLE__";
-const PI_EXTENSION: &str = include_str!("../assets/outrim-pi.js");
-const OPENCODE_PLUGIN: &str = include_str!("../assets/outrim-opencode.js");
-
-pub fn pi_agent_dir(user_home: &Path, configured_dir: Option<&OsStr>) -> PathBuf {
-    configured_dir
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home.join(".pi").join("agent"))
-}
-
-pub fn opencode_config_dir(user_home: &Path, configured_home: Option<&OsStr>) -> PathBuf {
-    configured_home
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home.join(".config"))
-        .join("opencode")
-}
-
-pub fn install_pi_extension(agent_dir: &Path, executable: &Path) -> io::Result<PathBuf> {
-    install_plugin(
-        &agent_dir.join("extensions"),
-        PI_EXTENSION_NAME,
-        PI_EXTENSION_MARKER,
-        PI_EXTENSION,
-        executable,
-        "Pi",
-    )
-}
-
-pub fn uninstall_pi_extension(agent_dir: &Path) -> io::Result<Option<PathBuf>> {
-    uninstall_plugin(
-        &agent_dir.join("extensions"),
-        PI_EXTENSION_NAME,
-        PI_EXTENSION_MARKER,
-    )
-}
-
-pub fn install_opencode_plugin(config_dir: &Path, executable: &Path) -> io::Result<PathBuf> {
-    install_plugin(
-        &config_dir.join("plugins"),
-        OPENCODE_PLUGIN_NAME,
-        OPENCODE_PLUGIN_MARKER,
-        OPENCODE_PLUGIN,
-        executable,
-        "OpenCode",
-    )
-}
-
-pub fn uninstall_opencode_plugin(config_dir: &Path) -> io::Result<Option<PathBuf>> {
-    uninstall_plugin(
-        &config_dir.join("plugins"),
-        OPENCODE_PLUGIN_NAME,
-        OPENCODE_PLUGIN_MARKER,
-    )
-}
-
-fn install_plugin(
-    directory: &Path,
-    filename: &str,
-    marker: &str,
-    template: &str,
-    executable: &Path,
-    kind: &str,
-) -> io::Result<PathBuf> {
-    let plugin = render_plugin(template, executable, kind)?;
-    fs::create_dir_all(directory)?;
-    let path = directory.join(filename);
-
-    if read_managed_plugin(&path, marker)?.as_deref() == Some(plugin.as_str()) {
-        return Ok(path);
-    }
-
-    fs::write(&path, plugin)?;
-    Ok(path)
-}
-
-fn render_plugin(template: &str, executable: &Path, kind: &str) -> io::Result<String> {
-    let executable = executable
-        .to_str()
-        .ok_or_else(|| io::Error::other("Invalid executable path encoding"))?;
-    let executable = serde_json::to_string(executable).map_err(io::Error::other)?;
-    let executable_slot = format!("\"{EXECUTABLE_PLACEHOLDER}\"");
-    if template.matches(&executable_slot).count() != 1 {
-        return Err(io::Error::other(format!(
-            "Invalid {kind} integration template"
-        )));
-    }
-    Ok(template.replace(&executable_slot, &executable))
-}
-
-fn uninstall_plugin(directory: &Path, filename: &str, marker: &str) -> io::Result<Option<PathBuf>> {
-    let path = directory.join(filename);
-    if read_managed_plugin(&path, marker)?.is_none() {
-        return Ok(None);
-    }
-    fs::remove_file(&path)?;
-    Ok(Some(path))
-}
-
-fn read_managed_plugin(path: &Path, marker: &str) -> io::Result<Option<String>> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    if !metadata.file_type().is_file() {
-        return Err(unmanaged_plugin_error(path));
-    }
-    let existing = fs::read_to_string(path)?;
-    if !existing.contains(marker) {
-        return Err(unmanaged_plugin_error(path));
-    }
-    Ok(Some(existing))
-}
 
 /// The two generated integrations supported by installation and upgrade.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -131,36 +13,167 @@ pub enum Agent {
     OpenCode,
 }
 
+struct Definition {
+    name: &'static str,
+    config_variable: &'static str,
+    default_directory: &'static [&'static str],
+    config_subdirectory: Option<&'static str>,
+    plugin_directory: &'static str,
+    marker: &'static str,
+    template: &'static str,
+}
+
 impl Agent {
-    pub fn name(self) -> &'static str {
+    pub const ALL: [Self; 2] = [Self::Pi, Self::OpenCode];
+
+    fn definition(self) -> Definition {
         match self {
-            Self::Pi => "Pi",
-            Self::OpenCode => "OpenCode",
+            Self::Pi => Definition {
+                name: "Pi",
+                config_variable: "PI_CODING_AGENT_DIR",
+                default_directory: &[".pi", "agent"],
+                config_subdirectory: None,
+                plugin_directory: "extensions",
+                marker: "outrim-managed: pi-extension",
+                template: include_str!("../assets/outrim-pi.js"),
+            },
+            Self::OpenCode => Definition {
+                name: "OpenCode",
+                config_variable: "XDG_CONFIG_HOME",
+                default_directory: &[".config"],
+                config_subdirectory: Some("opencode"),
+                plugin_directory: "plugins",
+                marker: "outrim-managed: opencode-plugin",
+                template: include_str!("../assets/outrim-opencode.js"),
+            },
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        self.definition().name
+    }
+
+    pub fn config_variable(self) -> &'static str {
+        self.definition().config_variable
+    }
+
+    pub fn directory(self, user_home: &Path, configured: Option<&OsStr>) -> PathBuf {
+        let definition = self.definition();
+        let directory = configured
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                definition
+                    .default_directory
+                    .iter()
+                    .fold(user_home.to_path_buf(), |path, segment| path.join(segment))
+            });
+        match definition.config_subdirectory {
+            Some(subdirectory) => directory.join(subdirectory),
+            None => directory,
         }
     }
 
     pub fn path(self, directory: &Path) -> PathBuf {
-        directory.join(match self {
-            Self::Pi => "extensions/outrim.js",
-            Self::OpenCode => "plugins/outrim.js",
-        })
+        directory
+            .join(self.definition().plugin_directory)
+            .join("outrim.js")
     }
 
     pub fn read(self, path: &Path) -> io::Result<Option<String>> {
-        let marker = match self {
-            Self::Pi => PI_EXTENSION_MARKER,
-            Self::OpenCode => OPENCODE_PLUGIN_MARKER,
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
         };
-        read_managed_plugin(path, marker)
+        if !metadata.file_type().is_file() {
+            return Err(unmanaged_plugin_error(path));
+        }
+        let existing = fs::read_to_string(path)?;
+        if !existing.contains(self.definition().marker) {
+            return Err(unmanaged_plugin_error(path));
+        }
+        Ok(Some(existing))
     }
 
     pub fn render(self, executable: &Path) -> io::Result<String> {
-        let template = match self {
-            Self::Pi => PI_EXTENSION,
-            Self::OpenCode => OPENCODE_PLUGIN,
-        };
-        render_plugin(template, executable, self.name())
+        let executable = executable
+            .to_str()
+            .ok_or_else(|| io::Error::other("Invalid executable path encoding"))?;
+        let executable = serde_json::to_string(executable).map_err(io::Error::other)?;
+        let executable_slot = format!("\"{EXECUTABLE_PLACEHOLDER}\"");
+        let definition = self.definition();
+        if definition.template.matches(&executable_slot).count() != 1 {
+            return Err(io::Error::other(format!(
+                "Invalid {} integration template",
+                definition.name
+            )));
+        }
+        Ok(definition.template.replace(&executable_slot, &executable))
     }
+
+    pub fn install(self, directory: &Path, executable: &Path) -> io::Result<PathBuf> {
+        let plugin = self.render(executable)?;
+        let path = self.path(directory);
+        fs::create_dir_all(path.parent().expect("integration has a parent directory"))?;
+        if self.read(&path)?.as_deref() != Some(plugin.as_str()) {
+            fs::write(&path, plugin)?;
+        }
+        Ok(path)
+    }
+
+    pub fn uninstall(self, directory: &Path) -> io::Result<Option<PathBuf>> {
+        let path = self.path(directory);
+        if self.read(&path)?.is_none() {
+            return Ok(None);
+        }
+        fs::remove_file(&path)?;
+        Ok(Some(path))
+    }
+}
+
+/// Keep the positional upgrade wire format compatible with older binaries.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Templates([String; 2]);
+
+impl Templates {
+    pub fn render(executable: &Path) -> io::Result<Self> {
+        Ok(Self([
+            Agent::Pi.render(executable)?,
+            Agent::OpenCode.render(executable)?,
+        ]))
+    }
+
+    pub fn get(&self, agent: Agent) -> &str {
+        match agent {
+            Agent::Pi => &self.0[0],
+            Agent::OpenCode => &self.0[1],
+        }
+    }
+}
+
+pub fn pi_agent_dir(user_home: &Path, configured_dir: Option<&OsStr>) -> PathBuf {
+    Agent::Pi.directory(user_home, configured_dir)
+}
+
+pub fn opencode_config_dir(user_home: &Path, configured_home: Option<&OsStr>) -> PathBuf {
+    Agent::OpenCode.directory(user_home, configured_home)
+}
+
+pub fn install_pi_extension(agent_dir: &Path, executable: &Path) -> io::Result<PathBuf> {
+    Agent::Pi.install(agent_dir, executable)
+}
+
+pub fn uninstall_pi_extension(agent_dir: &Path) -> io::Result<Option<PathBuf>> {
+    Agent::Pi.uninstall(agent_dir)
+}
+
+pub fn install_opencode_plugin(config_dir: &Path, executable: &Path) -> io::Result<PathBuf> {
+    Agent::OpenCode.install(config_dir, executable)
+}
+
+pub fn uninstall_opencode_plugin(config_dir: &Path) -> io::Result<Option<PathBuf>> {
+    Agent::OpenCode.uninstall(config_dir)
 }
 
 fn unmanaged_plugin_error(path: &Path) -> io::Error {
