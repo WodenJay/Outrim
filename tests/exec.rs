@@ -67,6 +67,40 @@ fn config_off_bypasses_capture_and_explicit_no_compress_wins() {
 }
 
 #[test]
+fn execution_keeps_one_policy_snapshot_for_both_streams() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join(".outrim")).unwrap();
+    let config = project.path().join(".outrim/config.json");
+    fs::write(
+        &config,
+        r#"{"rules":[{"match":{},"compression":"json_compact"}]}"#,
+    )
+    .unwrap();
+    let output = wrapper(home.path())
+        .args(["exec", "--"])
+        .arg(fixture())
+        .arg("json")
+        .arg(&config)
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    let raw = raw_json();
+    assert_eq!(output.status.code(), raw.status.code());
+    assert_eq!(fs::read(original(&output.stdout)).unwrap(), raw.stdout);
+    assert_eq!(fs::read(original(&output.stderr)).unwrap(), raw.stderr);
+    let next = wrapper(home.path())
+        .args(["exec", "--"])
+        .arg(fixture())
+        .arg("json")
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert_eq!(next.stdout, raw.stdout);
+    assert_eq!(next.stderr, raw.stderr);
+}
+
+#[test]
 fn binary_and_over_capacity_streams_return_every_byte_without_samples() {
     for mode in ["binary", "large"] {
         let home = tempfile::tempdir().unwrap();
