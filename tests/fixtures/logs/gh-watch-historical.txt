@@ -1,0 +1,221 @@
+Refreshing run status every 30 seconds. Press Ctrl+C to quit.
+
+* v0.3.0 Check and release · 39711763723
+Triggered via push less than a minute ago
+
+JOBS
+* Independent Cargo source build (ID 119604492582)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Prepare Rust
+  * Package and test source without Bun
+  * Run actions/upload-artifact@v7
+  * Post Run actions/checkout@v7
+* aarch64-apple-darwin (ID 119604492848)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  * Prepare Rust
+  * Check TypeScript and committed bundles
+  * Check scripts
+  * Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+* x86_64-unknown-linux-gnu (ID 119604492971)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  * Check TypeScript and committed bundles
+  * Check scripts
+  * Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+* aarch64-unknown-linux-gnu (ID 119604493013)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  * Check TypeScript and committed bundles
+  * Check scripts
+  * Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+* x86_64-pc-windows-msvc (ID 119604493353)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  * Prepare Rust
+  * Check TypeScript and committed bundles
+  * Check scripts
+  * Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 30 seconds. Press Ctrl+C to quit.
+
+* v0.3.0 Check and release · 39711763723
+Triggered via push less than a minute ago
+
+JOBS
+* Independent Cargo source build (ID 119604492582)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Prepare Rust
+  * Package and test source without Bun
+  * Run actions/upload-artifact@v7
+  * Post Run actions/checkout@v7
+* aarch64-apple-darwin (ID 119604492848)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  - Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+* x86_64-unknown-linux-gnu (ID 119604492971)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  - Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+* aarch64-unknown-linux-gnu (ID 119604493013)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  - Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+* x86_64-pc-windows-msvc (ID 119604493353)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  ✓ Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+Refreshing run status every 30 seconds. Press Ctrl+C to quit.
+
+* v0.3.0 Check and release · 39711763723
+Triggered via push about 1 minute ago
+
+JOBS
+* Independent Cargo source build (ID 119604492582)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Prepare Rust
+  * Package and test source without Bun
+  * Run actions/upload-artifact@v7
+  * Post Run actions/checkout@v7
+X aarch64-apple-darwin in 1m21s (ID 119604492848)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  - Parse PowerShell installer
+  X Check Rust
+  - Check installed hosts against Rust
+  - Build release binary
+  - Run actions/upload-artifact@v7
+  - Post Run oven-sh/setup-bun@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* x86_64-unknown-linux-gnu (ID 119604492971)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  - Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+* aarch64-unknown-linux-gnu (ID 119604493013)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  - Parse PowerShell installer
+  ✓ Check Rust
+  ✓ Check installed hosts against Rust
+  ✓ Build release binary
+  ✓ Run actions/upload-artifact@v7
+  ✓ Post Run oven-sh/setup-bun@v2
+  ✓ Post Run actions/checkout@v7
+  ✓ Complete job
+* x86_64-pc-windows-msvc (ID 119604493353)
+  ✓ Set up job
+  ✓ Run actions/checkout@v7
+  ✓ Run oven-sh/setup-bun@v2
+  ✓ Prepare Rust
+  ✓ Check TypeScript and committed bundles
+  ✓ Check scripts
+  ✓ Parse PowerShell installer
+  * Check Rust
+  * Check installed hosts against Rust
+  * Build release binary
+  * Run actions/upload-artifact@v7
+  * Post Run oven-sh/setup-bun@v2
+  * Post Run actions/checkout@v7
+
+ANNOTATIONS
+X Process completed with exit code 101.
+aarch64-apple-darwin: .github#254
+
+- Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times.
+aarch64-apple-darwin: .github#1
+
+failed to get run: Get "https://api.github.com/repos/WodenJay/Outrim/actions/runs/39711763723?exclude_pull_requests=true": EOF
+
+
+Command exited with code 1

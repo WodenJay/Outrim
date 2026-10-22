@@ -112,13 +112,9 @@ fn compound_commands_preserve_short_circuiting_and_distinct_stream_records() {
             assert_eq!(event["tool_call_id"], "call-1");
             assert_eq!(event["session"], "session-1");
             if unit.ends_with(":3") {
-                assert_eq!(event["applied_rule"], "log_tail");
-                let path = event["original_path"]
-                    .as_str()
-                    .expect("compressed stream recovery path");
-                let original = fs::read_to_string(path).unwrap();
-                assert!(original.contains("\"id\": 0"));
-                assert!(original.contains("\"id\": 99"));
+                assert!(event["applied_rule"].is_null());
+                assert!(event["original_path"].is_null());
+                assert_eq!(event["outcome"], "no_match");
             }
         }
     }
@@ -420,7 +416,7 @@ fn plain_command_names_resolve_native_executables_without_an_exe_suffix() {
 }
 
 #[test]
-fn rewritten_streams_have_recoverable_originals_and_one_sample_each() {
+fn rewritten_custom_build_streams_stay_unchanged_with_one_sample_each() {
     for dialect in if cfg!(windows) {
         vec!["bash", "powershell"]
     } else {
@@ -434,18 +430,8 @@ fn rewritten_streams_have_recoverable_originals_and_one_sample_each() {
         let output = shell(rewritten["command"].as_str().unwrap(), dialect, home.path());
         assert_eq!(output.status.code(), original.status.code());
         assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
-        for (compressed, original) in [
-            (&output.stdout, &original.stdout),
-            (&output.stderr, &original.stderr),
-        ] {
-            let text = std::str::from_utf8(compressed).unwrap();
-            let path = text
-                .split("The full output is available at ")
-                .nth(1)
-                .expect(text)
-                .trim();
-            assert_eq!(&fs::read(path).unwrap(), original);
-        }
+        assert_eq!(output.stdout, original.stdout);
+        assert_eq!(output.stderr, original.stderr);
         let gain: Value =
             serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap())
                 .unwrap();

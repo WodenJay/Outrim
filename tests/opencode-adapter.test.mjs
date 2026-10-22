@@ -45,7 +45,7 @@ class FakeChild extends EventEmitter {
     this.stdout.emit("data", `${JSON.stringify({ version: 2, id: request.id, ...fields })}\n`);
   }
   compress(request, text) {
-    this.respond(request, { text, disposition: "compressed", applied_rule: "log_tail" });
+    this.respond(request, { text, disposition: "compressed", applied_rule: "log_compaction" });
   }
 }
 

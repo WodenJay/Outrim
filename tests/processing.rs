@@ -19,9 +19,11 @@ fn request(text: &str, source: Source) -> Request {
 }
 
 fn log() -> String {
+    let tests = (0..100)
+        .map(|n| format!("test case_{n} ... ok\n"))
+        .collect::<String>();
     format!(
-        "{}\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n",
-        "old output ".repeat(200)
+        "running 100 tests\n{tests}test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
     )
 }
 
@@ -322,18 +324,20 @@ fn final_hint_counts_and_unicode_codepoints_must_be_strictly_shorter() {
         .tempdir()
         .unwrap();
     let processor = Processor::new(home.path());
-    let probe = processor.process(request(&log(), Source::TestLog));
-    let tail = "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n";
-    // The saved path has fixed length within this host/session. Place original
-    // lengths one codepoint below, equal to, and above the observed final text.
-    let boundary = probe.text.chars().count() - tail.chars().count() - 1;
+    let single = |name: &str| {
+        format!(
+            "running 1 test\ntest {name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        )
+    };
+    let probe = processor.process(request(&single(&"🦀".repeat(1000)), Source::TestLog));
+    let boundary = probe.text.chars().count() - (single("x").chars().count() - 1);
     for (count, expected) in [
         (boundary - 1, Disposition::NotShorter),
         (boundary, Disposition::NotShorter),
         (boundary + 1, Disposition::Compressed),
     ] {
-        let text = format!("{}\n{tail}", "🦀".repeat(count));
-        let response = processor.process(request(&text, Source::RuntimeLog));
+        let text = single(&"🦀".repeat(count));
+        let response = processor.process(request(&text, Source::TestLog));
         assert_eq!(response.disposition, expected);
         assert_eq!(
             response.candidates[0].final_chars,
@@ -357,15 +361,14 @@ fn short_logs_and_unmatched_content_pass_through() {
     let processor = Processor::new(home.path());
     for text in ["", "one line", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"] {
         let response = processor.process(request(text, Source::BuildLog));
-        assert_eq!(response.disposition, Disposition::NotShorter);
+        assert_eq!(response.disposition, Disposition::NoMatch);
         assert_eq!(response.text, text);
-        assert_eq!(response.candidates[0].reason, "not_shorter");
-        assert_eq!(response.candidates[0].final_chars, None);
+        assert!(response.candidates.is_empty());
     }
     for source in [Source::Search, Source::Unknown] {
-        let response = processor.process(request(&log(), source));
+        let response = processor.process(request("custom output", source));
         assert_eq!(response.disposition, Disposition::NoMatch);
-        assert_eq!(response.text, log());
+        assert_eq!(response.text, "custom output");
     }
     assert!(!home.path().join(".outrim").exists());
 }
@@ -489,24 +492,17 @@ fn originals_and_their_directories_grant_access_only_to_the_owner() {
 }
 
 #[test]
-fn logs_keep_last_ten_lines_and_recover_exact_input() {
+fn supported_logs_compact_and_recover_exact_input() {
     let home = tempfile::tempdir().unwrap();
-    let numbered_lines = (1..=23)
-        .map(|line| format!("{line:02}\n"))
-        .collect::<String>();
-    let text = format!("{}\n{numbered_lines}", "old output ".repeat(200));
+    let text = log();
     let response = Processor::new(home.path()).process(request(&text, Source::TestLog));
     assert_eq!(response.disposition, Disposition::Compressed);
-    assert_eq!(response.applied_rule.as_deref(), Some("log_tail"));
+    assert_eq!(response.applied_rule.as_deref(), Some("log_compaction"));
     let path = response.original_path.unwrap();
     assert!(Path::new(&path).is_absolute());
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
-    assert_eq!(
-        response.text,
-        format!(
-            "14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n[outrim]: The full output is available at {path}"
-        )
-    );
+    assert!(response.text.contains("100 passed"));
+    assert!(!response.text.contains("test case_0 ... ok"));
 }
 
 #[test]
@@ -1200,21 +1196,16 @@ fn log_source_keeps_log_policy_for_search_shaped_lines() {
     let home = tempfile::tempdir().unwrap();
     let path = format!("workspace/{}/module.rs", "long-component-name/".repeat(5));
     let mut text = format!("{}\n", "older log output ".repeat(50));
-    let mut tail = String::new();
     for line in 1..=10 {
         let record = format!("{path}:{line}:hit\n");
         text.push_str(&record);
-        tail.push_str(&record);
     }
     let response = Processor::new(home.path()).process(request(&text, Source::TestLog));
 
-    assert_eq!(response.disposition, Disposition::Compressed);
-    assert_eq!(response.applied_rule.as_deref(), Some("log_tail"));
-    assert!(response.text.starts_with(&tail));
-    assert_eq!(
-        fs::read_to_string(response.original_path.unwrap()).unwrap(),
-        text
-    );
+    assert_eq!(response.disposition, Disposition::NoMatch);
+    assert_eq!(response.text, text);
+    assert!(response.candidates.is_empty());
+    assert!(response.original_path.is_none());
 }
 
 #[test]

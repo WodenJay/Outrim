@@ -70,7 +70,7 @@ function event(overrides = {}) {
     ...overrides,
   };
 }
-const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_tail" });
+const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_compaction" });
 
 describe("Pi execution adapter", () => {
   it("mutates the original argument object before native execution", async () => {

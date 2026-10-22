@@ -28,11 +28,16 @@ fn request(id: &str) -> Request {
             name: "bash".into(),
             input: json!({"command": "cargo test"}),
             source: Source::TestLog,
-            exit_code: Some(1),
+            exit_code: Some(0),
         },
         text: format!(
-            "{}\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n",
-            "initial 🦀 \"quoted\" output\n".repeat(100)
+            "running 100 tests\n{}test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+            (0..100)
+                .map(|n| format!(
+                    "test {}_case_{n} ... ok\n",
+                    id.replace(char::is_whitespace, "_")
+                ))
+                .collect::<String>()
         ),
     }
 }
@@ -49,9 +54,8 @@ fn concurrent_sessions_and_pipelined_requests_do_not_overwrite_or_cross_ids() {
             let mut requests = std::collections::HashMap::new();
             for index in 0..12 {
                 let id = format!("worker-{worker}-request-{index}");
-                let mut item = request(&id);
                 // Deliberately share host/session across independent processes.
-                item.text = format!("{id}\n{}", item.text);
+                let item = request(&id);
                 writeln!(input, "{}", serde_json::to_string(&item).unwrap()).unwrap();
                 requests.insert(id, item.text);
             }
@@ -173,7 +177,7 @@ fn real_process_compresses_and_original_survives_restart_and_fork() {
     let mut forked = request("forked");
     forked.host = Host::Opencode;
     forked.session = "new-session".into();
-    forked.text.push_str("fork result\n");
+    forked.text = forked.text.replace("case_", "fork_case_");
     let mut child = start(home.path());
     writeln!(
         child.stdin.take().unwrap(),

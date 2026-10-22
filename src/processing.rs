@@ -3,7 +3,7 @@
 
 mod compression;
 mod json;
-mod log_tail;
+mod log_compaction;
 mod path_list;
 mod protection;
 mod search_hits;
@@ -78,20 +78,21 @@ impl Processor {
             response.reason = Some("source_or_configuration_protection".into());
             return response;
         }
-        let candidates = if let Some(tail) = log_tail::log_tail(&request.tool, &response.text) {
-            vec![("log_tail", tail)]
-        } else if let Some(grouped) = search_candidate {
-            vec![("search_hit_groups", grouped)]
-        } else if let Some(grouped) = matches!(request.tool.source, Source::Search)
-            .then(|| path_list::group_prefixes(&response.text))
-            .flatten()
-        {
-            vec![("path_prefix_groups", grouped)]
-        } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
-            json_candidates
-        } else {
-            return response;
-        };
+        let candidates =
+            if let Some(compacted) = log_compaction::compact(&request.tool, &response.text) {
+                vec![("log_compaction", compacted)]
+            } else if let Some(grouped) = search_candidate {
+                vec![("search_hit_groups", grouped)]
+            } else if let Some(grouped) = matches!(request.tool.source, Source::Search)
+                .then(|| path_list::group_prefixes(&response.text))
+                .flatten()
+            {
+                vec![("path_prefix_groups", grouped)]
+            } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
+                json_candidates
+            } else {
+                return response;
+            };
         self.originals
             .compress(request.host, &request.session, candidates, &mut response);
         response

@@ -187,7 +187,7 @@ fn storage_and_diagnostic_failures_never_replace_the_child_result() {
 }
 
 #[test]
-fn shared_execution_keeps_unknown_json_eligible_and_honors_host_source() {
+fn shared_execution_keeps_json_eligible_but_custom_logs_unchanged() {
     use outrim::{
         execution::{Context, Execution},
         protocol::{Host, OutputStream, Source},
@@ -215,8 +215,12 @@ fn shared_execution_keeps_unknown_json_eligible_and_honors_host_source() {
         execution
             .deliver(OutputStream::Stdout, text.clone(), Some(0), &mut output)
             .unwrap();
-        assert!(output.len() < text.len());
-        assert_eq!(fs::read_to_string(original(&output)).unwrap(), text);
+        if source.is_none() {
+            assert!(output.len() < text.len());
+            assert_eq!(fs::read_to_string(original(&output)).unwrap(), text);
+        } else {
+            assert_eq!(output, text.as_bytes());
+        }
         let detail = wrapper(home.path())
             .args(["gain", "--detail", "--session", "real-session"])
             .output()

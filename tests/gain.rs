@@ -93,6 +93,15 @@ fn recording_is_explicit_persistent_and_detail_is_read_only() {
     );
 }
 
+fn log() -> String {
+    let tests = (0..100)
+        .map(|n| format!("test case_{n} ... ok\n"))
+        .collect::<String>();
+    format!(
+        "running 100 tests\n{tests}test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+    )
+}
+
 fn tool_request(id: &str, text: &str) -> Value {
     json!({
         "version": 2,
@@ -121,7 +130,7 @@ fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
             .success()
     );
     let mut active = Bridge::start(home.path());
-    let text = "🦀 日志\n".repeat(100);
+    let text = log();
     let response = active.exchange(&tool_request("process", &text));
     assert_eq!(response["disposition"], "compressed");
     let observation = json!({
@@ -162,13 +171,13 @@ fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
     assert_eq!(event["sequence"], 1);
     assert_eq!(events[1]["sequence"], 2);
     assert_eq!(event["tool_call_id"], "host-call");
-    assert_eq!(event["before_chars"], 500);
+    assert_eq!(event["before_chars"], count_codepoints(&text));
     assert_eq!(
         event["after_chars"],
         count_codepoints(response["text"].as_str().unwrap())
     );
     assert_eq!(event["outrim_version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(event["candidates"][0]["rule"], "log_tail");
+    assert_eq!(event["candidates"][0]["rule"], "log_compaction");
     assert_eq!(event["candidates"][0]["reason"], "selected");
     let original = instance.join(event["content"]["original"].as_str().unwrap());
     assert_eq!(fs::read_to_string(&original).unwrap(), text);
@@ -188,7 +197,7 @@ fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
     let report = String::from_utf8(detail.stdout).unwrap();
     assert!(report.contains("compressed"));
     assert!(report.contains("host-call"));
-    assert!(report.contains("chars 500 → "));
+    assert!(report.contains(&format!("chars {} → ", count_codepoints(&text))));
     assert!(!report.contains("Some("));
     let native_instance = home
         .path()
@@ -379,14 +388,11 @@ fn delivery_request(
 #[test]
 fn gain_counts_an_acknowledged_delivery_and_attributes_its_rule() {
     let home = tempfile::tempdir().unwrap();
-    let text = format!(
-        "{}\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n",
-        "🦀 old log line\n".repeat(100)
-    );
+    let text = log();
     let mut bridge = Bridge::start(home.path());
     let response = bridge.exchange(&tool_request("process-1", &text));
     assert_eq!(response["disposition"], "compressed");
-    assert_eq!(response["applied_rule"], "log_tail");
+    assert_eq!(response["applied_rule"], "log_compaction");
 
     let acknowledgement = bridge.exchange(&json!({
         "type": "record_delivery",
@@ -438,7 +444,7 @@ fn gain_counts_an_acknowledged_delivery_and_attributes_its_rule() {
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(report.contains("Outputs: 1"), "{report}");
     assert!(report.contains("Tokens (est.)"), "{report}");
-    assert!(report.contains("Log tail"), "{report}");
+    assert!(report.contains("Log compaction"), "{report}");
     assert!(report.contains("Compressed: 1"), "{report}");
 }
 
@@ -803,10 +809,7 @@ fn gain_aggregates_concurrent_bridge_processes() {
 #[test]
 fn stats_persistence_failure_does_not_block_processed_output() {
     let home = tempfile::tempdir().unwrap();
-    let text = format!(
-        "{}\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n",
-        "failure test log\n".repeat(100)
-    );
+    let text = log();
     let mut bridge = Bridge::start(home.path());
     let response = bridge.exchange(&tool_request("process-1", &text));
     assert_eq!(response["disposition"], "compressed");

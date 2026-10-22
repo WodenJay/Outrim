@@ -339,6 +339,7 @@ fn format_number(number: u64) -> String {
 fn rule_label(rule: &str) -> &str {
     match rule {
         "log_tail" => "Log tail",
+        "log_compaction" => "Log compaction",
         "json_compact" => "JSON compact",
         "json_toon" => "JSON TOON",
         "search_hit_groups" => "Search groups",
