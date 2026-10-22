@@ -118,8 +118,11 @@ jobs:
           RELEASE_NOTES: |
             ## What's changed
 
-            - Hide retired `Head + tail` rule statistics from `outrim gain` while preserving historical data and cumulative savings.
-            - Add `outrim gain clear` to delete cumulative savings and diagnostic records after typing `yes` in an interactive terminal. Exit hosts using Outrim first; recovery originals and recording settings are kept.
+            - Add `outrim exec` to capture, compress, and recover stdout and stderr independently, with timeout support and `--no-compress` passthrough.
+            - Automatically wrap safe native shell commands in Pi and OpenCode while keeping execution in the host shell.
+            - Support safe compound shell commands with per-unit stream recovery; leave uncertain or interactive forms unchanged.
+            - Honor explicit source facts instead of guessing from shell text, and preserve independent stream forwarding.
+            - Centralize diagnostic recording and final compression selection so reports match the output actually returned.
 
             ## Installation
 
