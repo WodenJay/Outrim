@@ -161,7 +161,7 @@ if (process.argv[2] === "--host") {
       });
       const stats = JSON.parse(readFileSync(join(home, ".outrim/gain.json"), "utf8"));
       assert.equal(
-        stats.outputs,
+        Object.values(stats.outcomes).reduce((total, count) => total + count, 0),
         4,
         "two streams + recovery read + native tool; no shell-result samples",
       );

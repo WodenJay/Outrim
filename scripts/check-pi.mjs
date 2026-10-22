@@ -12,7 +12,7 @@ if (process.argv[2] === "--host") {
   );
   const handlers = new Map();
   registerPiExtension({ on: (name, handler) => handlers.set(name, handler) }, { dialect: "bash" });
-  const context = { sessionManager: { getSessionId: () => "pi-roundtrip" } };
+  const context = { cwd: process.cwd(), sessionManager: { getSessionId: () => "pi-roundtrip" } };
   // The host's recording snapshot, not a later disk setting, travels to exec.
   execFileSync(process.env.OUTRIM_BINARY, ["gain", "record", "off"]);
   try {
@@ -107,7 +107,7 @@ if (process.argv[2] === "--host") {
     });
     const stats = JSON.parse(readFileSync(join(home, ".outrim/gain.json"), "utf8"));
     assert.equal(
-      stats.outputs,
+      Object.values(stats.outcomes).reduce((total, count) => total + count, 0),
       4,
       "two streams + recovery read + native tool; no shell-result samples",
     );
