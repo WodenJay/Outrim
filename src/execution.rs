@@ -16,6 +16,13 @@ pub struct Context {
     pub tool_call_id: Option<String>,
     pub source: Option<Source>,
     pub recording: Option<bool>,
+    #[serde(default)]
+    pub tool: Option<Tool>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    /// Rewritten unknown programs must not acquire builtin capture by default.
+    #[serde(default)]
+    pub configured_only: bool,
 }
 
 impl Context {
@@ -45,6 +52,7 @@ pub struct Execution {
     context: Context,
     tool: Tool,
     recording: bool,
+    selection: crate::policy::Selection,
 }
 
 impl Execution {
@@ -52,17 +60,39 @@ impl Execution {
         let recording = context
             .recording
             .unwrap_or_else(|| recording::enabled(home).unwrap_or(false));
-        let tool = Tool {
+        let tool = context.tool.clone().unwrap_or_else(|| Tool {
             name: "exec".into(),
             input: serde_json::json!({"argv": arguments.iter().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>()}),
             source: context.source.unwrap_or_else(|| command::source(arguments)),
             exit_code: None,
-        };
+        });
+        let processor = Processor::with_recording(home, recording);
+        let call = std::env::current_dir()
+            .ok()
+            .map(|cwd| crate::policy::CallContext {
+                cwd,
+                command: Some(context.command.clone().unwrap_or_else(|| {
+                    arguments
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect()
+                })),
+            });
+        let selection = processor.selection(call.as_ref(), &tool);
         Self {
-            processor: Processor::with_recording(home, recording),
+            processor,
+            selection,
             context,
             tool,
             recording,
+        }
+    }
+
+    pub fn captures(&self) -> bool {
+        match &self.selection {
+            crate::policy::Selection::Off => false,
+            crate::policy::Selection::Builtin => !self.context.configured_only,
+            crate::policy::Selection::Methods(_) => true,
         }
     }
 
@@ -173,19 +203,22 @@ impl Execution {
         let mut tool = self.tool.clone();
         tool.exit_code = exit_code;
         let id = format!("{}-{stream:?}", self.context.unit_id);
-        let response = self.processor.process(Request {
-            context: None,
-            version: VERSION,
-            id: id.clone(),
-            host: self.context.host,
-            session: self
-                .context
-                .session
-                .clone()
-                .unwrap_or_else(|| self.context.unit_id.clone()),
-            tool: tool.clone(),
-            text: text.clone(),
-        });
+        let response = self.processor.process_selected(
+            Request {
+                context: None,
+                version: VERSION,
+                id: id.clone(),
+                host: self.context.host,
+                session: self
+                    .context
+                    .session
+                    .clone()
+                    .unwrap_or_else(|| self.context.unit_id.clone()),
+                tool: tool.clone(),
+                text: text.clone(),
+            },
+            &self.selection,
+        );
         output.write_all(response.text.as_bytes())?;
         output.flush()?;
         self.processor.record_delivery(RecordDeliveryRequest {

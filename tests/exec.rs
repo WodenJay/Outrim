@@ -30,6 +30,43 @@ fn wrapper(home: &std::path::Path) -> Command {
 }
 
 #[test]
+fn config_off_bypasses_capture_and_explicit_no_compress_wins() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join(".outrim")).unwrap();
+    fs::write(
+        project.path().join(".outrim/config.json"),
+        r#"{"rules":[{"match":{},"compression":"off"}]}"#,
+    )
+    .unwrap();
+    let expected = raw_json();
+    let output = wrapper(home.path())
+        .args(["exec", "--"])
+        .arg(fixture())
+        .arg("json")
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.stdout, expected.stdout);
+    assert_eq!(output.stderr, expected.stderr);
+    assert!(!home.path().join(".outrim/outputs").exists());
+    fs::write(
+        project.path().join(".outrim/config.json"),
+        r#"{"rules":[{"match":{},"compression":"json_toon"}]}"#,
+    )
+    .unwrap();
+    let output = wrapper(home.path())
+        .args(["exec", "--no-compress", "--"])
+        .arg(fixture())
+        .arg("json")
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.stdout, expected.stdout);
+    assert_eq!(output.stderr, expected.stderr);
+}
+
+#[test]
 fn binary_and_over_capacity_streams_return_every_byte_without_samples() {
     for mode in ["binary", "large"] {
         let home = tempfile::tempdir().unwrap();
@@ -241,6 +278,9 @@ fn shared_execution_keeps_json_eligible_but_custom_logs_unchanged() {
                 tool_call_id: Some("real-call".into()),
                 source,
                 recording: Some(true),
+                tool: None,
+                command: None,
+                configured_only: false,
             },
         );
         let mut output = Vec::new();

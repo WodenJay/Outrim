@@ -54,9 +54,19 @@ pub(crate) fn run(
                 tool_call_id: None,
                 source: None,
                 recording: None,
+                tool: None,
+                command: None,
+                configured_only: false,
             }),
         )
     });
+    if execution
+        .as_ref()
+        .is_some_and(|execution| !execution.captures())
+    {
+        let mut child = supervisor.spawn(&mut command)?;
+        return wait(&supervisor, &mut child, timeout).map(|(status, _)| status);
+    }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = supervisor.spawn(&mut command)?;
     let stdout = child.stdout.take().unwrap();

@@ -25,6 +25,8 @@ pub struct Request {
     pub recording: bool,
     pub dialect: String,
     pub command: String,
+    #[serde(default)]
+    pub tool: Option<Tool>,
 }
 
 #[derive(Serialize)]
@@ -182,8 +184,43 @@ fn simple(
     let words = literals(original.trim(), powershell)?;
     let program = words.first()?;
     let name = command::program_name(program);
-    // Bound capture eligibility as well as grammar: no shells, launchers, REPLs or editors.
-    if !matches!(
+    // Never turn shells, interpreters, builtins or interactive editors into log sources.
+    if matches!(
+        name.as_str(),
+        "outrim"
+            | "bash"
+            | "sh"
+            | "zsh"
+            | "fish"
+            | "cmd"
+            | "powershell"
+            | "pwsh"
+            | "python"
+            | "python3"
+            | "node"
+            | "deno"
+            | "ruby"
+            | "perl"
+            | "lua"
+            | "irb"
+            | "vim"
+            | "nvim"
+            | "vi"
+            | "emacs"
+            | "nano"
+            | "less"
+            | "more"
+            | "cd"
+            | "echo"
+            | "printf"
+            | "read"
+            | "exec"
+            | "source"
+            | "get-content"
+    ) {
+        return None;
+    }
+    let builtin_program = matches!(
         name.as_str(),
         "cargo"
             | "bun"
@@ -208,15 +245,12 @@ fn simple(
             | "jq"
             | "cat"
             | "head"
-    ) {
-        return None;
-    }
+    );
     let argv: Vec<_> = words.iter().map(OsString::from).collect();
     let source = command::source(&argv);
-    if matches!(source, Source::Unknown) && !matches!(name.as_str(), "git" | "jq" | "cat" | "head")
-    {
-        return None;
-    }
+    let builtin_capture = builtin_program
+        && (!matches!(source, Source::Unknown)
+            || matches!(name.as_str(), "git" | "jq" | "cat" | "head"));
     if words.iter().any(|word| {
         let flag = word.split('=').next().unwrap_or(word);
         matches!(
@@ -264,6 +298,12 @@ fn simple(
         unit_id: unit_id.to_owned(),
         source: Some(source),
         recording: Some(request.recording),
+        tool: request.tool.clone().map(|mut tool| {
+            tool.source = source;
+            tool
+        }),
+        command: Some(words.clone()),
+        configured_only: !builtin_capture,
     };
     let quote = |word: &str| quote(word, powershell);
     let context = quote(&context.encode());

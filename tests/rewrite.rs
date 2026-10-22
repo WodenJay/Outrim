@@ -31,7 +31,8 @@ fn rewrite_at(command: &str, dialect: &str, home: &Path, recording: bool) -> Val
         json!({
             "type": "rewrite", "version": 2, "id": "rewrite-1", "host": "pi",
             "session": "session-1", "tool_call_id": "call-1", "unit_id": "unit-1",
-            "recording": true, "dialect": dialect, "command": command
+            "recording": true, "dialect": dialect, "command": command,
+            "tool": {"name": "provider.shell", "input": {"command": command, "marker": true}, "source": "unknown"}
         })
     )
     .unwrap();
@@ -71,6 +72,89 @@ fn planning_preserves_partial_units_without_execution_or_content() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&report.stdout).contains("Executed commands: 0"));
+}
+
+#[test]
+fn custom_program_policy_uses_runtime_cwd_original_identity_and_refreshes() {
+    for dialect in if cfg!(windows) {
+        vec!["bash", "powershell"]
+    } else {
+        vec!["bash"]
+    } {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("project");
+        fs::create_dir_all(project.join(".outrim")).unwrap();
+        let custom = home
+            .path()
+            .join(format!("custom{}", std::env::consts::EXE_SUFFIX));
+        fs::copy(fixture(), &custom).unwrap();
+        let target = custom.to_str().unwrap().replace('\\', "/");
+        let invoke = format!(
+            "{}'{target}' json",
+            if dialect == "bash" { "" } else { "& " }
+        );
+        let command = format!("cd project; {invoke}");
+        let rewritten = rewrite(&command, dialect);
+        let rewritten = rewritten["command"].as_str().unwrap();
+        // A wrapper may resolve an unknown external program, but cannot capture it by default.
+        let raw = shell(rewritten, dialect, home.path());
+        assert_eq!(
+            raw.status.code(),
+            Some(if dialect == "bash" { 19 } else { 1 })
+        );
+        assert!(!home.path().join(".outrim/gain.json").exists());
+        assert_eq!(fs::read(project.join("executed")).unwrap(), b"once");
+        let path = project.join(".outrim/config.json");
+        fs::write(
+            &path,
+            json!({"rules": [{"match": {
+            "tool": "provider.shell", "input": {"marker": true},
+            "command": ["custom", "json"], "exact": true
+        }, "compression": "json_compact"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let compressed = shell(rewritten, dialect, home.path());
+        assert_eq!(compressed.status.code(), raw.status.code());
+        for (actual, expected) in [
+            (&compressed.stdout, &raw.stdout),
+            (&compressed.stderr, &raw.stderr),
+        ] {
+            let actual = std::str::from_utf8(actual).unwrap();
+            let original = actual
+                .split("The full output is available at ")
+                .nth(1)
+                .unwrap()
+                .trim();
+            assert_eq!(fs::read(original).unwrap(), *expected);
+            assert!(actual.len() < expected.len());
+        }
+        // Explicit exec selects the same command policy; only host-specific conditions differ.
+        fs::write(&path, json!({"rules": [{"match": {"command": ["custom", "json"]}, "compression": "json_compact"}]}).to_string()).unwrap();
+        let explicit = Command::new(env!("CARGO_BIN_EXE_outrim"))
+            .args(["exec", "--"])
+            .arg(&custom)
+            .arg("json")
+            .current_dir(&project)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .output()
+            .unwrap();
+        assert_eq!(explicit.status.code(), Some(19));
+        assert!(
+            std::str::from_utf8(&explicit.stdout)
+                .unwrap()
+                .contains("The full output is available at ")
+        );
+        fs::write(&path, r#"{"rules":[{"match":{},"compression":"off"}]}"#).unwrap();
+        let unchanged = shell(rewritten, dialect, home.path());
+        assert_eq!(unchanged.stdout, raw.stdout);
+        assert_eq!(unchanged.stderr, raw.stderr);
+        assert_eq!(
+            fs::read(project.join("executed")).unwrap(),
+            b"onceonceonceonce"
+        );
+    }
 }
 
 #[test]
