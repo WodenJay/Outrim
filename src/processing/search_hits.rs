@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 pub(crate) fn group_search_hits(text: &str) -> Option<String> {
-    let records: Vec<_> = text.split_inclusive('\n').collect();
+    let (body, footer) = super::search_footer::split(text, " matches limit reached", true);
+    let records: Vec<_> = body.split_inclusive('\n').collect();
     let trailing_blank_count = records
         .iter()
         .rev()
@@ -13,7 +14,7 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
         .map(|record| parse_search_record(record))
         .collect::<Option<_>>()?;
     let mut has_hit = false;
-    let mut ordered = false;
+    let mut ordered = !footer.is_empty();
     for (index, record) in parsed.iter().enumerate() {
         match record {
             SearchRecord::Ambiguous => return None,
@@ -31,7 +32,7 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
                 ordered = true;
             }
             SearchRecord::Limit(_) => {
-                if index + 1 != parsed.len() {
+                if !footer.is_empty() || index + 1 != parsed.len() {
                     return None;
                 }
                 ordered = true;
@@ -50,6 +51,7 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
     for record in &records[record_count..] {
         grouped.push_str(record);
     }
+    grouped.push_str(footer);
     Some(grouped)
 }
 
