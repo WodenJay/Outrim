@@ -101,6 +101,46 @@ impl Originals {
         }
     }
 
+    pub(super) fn omit_read(
+        &self,
+        host: Host,
+        session: &str,
+        selection: &super::reads::Selection,
+        response: &mut Response,
+    ) {
+        let result = (|| -> io::Result<_> {
+            let file = self.reserve(host, session)?;
+            let path = file
+                .path()
+                .to_str()
+                .ok_or_else(|| io::Error::other("non-Unicode original path"))?;
+            let text = format!(
+                "[outrim]: Already read {}:{}; unchanged, so omitted. Reread: read \"{path}\".",
+                selection.path, selection.label
+            );
+            if text.chars().count() >= response.text.chars().count() {
+                return Ok(None);
+            }
+            let path = storage::commit(file, &response.text)?;
+            Ok(Some((text, path)))
+        })();
+        match result {
+            Ok(Some((text, path))) => {
+                response.text = text;
+                response.original_path = Some(path.to_string_lossy().into_owned());
+                response.applied_rule = Some("read_dedup".into());
+                response.disposition = Disposition::Compressed;
+                response.reason = Some("already_read_unchanged".into());
+                response.candidates.clear();
+            }
+            Ok(None) => response.disposition = Disposition::NotShorter,
+            Err(_) => {
+                response.disposition = Disposition::FailedOpen;
+                response.reason = Some("original_storage_failed".into());
+            }
+        }
+    }
+
     fn reserve(&self, host: Host, session: &str) -> io::Result<NamedTempFile> {
         let host = match host {
             Host::Pi => "pi",

@@ -54,6 +54,7 @@ pub(crate) fn run(
                 tool_call_id: None,
                 source: None,
                 recording: None,
+                read_receipt: None,
             }),
         )
     });

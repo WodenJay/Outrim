@@ -241,6 +241,7 @@ fn shared_execution_keeps_json_eligible_but_custom_logs_unchanged() {
                 tool_call_id: Some("real-call".into()),
                 source,
                 recording: Some(true),
+                read_receipt: None,
             },
         );
         let mut output = Vec::new();

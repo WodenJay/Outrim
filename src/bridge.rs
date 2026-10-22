@@ -34,6 +34,34 @@ pub fn run(
         };
 
         match message {
+            Message::ShellRead { request, call } => {
+                write_response(&mut output, &processor.process_shell_read(*request, &call))?;
+            }
+            Message::Read(read) => {
+                write_response(&mut output, &processor.process_read(*read))?;
+            }
+            Message::ResetReads { id } => {
+                processor.reset_reads();
+                write_response(
+                    &mut output,
+                    &DeliveryAcknowledgement {
+                        version: VERSION,
+                        id,
+                        acknowledged: true,
+                    },
+                )?;
+            }
+            Message::DeliverRead { id, request_id } => {
+                processor.deliver_read(&request_id);
+                write_response(
+                    &mut output,
+                    &DeliveryAcknowledgement {
+                        version: VERSION,
+                        id,
+                        acknowledged: true,
+                    },
+                )?;
+            }
             Message::RecordRecovery(recovery) => {
                 let response = DeliveryAcknowledgement {
                     version: VERSION,
@@ -81,6 +109,10 @@ fn write_response(output: &mut impl Write, response: &impl serde::Serialize) -> 
 }
 
 enum Message {
+    Read(Box<crate::processing::reads::ReadRequest>),
+    ShellRead { request: Box<Request>, call: String },
+    ResetReads { id: String },
+    DeliverRead { id: String, request_id: String },
     Rewrite(crate::rewrite::Request),
     Process(Request),
     RecordDelivery(RecordDeliveryRequest),
@@ -110,6 +142,38 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
                 error: ProtocolError::InvalidRequest,
                 details: error.to_string(),
             }),
+        Some(Value::String(kind)) if kind == "shell_read" => {
+            let call = value
+                .get("tool_call_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            serde_json::from_value(value)
+                .map(|request| Message::ShellRead { request, call })
+                .map_err(|error| ParseFailure {
+                    id,
+                    error: ProtocolError::InvalidRequest,
+                    details: error.to_string(),
+                })
+        }
+        Some(Value::String(kind)) if kind == "read_process" => serde_json::from_value(value)
+            .map(Message::Read)
+            .map_err(|error| ParseFailure {
+                id,
+                error: ProtocolError::InvalidRequest,
+                details: error.to_string(),
+            }),
+        Some(Value::String(kind)) if kind == "read_reset" => Ok(Message::ResetReads {
+            id: id.unwrap_or_default(),
+        }),
+        Some(Value::String(kind)) if kind == "read_delivered" => Ok(Message::DeliverRead {
+            id: id.unwrap_or_default(),
+            request_id: value
+                .get("request_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        }),
         Some(Value::String(kind)) if kind == "rewrite" => serde_json::from_value(value)
             .map(Message::Rewrite)
             .map_err(|error| ParseFailure {

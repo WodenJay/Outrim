@@ -192,6 +192,7 @@ export interface Candidate {
 }
 
 interface CoreResponse {
+  read?: boolean;
   version: number;
   id: string;
   text?: string;
@@ -428,7 +429,9 @@ export function createBridge(
     tool: ToolInput,
     text: string,
     signal?: AbortSignalLike,
+    read?: { selection: import("./reads").ReadSelection } | { call: string },
   ): Promise<ProcessedResult | undefined>;
+  resetReads(): void;
   recordDelivery(
     original: string | readonly string[],
     outcome: ProcessedResult | "recovery_skipped" | "protected" | undefined,
@@ -577,14 +580,35 @@ export function createBridge(
     });
   }
 
+  let readEpoch = 0;
+  const shellReads = new Set<string>();
+  const readIds = new WeakMap<ProcessedResult, { id: string; epoch: number }>();
+  function resetReads(): void {
+    readEpoch++;
+    shellReads.clear();
+    if (child) void exchange({ type: "read_reset" });
+  }
+
   async function process(
     session: string,
     tool: ToolInput,
     text: string,
     signal?: AbortSignalLike,
+    read?: { selection: import("./reads").ReadSelection } | { call: string },
   ): Promise<ProcessedResult | undefined> {
+    if (read && "call" in read) {
+      const key = JSON.stringify([session, read.call]);
+      if (!shellReads.delete(key)) return undefined;
+    }
+    const epoch = readEpoch;
     const payload: CoreRequest = { version: 2, id: "", host, session, tool, text };
-    const response = await exchange({ ...payload }, signal);
+    const facts = !read
+      ? {}
+      : "selection" in read
+        ? { type: "read_process", selection: read.selection }
+        : { type: "shell_read", tool_call_id: read.call };
+    const response = await exchange({ ...payload, ...facts }, signal);
+    if (read && epoch !== readEpoch) return undefined;
     if (
       !response ||
       typeof response.text !== "string" ||
@@ -592,7 +616,7 @@ export function createBridge(
       !(response.applied_rule === null || typeof response.applied_rule === "string")
     )
       return undefined;
-    return {
+    const result: ProcessedResult = {
       text: response.text,
       disposition: response.disposition as Disposition,
       appliedRule: response.applied_rule,
@@ -600,6 +624,8 @@ export function createBridge(
       candidates: Array.isArray(response.candidates) ? response.candidates : [],
       reason: typeof response.reason === "string" ? response.reason : null,
     };
+    if (read) readIds.set(result, { id: response.id, epoch });
+    return result;
   }
 
   async function rewrite(
@@ -624,6 +650,7 @@ export function createBridge(
       5_000,
     );
     const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    if (rewritten && response?.read === true) shellReads.add(JSON.stringify([session, toolCallId]));
     recordWrapping(
       session,
       toolCallId,
@@ -649,6 +676,11 @@ export function createBridge(
     const texts = typeof original === "string" ? [original] : original;
     const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
     const processed = typeof outcome === "object" ? outcome : undefined;
+    const read = processed && readIds.get(processed);
+    if (processed && read && read.epoch === readEpoch) {
+      readIds.delete(processed);
+      void exchange({ type: "read_delivered", request_id: read.id }, signal);
+    }
     const id = String(++nextId);
     const request = {
       type: "record_delivery",
@@ -804,6 +836,7 @@ export function createBridge(
   return {
     rewrite,
     process,
+    resetReads,
     recordDelivery,
     recordObservation,
     recordRecovery,

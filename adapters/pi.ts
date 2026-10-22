@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { nativeReadSelection } from "./reads";
 import {
   type AbortSignalLike,
   type BridgeChild,
@@ -35,6 +36,7 @@ interface ToolResultEvent {
 }
 
 interface ToolResultContext {
+  cwd?: string;
   sessionManager: { getSessionId(): string };
   signal: AbortSignalLike | undefined;
 }
@@ -68,7 +70,10 @@ interface PiApi {
       context: ToolResultContext,
     ) => Promise<ToolResultEventResult | undefined>,
   ): unknown;
-  on(event: "session_shutdown", handler: () => void): unknown;
+  on(
+    event: "session_shutdown" | "session_start" | "session_compact" | "session_tree",
+    handler: () => void,
+  ): unknown;
 }
 
 interface PiOptions {
@@ -164,6 +169,8 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   });
 
   pi.on("tool_result", async (event, context) => {
+    // billion-context-pi's tool completes a compact, even when it reports failure.
+    if (event.toolName === "compress") bridge.resetReads();
     const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
     originalInputs.delete(event.toolCallId);
     const attribution = recoveryAttribution(event.toolName, originalInput);
@@ -209,7 +216,40 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
           metadataOnly: true,
         },
       );
-      return undefined;
+      const [content] = event.content;
+      if (
+        event.isError ||
+        hostOutputFacts("pi", event.details).completeness === "host_truncated" ||
+        event.parentToolCallId ||
+        event.content.length !== 1 ||
+        content?.type !== "text" ||
+        typeof content.text !== "string" ||
+        inputReferencesOriginals(originalInput)
+      )
+        return undefined;
+      const processed = await bridge.process(
+        context.sessionManager.getSessionId(),
+        {
+          name: event.toolName,
+          input: originalInput,
+          source: "unknown",
+          exit_code: exitCodeFrom(event.structuredContent),
+        },
+        content.text,
+        context.signal,
+        { call: event.toolCallId },
+      );
+      if (!processed || context.signal?.aborted || processed.reason === "unverified_shell_read")
+        return undefined;
+      bridge.recordDelivery(content.text, processed, context.signal);
+      if (processed.text === content.text) return undefined;
+      return {
+        content: [{ ...content, type: "text", text: processed.text }],
+        details: event.details,
+        structuredContent: event.structuredContent,
+        isError: event.isError,
+        usage: event.usage,
+      };
     }
     const observation = {
       session: context.sessionManager.getSessionId(),
@@ -256,6 +296,14 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       observation.tool,
       text,
       context.signal,
+      event.toolName === "read" &&
+        !event.isError &&
+        observation.diagnostics.completeness !== "host_truncated"
+        ? (() => {
+            const selection = nativeReadSelection("pi", originalInput, text, context.cwd);
+            return selection ? { selection } : undefined;
+          })()
+        : undefined,
     );
     bridge.recordObservation(
       observation,
@@ -284,6 +332,12 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     };
   });
 
+  for (const event of ["session_start", "session_compact", "session_tree"] as const) {
+    pi.on(event, () => {
+      originalInputs.clear();
+      bridge.resetReads();
+    });
+  }
   pi.on("session_shutdown", () => bridge.close());
 }
 

@@ -1,7 +1,7 @@
 // Installed Pi adapter + real bridge + native shell. SDK dispatch is verified separately.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -80,6 +80,36 @@ if (process.argv[2] === "--host") {
       context,
     );
     assert.ok(native.content[0].text.length < json.length);
+    const source = resolve("dedup source.rs");
+    const body = "fn source_content() {}\n".repeat(200);
+    writeFileSync(source, body);
+    for (const toolName of ["read", "bash"]) {
+      for (let index = 0; index < 2; index++) {
+        const event = {
+          toolName,
+          toolCallId: `${toolName}-${index}`,
+          input:
+            toolName === "read"
+              ? { path: source }
+              : { command: `cat '${source.replaceAll("\\", "/")}'` },
+        };
+        await handlers.get("tool_call")(event, context);
+        const text =
+          toolName === "read"
+            ? body
+            : spawnSync("bash", ["-c", event.input.command], { encoding: "utf8" }).stdout;
+        const result = await handlers.get("tool_result")(
+          { ...event, content: [{ type: "text", text }] },
+          context,
+        );
+        assert.equal(
+          index === 0
+            ? (result?.content[0].text ?? text)
+            : result?.content[0].text.includes("unchanged, so omitted"),
+          index === 0 ? body : true,
+        );
+      }
+    }
   } finally {
     handlers.get("session_shutdown")();
   }
@@ -107,10 +137,12 @@ if (process.argv[2] === "--host") {
     });
     const stats = JSON.parse(readFileSync(join(home, ".outrim/gain.json"), "utf8"));
     assert.equal(
-      stats.outputs,
-      4,
-      "two streams + recovery read + native tool; no shell-result samples",
+      Object.values(stats.outcomes).reduce((total, count) => total + count, 0),
+      8,
+      "two streams + recovery + custom tool + four delivered file reads",
     );
+    assert.equal(stats.rules.read_dedup.count, 2);
+    assert.ok(stats.rules.read_dedup.after_chars < stats.rules.read_dedup.before_chars);
     const events = readdirSync(join(home, ".outrim/records")).flatMap((instance) =>
       readFileSync(join(home, ".outrim/records", instance, "events.jsonl"), "utf8")
         .trim()

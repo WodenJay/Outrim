@@ -1,9 +1,9 @@
 // Installed OpenCode adapter + real bridge + native shell. This is not a real host run.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -113,6 +113,31 @@ if (process.argv[2] === "--host") {
     assert.equal(native.result.content[1], image);
     assert.equal(native.result.metadata, metadata);
     assert.equal(native.result.output, structured);
+    const source = resolve("dedup source.rs");
+    const body = "fn source_content() {}\n".repeat(200);
+    writeFileSync(source, body);
+    for (const tool of ["read", "shell"]) {
+      for (let index = 0; index < 2; index++) {
+        const event = {
+          ...finished,
+          tool,
+          id: `${tool}-${index}`,
+          input:
+            tool === "read"
+              ? { filePath: source }
+              : { command: `cat '${source.replaceAll("\\", "/")}'` },
+        };
+        await handlers.get("tool.execute.before")(event);
+        const text =
+          tool === "read"
+            ? `Read file ${source}, lines 1-200\n${body}`
+            : spawnSync("bash", ["-c", event.input.command], { encoding: "utf8" }).stdout;
+        event.result = { content: text, metadata: { exit: 0 } };
+        await handlers.get("tool.execute.after")(event);
+        if (index === 0) assert.equal(event.result.content, text);
+        else assert.ok(event.result.content.includes("unchanged, so omitted"));
+      }
+    }
   } finally {
     await close();
   }
@@ -161,11 +186,13 @@ if (process.argv[2] === "--host") {
       });
       const stats = JSON.parse(readFileSync(join(home, ".outrim/gain.json"), "utf8"));
       assert.equal(
-        stats.outputs,
-        4,
-        "two streams + recovery read + native tool; no shell-result samples",
+        Object.values(stats.outcomes).reduce((total, count) => total + count, 0),
+        8,
+        "two streams + recovery + custom tool + four delivered file reads",
       );
-      assert.equal(stats.outcomes.compressed, 3);
+      assert.equal(stats.outcomes.compressed, 5);
+      assert.equal(stats.rules.read_dedup.count, 2);
+      assert.ok(stats.rules.read_dedup.after_chars < stats.rules.read_dedup.before_chars);
       assert.equal(stats.outcomes.recovery_skipped, 1);
       assert.ok(stats.recovery_chars > 0);
       if (!recording) {
