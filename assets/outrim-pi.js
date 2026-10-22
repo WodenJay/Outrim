@@ -81,6 +81,153 @@ function nativeReadSelection(host, input, text, cwd) {
 import { readFileSync, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
 import { homedir } from "os";
 import { isAbsolute as isAbsolute2, join, relative } from "path";
+
+// adapters/bridge/transport.ts
+function createTransport(executable, args, spawnProcess) {
+  let child;
+  let nextId = 0;
+  let buffer = "";
+  let closed = false;
+  const pending = new Map;
+  function fail(failedChild) {
+    if (child !== failedChild)
+      return;
+    child = undefined;
+    buffer = "";
+    for (const request of pending.values())
+      request.finish(undefined);
+    pending.clear();
+    failedChild.kill();
+  }
+  function receive(currentChild, chunk) {
+    if (child !== currentChild)
+      return;
+    buffer += chunk;
+    while (true) {
+      const newline = buffer.indexOf(`
+`);
+      if (newline < 0)
+        return;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        fail(currentChild);
+        return;
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        fail(currentChild);
+        return;
+      }
+      const response = parsed;
+      const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
+      if (response.version !== 2 || !request) {
+        fail(currentChild);
+        return;
+      }
+      pending.delete(response.id);
+      request.finish(response);
+    }
+  }
+  function start() {
+    let started;
+    try {
+      started = spawnProcess(executable, args, {
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsHide: true
+      });
+    } catch {
+      return;
+    }
+    child = started;
+    started.stdout.setEncoding("utf8");
+    started.stdout.on("data", (chunk) => receive(started, chunk));
+    started.stdin.on("error", () => fail(started));
+    started.on("error", () => fail(started));
+    started.on("exit", () => fail(started));
+    return started;
+  }
+  function exchange(payload, signal, timeoutMs) {
+    if (closed || signal?.aborted)
+      return Promise.resolve(undefined);
+    const currentChild = child ?? start();
+    if (!currentChild)
+      return Promise.resolve(undefined);
+    const id = String(++nextId);
+    const request = {
+      ...payload,
+      version: 2,
+      id,
+      ...payload.type === "process_parts" ? { request: { ...payload.request, id } } : {}
+    };
+    let line;
+    try {
+      line = `${JSON.stringify(request)}
+`;
+    } catch {
+      return Promise.resolve(undefined);
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer;
+      const finish = (response) => {
+        if (settled)
+          return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        resolve(response);
+      };
+      const abort = () => finish(undefined);
+      pending.set(id, { finish });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) {
+        pending.delete(id);
+        finish(undefined);
+        return;
+      }
+      if (timeoutMs !== undefined)
+        timer = setTimeout(() => fail(currentChild), timeoutMs);
+      try {
+        currentChild.stdin.write(line, (error) => {
+          if (error)
+            fail(currentChild);
+        });
+      } catch {
+        fail(currentChild);
+      }
+    });
+  }
+  function close() {
+    if (closed)
+      return;
+    closed = true;
+    const closingChild = child;
+    child = undefined;
+    buffer = "";
+    for (const request of pending.values())
+      request.finish(undefined);
+    pending.clear();
+    if (closingChild) {
+      try {
+        closingChild.stdin.end();
+      } catch {
+        closingChild.kill();
+      }
+    }
+  }
+  return {
+    exchange,
+    close,
+    get running() {
+      return child !== undefined;
+    }
+  };
+}
+
+// adapters/shared.ts
 var TEST_COMMANDS = [
   /^\s*cargo\s+test(?=\s|$)/i,
   /^\s*(?:bun|npm|pnpm|yarn)\s+(?:test|run\s+test)(?=\s|$)/i,
@@ -330,131 +477,16 @@ function createBridge(host, executable, spawnProcess) {
   try {
     recording = JSON.parse(readFileSync(join(homedir(), ".outrim", "recording.json"), "utf8")).recording === true;
   } catch {}
-  let child;
-  let nextId = 0;
-  let buffer = "";
+  const transport = createTransport(executable, ["bridge", "--recording", recording ? "on" : "off"], spawnProcess);
+  const { exchange } = transport;
   let closed = false;
-  const pending = new Map;
-  function fail(failedChild) {
-    if (child !== failedChild)
-      return;
-    child = undefined;
-    buffer = "";
-    for (const request of pending.values())
-      request.finish(undefined);
-    pending.clear();
-    failedChild.kill();
-  }
-  function receive(failedChild, chunk) {
-    if (child !== failedChild)
-      return;
-    buffer += chunk;
-    while (true) {
-      const newline = buffer.indexOf(`
-`);
-      if (newline < 0)
-        return;
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      let parsed;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        fail(failedChild);
-        return;
-      }
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        fail(failedChild);
-        return;
-      }
-      const response = parsed;
-      const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
-      if (response.version !== 2 || !request) {
-        fail(failedChild);
-        return;
-      }
-      pending.delete(response.id);
-      request.finish(response);
-    }
-  }
-  function start() {
-    let started;
-    try {
-      started = spawnProcess(executable, ["bridge", "--recording", recording ? "on" : "off"], {
-        stdio: ["pipe", "pipe", "ignore"],
-        windowsHide: true
-      });
-    } catch {
-      return;
-    }
-    child = started;
-    started.stdout.setEncoding("utf8");
-    started.stdout.on("data", (chunk) => receive(started, chunk));
-    started.stdin.on("error", () => fail(started));
-    started.on("error", () => fail(started));
-    started.on("exit", () => fail(started));
-    return started;
-  }
-  function exchange(payload, signal, timeoutMs) {
-    if (closed || signal?.aborted)
-      return Promise.resolve(undefined);
-    const currentChild = child ?? start();
-    if (!currentChild)
-      return Promise.resolve(undefined);
-    const id = String(++nextId);
-    const request = {
-      ...payload,
-      version: 2,
-      id,
-      ...payload.type === "process_parts" ? {
-        request: { ...payload.request, id }
-      } : {}
-    };
-    let line;
-    try {
-      line = `${JSON.stringify(request)}
-`;
-    } catch {
-      return Promise.resolve(undefined);
-    }
-    return new Promise((resolve) => {
-      let settled = false;
-      let timer;
-      const finish = (response) => {
-        if (settled)
-          return;
-        settled = true;
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        resolve(response);
-      };
-      const abort = () => finish(undefined);
-      pending.set(id, { finish });
-      signal?.addEventListener("abort", abort, { once: true });
-      if (signal?.aborted) {
-        pending.delete(id);
-        finish(undefined);
-        return;
-      }
-      if (timeoutMs !== undefined)
-        timer = setTimeout(() => fail(currentChild), timeoutMs);
-      try {
-        currentChild.stdin.write(line, (error) => {
-          if (error)
-            fail(currentChild);
-        });
-      } catch {
-        fail(currentChild);
-      }
-    });
-  }
   let readEpoch = 0;
   const shellReads = new Set;
   const readIds = new WeakMap;
   function resetReads() {
     readEpoch++;
     shellReads.clear();
-    if (child)
+    if (transport.running)
       exchange({ type: "read_reset" });
   }
   async function selectPolicy(session, tool, cwd, signal) {
@@ -566,9 +598,6 @@ function createBridge(host, executable, spawnProcess) {
   function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
       return;
-    const currentChild = child ?? start();
-    if (!currentChild)
-      return;
     const texts = typeof original === "string" ? [original] : original;
     const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
     const processed = typeof outcome === "object" ? outcome : undefined;
@@ -577,44 +606,19 @@ function createBridge(host, executable, spawnProcess) {
       readIds.delete(processed);
       exchange({ type: "read_delivered", request_id: read.id }, signal);
     }
-    const id = String(++nextId);
-    const request = {
+    exchange({
       type: "record_delivery",
-      version: 2,
-      id,
       disposition: processed?.disposition ?? (typeof outcome === "string" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
       before_chars: beforeChars,
       after_chars: processed ? Array.from(processed.text).length : beforeChars
-    };
-    let line;
-    try {
-      line = `${JSON.stringify(request)}
-`;
-    } catch {
-      return;
-    }
-    pending.set(id, { finish: () => {} });
-    try {
-      currentChild.stdin.write(line, (error) => {
-        if (error)
-          fail(currentChild);
-      });
-    } catch {
-      fail(currentChild);
-    }
+    });
   }
   function recordObservation(context, original, final, facts) {
     if (closed || !recording)
       return;
-    const currentChild = child ?? start();
-    if (!currentChild)
-      return;
-    const id = String(++nextId);
-    const request = {
+    exchange({
       type: "record_observation",
-      version: 2,
-      id,
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
@@ -623,7 +627,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "3df710a6392ef810b6d46216ed49d5d960a9ffa3331c750750f5adfcc1f38387",
+        adapter_build: "ed633b735fdb22dcbb57a0d83d91d864df2af7970de2fe8e6218172c916e371d",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -637,23 +641,7 @@ function createBridge(host, executable, spawnProcess) {
       candidates: facts.candidates ?? [],
       reason: facts.reason ?? null,
       parts: facts.parts ?? []
-    };
-    let line;
-    try {
-      line = `${JSON.stringify(request)}
-`;
-    } catch {
-      return;
-    }
-    pending.set(id, { finish: () => {} });
-    try {
-      currentChild.stdin.write(line, (error) => {
-        if (error)
-          fail(currentChild);
-      });
-    } catch {
-      fail(currentChild);
-    }
+    });
   }
   function recordRecovery(session, toolCallId, texts, evidence) {
     exchange({
@@ -688,19 +676,7 @@ function createBridge(host, executable, spawnProcess) {
     if (closed)
       return;
     closed = true;
-    const closingChild = child;
-    child = undefined;
-    buffer = "";
-    for (const request of pending.values())
-      request.finish(undefined);
-    pending.clear();
-    if (closingChild) {
-      try {
-        closingChild.stdin.end();
-      } catch {
-        closingChild.kill();
-      }
-    }
+    transport.close();
   }
   return {
     rewrite,

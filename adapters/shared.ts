@@ -1,6 +1,9 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
+import { type AbortSignalLike, createTransport, type SpawnProcess } from "./bridge/transport";
+
+export type { AbortSignalLike, BridgeChild, SpawnProcess } from "./bridge/transport";
 
 export type Host = "pi" | "opencode";
 export type WrappingState = "not_attempted" | "rejected" | "planned" | "adopted" | "withdrawn";
@@ -17,12 +20,6 @@ export type Source =
   | "test_log"
   | "runtime_log"
   | "unknown";
-
-export interface AbortSignalLike {
-  readonly aborted: boolean;
-  addEventListener(type: "abort", listener: () => void, options?: { once?: boolean }): void;
-  removeEventListener(type: "abort", listener: () => void): void;
-}
 
 export interface ToolInput {
   name: string;
@@ -330,27 +327,6 @@ export function processingFacts(
   };
 }
 
-export interface BridgeChild {
-  stdin: {
-    write(chunk: string, callback: (error?: Error | null) => void): boolean;
-    end(): void;
-    on(event: "error", handler: (error: Error) => void): unknown;
-  };
-  stdout: {
-    setEncoding(encoding: "utf8"): void;
-    on(event: "data", handler: (chunk: string) => void): unknown;
-  };
-  on(event: "error", handler: (error: Error) => void): unknown;
-  on(event: "exit", handler: (code: number | null, signal: string | null) => void): unknown;
-  kill(): boolean;
-}
-
-export type SpawnProcess = (
-  executable: string,
-  args: string[],
-  options: { stdio: ["pipe", "pipe", "ignore"]; windowsHide: true },
-) => BridgeChild;
-
 export function inputReferencesOriginals(value: unknown): boolean {
   if (typeof value === "string") {
     const normalized = value.replaceAll("\\", "/");
@@ -492,125 +468,13 @@ export function createBridge(
   } catch {
     // Missing or unreadable settings fail closed for content retention.
   }
-  let child: BridgeChild | undefined;
-  let nextId = 0;
-  let buffer = "";
+  const transport = createTransport<CoreResponse>(
+    executable,
+    ["bridge", "--recording", recording ? "on" : "off"],
+    spawnProcess,
+  );
+  const { exchange } = transport;
   let closed = false;
-  const pending = new Map<string, { finish(response: CoreResponse | undefined): void }>();
-
-  function fail(failedChild: BridgeChild): void {
-    if (child !== failedChild) return;
-    child = undefined;
-    buffer = "";
-    for (const request of pending.values()) request.finish(undefined);
-    pending.clear();
-    failedChild.kill();
-  }
-
-  function receive(failedChild: BridgeChild, chunk: string): void {
-    if (child !== failedChild) return;
-    buffer += chunk;
-    while (true) {
-      const newline = buffer.indexOf("\n");
-      if (newline < 0) return;
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        fail(failedChild);
-        return;
-      }
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        fail(failedChild);
-        return;
-      }
-      const response = parsed as CoreResponse;
-      const request = typeof response.id === "string" ? pending.get(response.id) : undefined;
-      if (response.version !== 2 || !request) {
-        fail(failedChild);
-        return;
-      }
-      pending.delete(response.id);
-      request.finish(response);
-    }
-  }
-
-  function start(): BridgeChild | undefined {
-    let started: BridgeChild;
-    try {
-      started = spawnProcess(executable, ["bridge", "--recording", recording ? "on" : "off"], {
-        stdio: ["pipe", "pipe", "ignore"],
-        windowsHide: true,
-      });
-    } catch {
-      return;
-    }
-    child = started;
-    started.stdout.setEncoding("utf8");
-    started.stdout.on("data", (chunk) => receive(started, chunk));
-    started.stdin.on("error", () => fail(started));
-    started.on("error", () => fail(started));
-    started.on("exit", () => fail(started));
-    return started;
-  }
-
-  function exchange(
-    payload: Record<string, unknown>,
-    signal?: AbortSignalLike,
-    timeoutMs?: number,
-  ): Promise<CoreResponse | undefined> {
-    if (closed || signal?.aborted) return Promise.resolve(undefined);
-    const currentChild = child ?? start();
-    if (!currentChild) return Promise.resolve(undefined);
-
-    const id = String(++nextId);
-    const request = {
-      ...payload,
-      version: 2,
-      id,
-      ...(payload.type === "process_parts"
-        ? {
-            request: { ...(payload.request as CoreRequest), id },
-          }
-        : {}),
-    };
-    let line: string;
-    try {
-      line = `${JSON.stringify(request)}\n`;
-    } catch {
-      return Promise.resolve(undefined);
-    }
-
-    return new Promise((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const finish = (response: CoreResponse | undefined) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        resolve(response);
-      };
-      const abort = () => finish(undefined);
-      pending.set(id, { finish });
-      signal?.addEventListener("abort", abort, { once: true });
-      if (signal?.aborted) {
-        pending.delete(id);
-        finish(undefined);
-        return;
-      }
-      if (timeoutMs !== undefined) timer = setTimeout(() => fail(currentChild), timeoutMs);
-      try {
-        currentChild.stdin.write(line, (error) => {
-          if (error) fail(currentChild);
-        });
-      } catch {
-        fail(currentChild);
-      }
-    });
-  }
 
   let readEpoch = 0;
   const shellReads = new Set<string>();
@@ -618,7 +482,7 @@ export function createBridge(
   function resetReads(): void {
     readEpoch++;
     shellReads.clear();
-    if (child) void exchange({ type: "read_reset" });
+    if (transport.running) void exchange({ type: "read_reset" });
   }
 
   async function selectPolicy(
@@ -785,9 +649,6 @@ export function createBridge(
     signal?: AbortSignalLike,
   ): void {
     if (closed || signal?.aborted) return;
-    const currentChild = child ?? start();
-    if (!currentChild) return;
-
     const texts = typeof original === "string" ? [original] : original;
     const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
     const processed = typeof outcome === "object" ? outcome : undefined;
@@ -796,32 +657,14 @@ export function createBridge(
       readIds.delete(processed);
       void exchange({ type: "read_delivered", request_id: read.id }, signal);
     }
-    const id = String(++nextId);
-    const request = {
+    void exchange({
       type: "record_delivery",
-      version: 2,
-      id,
       disposition:
         processed?.disposition ?? (typeof outcome === "string" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
       before_chars: beforeChars,
       after_chars: processed ? Array.from(processed.text).length : beforeChars,
-    };
-    let line: string;
-    try {
-      line = `${JSON.stringify(request)}\n`;
-    } catch {
-      return;
-    }
-
-    pending.set(id, { finish: () => {} });
-    try {
-      currentChild.stdin.write(line, (error) => {
-        if (error) fail(currentChild);
-      });
-    } catch {
-      fail(currentChild);
-    }
+    });
   }
 
   // Observations record the result itself, so an aborted signal is only an
@@ -833,14 +676,8 @@ export function createBridge(
     facts: ObservationFacts,
   ): void {
     if (closed || !recording) return;
-    const currentChild = child ?? start();
-    if (!currentChild) return;
-
-    const id = String(++nextId);
-    const request = {
+    void exchange({
       type: "record_observation",
-      version: 2,
-      id,
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
@@ -863,22 +700,7 @@ export function createBridge(
       candidates: facts.candidates ?? [],
       reason: facts.reason ?? null,
       parts: facts.parts ?? [],
-    };
-    let line: string;
-    try {
-      line = `${JSON.stringify(request)}\n`;
-    } catch {
-      return;
-    }
-
-    pending.set(id, { finish: () => {} });
-    try {
-      currentChild.stdin.write(line, (error) => {
-        if (error) fail(currentChild);
-      });
-    } catch {
-      fail(currentChild);
-    }
+    });
   }
 
   function recordRecovery(
@@ -934,18 +756,7 @@ export function createBridge(
   function close(): void {
     if (closed) return;
     closed = true;
-    const closingChild = child;
-    child = undefined;
-    buffer = "";
-    for (const request of pending.values()) request.finish(undefined);
-    pending.clear();
-    if (closingChild) {
-      try {
-        closingChild.stdin.end();
-      } catch {
-        closingChild.kill();
-      }
-    }
+    transport.close();
   }
 
   return {
