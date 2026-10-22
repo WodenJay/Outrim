@@ -1,8 +1,6 @@
-use crate::protocol::Host;
 #[cfg(unix)]
 use std::fs;
 use std::{
-    hash::{DefaultHasher, Hash, Hasher},
     io::{self, Write},
     path::{Path, PathBuf},
 };
@@ -10,49 +8,6 @@ use tempfile::NamedTempFile;
 
 #[cfg(windows)]
 mod windows;
-
-pub(crate) struct Originals {
-    root: PathBuf,
-}
-
-impl Originals {
-    pub(crate) fn new(home: &Path) -> Self {
-        Self {
-            root: home.join(".outrim/outputs"),
-        }
-    }
-
-    pub(crate) fn reserve(&self, host: Host, session: &str) -> io::Result<NamedTempFile> {
-        let host = match host {
-            Host::Pi => "pi",
-            Host::Opencode => "opencode",
-            Host::Exec => "exec",
-        };
-        // Session IDs are opaque and unbounded; never use their bytes as a path
-        // component. This fingerprint only groups files, not their identity:
-        // random file names prevent overwrites even if two fingerprints collide.
-        // Readers retain exact paths, so no hash algorithm is a recovery contract.
-        let mut hasher = DefaultHasher::new();
-        session.hash(&mut hasher);
-        let session = format!("s-{:016x}", hasher.finish());
-        let root = std::path::absolute(&self.root)?;
-        let base = root
-            .parent()
-            .ok_or_else(|| io::Error::other("Invalid output root"))?;
-        for dir in [
-            base.to_path_buf(),
-            root.clone(),
-            root.join(host),
-            root.join(host).join(&session),
-        ] {
-            private_directory(&dir)?;
-        }
-        tempfile::Builder::new()
-            .prefix("o-")
-            .suffix(".txt")
-            .tempfile_in(root.join(host).join(session))
-    }
-}
 
 pub(crate) fn commit(mut file: NamedTempFile, text: &str) -> io::Result<PathBuf> {
     file.write_all(text.as_bytes())?;
