@@ -317,7 +317,10 @@ fn unsupported_protocol_version_fails_open() {
 
 #[test]
 fn final_hint_counts_and_unicode_codepoints_must_be_strictly_shorter() {
-    let home = tempfile::tempdir().unwrap();
+    let home = tempfile::Builder::new()
+        .prefix("outrim-恢复-🦀-")
+        .tempdir()
+        .unwrap();
     let processor = Processor::new(home.path());
     let probe = processor.process(request(&log(), Source::TestLog));
     let tail = "01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n";
@@ -332,11 +335,17 @@ fn final_hint_counts_and_unicode_codepoints_must_be_strictly_shorter() {
         let text = format!("{}\n{tail}", "🦀".repeat(count));
         let response = processor.process(request(&text, Source::RuntimeLog));
         assert_eq!(response.disposition, expected);
+        assert_eq!(
+            response.candidates[0].final_chars,
+            Some(probe.text.chars().count() as u64)
+        );
         if expected == Disposition::NotShorter {
+            assert_eq!(response.candidates[0].reason, "not_shorter_with_hint");
             assert_eq!(response.text, text);
             assert!(response.original_path.is_none());
             assert!(response.applied_rule.is_none());
         } else {
+            assert_eq!(response.candidates[0].reason, "selected");
             assert_eq!(response.text.chars().count() + 1, text.chars().count());
         }
     }
@@ -350,6 +359,8 @@ fn short_logs_and_unmatched_content_pass_through() {
         let response = processor.process(request(text, Source::BuildLog));
         assert_eq!(response.disposition, Disposition::NotShorter);
         assert_eq!(response.text, text);
+        assert_eq!(response.candidates[0].reason, "not_shorter");
+        assert_eq!(response.candidates[0].final_chars, None);
     }
     for source in [Source::Search, Source::Unknown] {
         let response = processor.process(request(&log(), source));
@@ -390,6 +401,8 @@ fn saving_failure_returns_original_without_internal_error_text() {
     assert_eq!(response.text, log());
     assert!(response.original_path.is_none());
     assert!(response.applied_rule.is_none());
+    assert_eq!(response.candidates[0].reason, "storage_failed");
+    assert_eq!(response.candidates[0].final_chars, None);
 }
 
 #[cfg(unix)]
@@ -545,6 +558,33 @@ fn mixed_json_uses_a_lossless_compact_candidate_when_final_text_is_shorter() {
 }
 
 #[test]
+fn equal_final_cost_keeps_the_first_eligible_candidate() {
+    let home = tempfile::tempdir().unwrap();
+    let text = format!("{}1", " ".repeat(1000));
+    let response = Processor::new(home.path()).process(request(&text, Source::Unknown));
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(response.applied_rule.as_deref(), Some("json_compact"));
+    assert_eq!(response.candidates.len(), 2);
+    assert_eq!(response.candidates[0].rule, "json_compact");
+    assert_eq!(response.candidates[0].reason, "selected");
+    assert_eq!(response.candidates[1].rule, "json_toon");
+    assert_eq!(
+        response.candidates[1].reason,
+        "smaller_or_equal_final_selected"
+    );
+    for candidate in &response.candidates {
+        assert_eq!(
+            candidate.final_chars,
+            Some(response.text.chars().count() as u64)
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(response.original_path.unwrap()).unwrap(),
+        text
+    );
+}
+
+#[test]
 fn repeated_json_records_choose_the_smaller_lossless_toon_candidate() {
     let home = tempfile::tempdir().unwrap();
     // Repetition makes the table representation beat the fixed path hint.
@@ -573,6 +613,16 @@ fn repeated_json_records_choose_the_smaller_lossless_toon_candidate() {
 
     assert_eq!(response.disposition, Disposition::Compressed);
     assert_eq!(response.applied_rule.as_deref(), Some("json_toon"));
+    assert_eq!(
+        response.candidates[0].reason,
+        "smaller_or_equal_final_selected"
+    );
+    assert_eq!(response.candidates[1].reason, "selected");
+    assert!(response.candidates[0].final_chars > response.candidates[1].final_chars);
+    assert_eq!(
+        response.candidates[1].final_chars,
+        Some(response.text.chars().count() as u64)
+    );
     let path = response.original_path.unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     let (encoded, hint) = response
