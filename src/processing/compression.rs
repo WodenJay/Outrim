@@ -91,9 +91,9 @@ impl Originals {
                 }
             }
             Ok(None) => response.disposition = Disposition::NotShorter,
-            Err(error) => {
+            Err(_) => {
                 response.disposition = Disposition::FailedOpen;
-                response.reason = Some(format!("original_storage: {error}"));
+                response.reason = Some("original_storage_failed".into());
                 for candidate in &mut response.candidates {
                     candidate.reason = "storage_failed".into();
                 }

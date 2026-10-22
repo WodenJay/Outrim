@@ -33,6 +33,13 @@ fn wrapper(home: &std::path::Path) -> Command {
 fn binary_and_over_capacity_streams_return_every_byte_without_samples() {
     for mode in ["binary", "large"] {
         let home = tempfile::tempdir().unwrap();
+        assert!(
+            wrapper(home.path())
+                .args(["gain", "record", "on"])
+                .status()
+                .unwrap()
+                .success()
+        );
         let output = wrapper(home.path())
             .args(["exec", "--"])
             .arg(fixture())
@@ -49,6 +56,31 @@ fn binary_and_over_capacity_streams_return_every_byte_without_samples() {
         }
         let gain = wrapper(home.path()).arg("gain").output().unwrap();
         assert_eq!(gain.stdout, b"No gain data.\n");
+        let instance = fs::read_dir(home.path().join(".outrim/records"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let events: Vec<serde_json::Value> = fs::read_to_string(instance.join("events.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        for event in events {
+            assert_eq!(event["diagnostics"]["output_origin"], "native_capture");
+            assert_eq!(
+                event["diagnostics"]["completeness"],
+                if mode == "large" {
+                    "capture_limit_passthrough"
+                } else {
+                    "complete"
+                }
+            );
+            assert_eq!(event["diagnostics"]["limit_bytes"], 8 * 1024 * 1024);
+            assert!(event["content"]["arguments"].is_null());
+        }
     }
 }
 
@@ -383,7 +415,7 @@ fn captured_streams_have_independent_recovery_and_gain() {
     assert!(
         String::from_utf8(detail.stdout)
             .unwrap()
-            .contains("3 records")
+            .contains("4 records")
     );
 }
 

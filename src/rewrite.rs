@@ -1,9 +1,12 @@
 //! Conservative flat-list rewriting. Resolution remains in the actual shell.
 mod segments;
 use crate::{
-    command,
+    Processor, command,
     execution::Context,
-    protocol::{Host, Source, VERSION},
+    protocol::{
+        Diagnostics, Host, ObservationMessageType, ObservationOutcome, RecordObservationRequest,
+        Source, Tool, VERSION,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, path::Path};
@@ -29,27 +32,46 @@ pub struct Response {
     pub version: u32,
     pub id: String,
     pub command: Option<String>,
+    pub reason: Option<String>,
 }
 
-pub fn rewrite(request: Request, executable: &Path) -> Response {
-    let command = replacement(&request, executable);
+pub fn rewrite(request: Request, executable: &Path, processor: &Processor) -> Response {
+    let command = replacement(&request, executable, processor);
     Response {
         version: VERSION,
         id: request.id,
+        reason: command.is_none().then(|| {
+            if !matches!(request.dialect.as_str(), "bash" | "powershell") {
+                "unknown_dialect"
+            } else if segments::segments(&request.command, request.dialect == "powershell")
+                .is_none()
+            {
+                "unsupported_syntax"
+            } else {
+                "unsupported_command"
+            }
+            .into()
+        }),
         command,
     }
 }
 
-fn replacement(request: &Request, executable: &Path) -> Option<String> {
+fn replacement(request: &Request, executable: &Path, processor: &Processor) -> Option<String> {
     if request.version != VERSION || request.kind != "rewrite" {
         return None;
     }
     let powershell = match request.dialect.as_str() {
         "bash" => false,
         "powershell" => true,
-        _ => return None,
+        _ => {
+            record_plan(processor, request, None, false, Some("unknown_dialect"));
+            return None;
+        }
     };
-    let segments = segments::segments(&request.command, powershell)?;
+    let Some(segments) = segments::segments(&request.command, powershell) else {
+        record_plan(processor, request, None, false, Some("unsupported_syntax"));
+        return None;
+    };
     let compound = segments.len() > 1;
     let mut output = String::new();
     let mut end = 0;
@@ -79,9 +101,23 @@ fn replacement(request: &Request, executable: &Path) -> Option<String> {
             .then(|| simple(request, original, &unit_id, executable, powershell))
             .flatten()
         {
+            record_plan(processor, request, Some(&unit_id), true, None);
             output.push_str(&replacement);
             changed = true;
         } else {
+            record_plan(
+                processor,
+                request,
+                Some(&unit_id),
+                false,
+                Some(
+                    if !segment.host_output || literals(original, powershell).is_none() {
+                        "unsupported_syntax"
+                    } else {
+                        "unsupported_command"
+                    },
+                ),
+            );
             output.push_str(original);
         }
         if conditional {
@@ -91,6 +127,49 @@ fn replacement(request: &Request, executable: &Path) -> Option<String> {
     }
     output.push_str(&request.command[end..]);
     changed.then_some(output)
+}
+
+fn record_plan(
+    processor: &Processor,
+    request: &Request,
+    unit: Option<&str>,
+    planned: bool,
+    reason: Option<&str>,
+) {
+    processor.record_observation(RecordObservationRequest {
+        message_type: ObservationMessageType::RecordObservation,
+        version: VERSION,
+        id: request.id.clone(),
+        host: request.host,
+        session: Some(request.session.clone()),
+        tool_call_id: Some(request.tool_call_id.clone()),
+        tool: Tool {
+            name: "shell".into(),
+            input: serde_json::Value::Null,
+            source: Source::Unknown,
+            exit_code: None,
+        },
+        original_text: None,
+        final_text: None,
+        metadata_only: true,
+        diagnostics: Some(Diagnostics {
+            unit_id: unit.map(str::to_owned),
+            wrapping: Some(if planned { "planned" } else { "rejected" }.into()),
+            requested_dialect: Some(request.dialect.clone()),
+            attempt_id: Some(
+                serde_json::json!([request.host, request.session, request.tool_call_id])
+                    .to_string(),
+            ),
+            ..Default::default()
+        }),
+        outcome: ObservationOutcome::Unsupported,
+        reason: reason.map(str::to_owned),
+        applied_rule: None,
+        original_path: None,
+        candidates: vec![],
+        parts: vec![],
+        execution: None,
+    });
 }
 
 fn simple(
@@ -213,8 +292,17 @@ fn simple(
         } else {
             String::new()
         };
+        // Process.Start avoids changing the shell's LASTEXITCODE; all observer
+        // output is redirected and failures remain local to the guard.
+        let observer = if request.recording {
+            format!(
+                "& {{ try {{ $i=[System.Diagnostics.ProcessStartInfo]::new(); $i.FileName={executable}; $i.Arguments='observe-fallback ' + {context}; $i.UseShellExecute=$false; $i.RedirectStandardOutput=$true; $i.RedirectStandardError=$true; $i.CreateNoWindow=$true; $p=[System.Diagnostics.Process]::Start($i); $p.WaitForExit(); $p.Dispose() }} catch {{}} }}; "
+            )
+        } else {
+            String::new()
+        };
         Some(format!(
-            "if (({resolve}).CommandType -eq 'Application'{platform_guard}) {{ & {executable} exec --context {context} -- ({resolve}).Source {args} }} else {{ {original} }}"
+            "if (({resolve}).CommandType -eq 'Application'{platform_guard}) {{ & {executable} exec --context {context} -- ({resolve}).Source {args} }} else {{ {observer}{original} }}"
         ))
     } else {
         // Resolve again only after proving this is a file, not a builtin, alias or function.
@@ -227,8 +315,13 @@ fn simple(
         } else {
             String::new()
         };
+        let observer = if request.recording {
+            format!("({executable} observe-fallback {context}) >/dev/null 2>&1 || :; ")
+        } else {
+            String::new()
+        };
         Some(format!(
-            "if [[ $(builtin type -t -- {target}) == file{platform_guard} ]]; then {executable} exec --context {context} -- \"$(builtin command -v -- {target})\" {args}; else {original}; fi"
+            "if [[ $(builtin type -t -- {target}) == file{platform_guard} ]]; then {executable} exec --context {context} -- \"$(builtin command -v -- {target})\" {args}; else {observer}{original}; fi"
         ))
     }
 }

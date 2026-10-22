@@ -1,7 +1,7 @@
 //! Process supervision and bounded byte capture. Compression never reruns a command.
 use outrim::{
     execution::{Context, Execution},
-    protocol::{Host, OutputStream},
+    protocol::{Diagnostics, Host, OutputStream},
 };
 use std::time::{Duration, Instant};
 use std::{
@@ -32,7 +32,7 @@ pub(crate) fn run(
     let supervisor = Supervisor::new(&mut command)?;
     if no_compress {
         let mut child = supervisor.spawn(&mut command)?;
-        return wait(&supervisor, &mut child, timeout);
+        return wait(&supervisor, &mut child, timeout).map(|(status, _)| status);
     }
     // Random invocation identity is not a fabricated host session or tool call.
     let identity = format!(
@@ -63,7 +63,7 @@ pub(crate) fn run(
     let stderr = child.stderr.take().unwrap();
     let out = thread::spawn(move || capture(stdout, io::stdout()));
     let err = thread::spawn(move || capture(stderr, io::stderr()));
-    let status = wait(&supervisor, &mut child, timeout)?;
+    let (status, terminal_reason) = wait(&supervisor, &mut child, timeout)?;
     // Join and forward independently: a closed stdout consumer must not hide stderr.
     let stdout = out
         .join()
@@ -79,6 +79,7 @@ pub(crate) fn run(
             OutputStream::Stdout,
             capture,
             status.code(),
+            terminal_reason,
             io::stdout(),
         )
     });
@@ -88,6 +89,7 @@ pub(crate) fn run(
             OutputStream::Stderr,
             capture,
             status.code(),
+            terminal_reason,
             io::stderr(),
         )
     });
@@ -105,8 +107,9 @@ fn wait(
     supervisor: &Supervisor,
     child: &mut std::process::Child,
     timeout: Option<Duration>,
-) -> io::Result<ExitStatus> {
+) -> io::Result<(ExitStatus, &'static str)> {
     let start = Instant::now();
+    let mut terminal_reason = "completed";
     let mut stopping = None;
     loop {
         let signal = supervisor.cancelled();
@@ -115,11 +118,19 @@ fn wait(
         {
             supervisor.stop(child, if signal == 0 { 15 } else { signal });
             stopping = Some(Instant::now());
+            terminal_reason = if signal == 0 { "timeout" } else { "cancelled" };
         }
         match child.try_wait() {
             Ok(Some(status)) => {
                 supervisor.cleanup(child);
-                return Ok(status);
+                return Ok((
+                    status,
+                    if terminal_reason == "completed" && !status.success() {
+                        "failed"
+                    } else {
+                        terminal_reason
+                    },
+                ));
             }
             Err(error) => {
                 supervisor.cleanup(child);
@@ -154,11 +165,13 @@ pub(crate) fn exit(status: ExitStatus) -> ! {
 struct Capture {
     bytes: Vec<u8>,
     bypass: bool,
+    observed_bytes: u64,
 }
 
 fn capture(mut input: impl Read, mut output: impl Write) -> io::Result<Capture> {
     let mut captured = Vec::new();
     let mut direct = false;
+    let mut observed_bytes = 0;
     let mut block = [0; 16 * 1024];
     loop {
         let length = match input.read(&mut block) {
@@ -168,6 +181,7 @@ fn capture(mut input: impl Read, mut output: impl Write) -> io::Result<Capture> 
         if length == 0 {
             break;
         }
+        observed_bytes += length as u64;
         if !direct && captured.len() + length > CAPTURE_LIMIT {
             output.write_all(&captured)?;
             captured.clear();
@@ -183,6 +197,7 @@ fn capture(mut input: impl Read, mut output: impl Write) -> io::Result<Capture> 
     Ok(Capture {
         bytes: captured,
         bypass: direct,
+        observed_bytes,
     })
 }
 
@@ -191,11 +206,31 @@ fn deliver(
     stream: OutputStream,
     capture: Capture,
     exit_code: Option<i32>,
+    terminal_reason: &str,
     mut output: impl Write,
 ) -> io::Result<()> {
+    let mut diagnostics = Diagnostics {
+        output_origin: Some("native_capture".into()),
+        completeness: Some(
+            if capture.bypass {
+                "capture_limit_passthrough"
+            } else if matches!(terminal_reason, "cancelled" | "timeout") {
+                "interrupted"
+            } else {
+                "complete"
+            }
+            .into(),
+        ),
+        observed_bytes: Some(capture.observed_bytes),
+        total_bytes: (!matches!(terminal_reason, "cancelled" | "timeout"))
+            .then_some(capture.observed_bytes),
+        limit_bytes: Some(CAPTURE_LIMIT as u64),
+        terminal_reason: Some(terminal_reason.into()),
+        ..Diagnostics::default()
+    };
     if capture.bypass {
         if let Some(execution) = execution {
-            execution.bypass(stream, exit_code, "capture_limit");
+            execution.bypass(stream, exit_code, "capture_limit", diagnostics);
         }
         return Ok(());
     }
@@ -206,19 +241,24 @@ fn deliver(
     {
         output.write_all(&capture.bytes)?;
         if let Some(execution) = execution {
-            execution.bypass(stream, exit_code, "non_text");
+            execution.bypass(stream, exit_code, "non_text", diagnostics);
         }
         return Ok(());
     }
     match String::from_utf8(capture.bytes) {
-        Ok(text) => match execution {
-            Some(execution) => execution.deliver(stream, text, exit_code, output),
-            None => output.write_all(text.as_bytes()),
-        },
+        Ok(text) => {
+            diagnostics.observed_chars = Some(text.chars().count() as u64);
+            match execution {
+                Some(execution) => {
+                    execution.deliver_captured(stream, text, exit_code, output, diagnostics)
+                }
+                None => output.write_all(text.as_bytes()),
+            }
+        }
         Err(error) => {
             output.write_all(error.as_bytes())?;
             if let Some(execution) = execution {
-                execution.bypass(stream, exit_code, "non_text");
+                execution.bypass(stream, exit_code, "non_text", diagnostics);
             }
             Ok(())
         }

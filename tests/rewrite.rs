@@ -9,10 +9,18 @@ use std::{
 
 fn rewrite(command: &str, dialect: &str) -> Value {
     let home = tempfile::tempdir().unwrap();
+    rewrite_at(command, dialect, home.path(), false)
+}
+
+fn rewrite_at(command: &str, dialect: &str, home: &Path, recording: bool) -> Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_outrim"))
-        .args(["bridge", "--recording", "off"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
+        .args([
+            "bridge",
+            "--recording",
+            if recording { "on" } else { "off" },
+        ])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -30,6 +38,39 @@ fn rewrite(command: &str, dialect: &str) -> Value {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn planning_preserves_partial_units_without_execution_or_content() {
+    let home = tempfile::tempdir().unwrap();
+    let response = rewrite_at("cargo test && echo secret-value", "bash", home.path(), true);
+    assert!(response["command"].is_string());
+    let observed = events(home.path());
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0]["diagnostics"]["wrapping"], "planned");
+    assert_eq!(observed[1]["diagnostics"]["wrapping"], "rejected");
+    assert_ne!(
+        observed[0]["diagnostics"]["unit_id"],
+        observed[1]["diagnostics"]["unit_id"]
+    );
+    for event in observed {
+        assert!(event["execution"].is_null());
+        assert!(
+            event["content"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(Value::is_null)
+        );
+        assert!(!event.to_string().contains("secret-value"));
+    }
+    let report = Command::new(env!("CARGO_BIN_EXE_outrim"))
+        .args(["gain", "--detail"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&report.stdout).contains("Executed commands: 0"));
 }
 
 #[test]
@@ -258,7 +299,21 @@ fn windows_powershell_sequences_and_cmdlet_aliases_keep_native_behavior() {
         assert_eq!(output.stderr, direct.stderr);
         assert_eq!(output.status.code(), direct.status.code());
     }
-    assert_eq!(events(home.path()).len(), 4); // only the external check, twice
+    let events = events(home.path());
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| !event["execution"].is_null())
+            .count(),
+        4
+    ); // external check, twice
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["diagnostics"]["execution_state"] == "runtime_fallback")
+            .count(),
+        2
+    ); // cat resolves to a cmdlet, twice
 }
 
 fn events(home: &Path) -> Vec<Value> {
@@ -472,6 +527,24 @@ fn rewritten_streams_have_recoverable_originals_and_one_sample_each() {
 }
 
 #[test]
+fn fallback_observer_failure_does_not_trigger_errexit() {
+    let home = tempfile::tempdir().unwrap();
+    let response = rewrite("cargo test", "bash");
+    let command = response["command"]
+        .as_str()
+        .unwrap()
+        .replace("observe-fallback", "invalid-observer-command");
+    let output = shell(
+        &format!("set -e; cargo() {{ printf 'still-native'; }}; {command}"),
+        "bash",
+        home.path(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"still-native");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn actual_shell_aliases_and_functions_remain_native() {
     let home = tempfile::tempdir().unwrap();
     for (dialect, setup) in [
@@ -495,5 +568,18 @@ fn actual_shell_aliases_and_functions_remain_native() {
             "{output:?}"
         );
         assert!(!home.path().join(".outrim/gain.json").exists());
+        let fallbacks: Vec<_> = events(home.path())
+            .into_iter()
+            .filter(|event| event["diagnostics"]["execution_state"] == "runtime_fallback")
+            .collect();
+        assert!(fallbacks.len() >= 2);
+        assert!(fallbacks.iter().all(|event| {
+            event["content"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(Value::is_null)
+                && event["before_chars"].is_null()
+        }));
     }
 }

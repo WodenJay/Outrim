@@ -125,16 +125,24 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   const originalInputs = new Map<string, Record<string, unknown>>();
   pi.on("tool_call", async (event, context) => {
     originalInputs.set(event.toolCallId, { ...event.input });
+    const session = context.sessionManager.getSessionId();
+    const wrapping = (state: string, reason: string | null, dialect = "unknown") =>
+      bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
     if (
       !isShell(event.toolName) ||
       event.parentToolCallId ||
       typeof event.input.command !== "string"
-    )
+    ) {
+      wrapping("not_attempted", event.parentToolCallId ? "nested_call" : "source_not_applicable");
       return;
+    }
     const original = event.input.command;
     try {
       const dialect = options.dialect ?? (await shellDialect(pi, event.toolName));
-      if (dialect === "unknown") return;
+      if (dialect === "unknown") {
+        wrapping("not_attempted", "unknown_dialect");
+        return;
+      }
       const command = await bridge.rewrite(
         context.sessionManager.getSessionId(),
         event.toolCallId,
@@ -144,6 +152,9 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       );
       if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
         event.input.command = command;
+        wrapping("adopted", null, dialect);
+      } else if (command !== undefined) {
+        wrapping("withdrawn", context.signal?.aborted ? "cancelled" : "changed_input", dialect);
       }
     } catch {
       // Failure to optimize must not prevent native execution.
@@ -164,7 +175,33 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
         attribution,
       );
     }
-    if (isShell(event.toolName)) return undefined;
+    if (isShell(event.toolName)) {
+      const text = event.content
+        .flatMap((part) =>
+          part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+        )
+        .join("\n");
+      bridge.recordObservation(
+        {
+          session: context.sessionManager.getSessionId(),
+          toolCallId: event.toolCallId,
+          tool: {
+            name: event.toolName,
+            input: null,
+            source: "unknown",
+            exit_code: exitCodeFrom(event.structuredContent),
+          },
+        },
+        text,
+        null,
+        {
+          outcome: context.signal?.aborted ? "cancelled" : "unsupported",
+          reason: event.isError ? "host_error" : "shell_result_observed",
+          metadataOnly: true,
+        },
+      );
+      return undefined;
+    }
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,

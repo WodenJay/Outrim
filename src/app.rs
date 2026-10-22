@@ -44,6 +44,12 @@ pub(crate) fn run() -> ExitCode {
         })),
         cli::Command::Gain(operation) => finish(run_gain(operation)),
         cli::Command::Bridge(recording) => finish(run_bridge(recording)),
+        cli::Command::ObserveFallback(context) => {
+            if let Ok(home) = user_home() {
+                outrim::execution::Execution::new(&home, &[], context).record_fallback();
+            }
+            std::process::ExitCode::SUCCESS
+        }
         cli::Command::Exec {
             no_compress,
             context,

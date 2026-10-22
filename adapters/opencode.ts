@@ -239,8 +239,17 @@ export async function registerOpenCodePlugin(
       dialect === "unknown" ||
       typeof input?.command !== "string" ||
       activeCodeModeCalls.get(event.sessionID)?.has(event.id)
-    )
+    ) {
+      bridge.recordWrapping(
+        event.sessionID,
+        event.id,
+        event.tool,
+        "not_attempted",
+        dialect === "unknown" ? "unknown_dialect" : "source_not_applicable",
+        dialect,
+      );
       return;
+    }
     const original = input.command;
     const controller = new AbortController();
     let calls = activeCallsBySession.get(event.sessionID);
@@ -263,8 +272,19 @@ export async function registerOpenCodePlugin(
         input.command !== original ||
         !command ||
         command === original
-      )
+      ) {
+        if (command)
+          bridge.recordWrapping(
+            event.sessionID,
+            event.id,
+            event.tool,
+            "withdrawn",
+            controller.signal.aborted ? "cancelled" : "changed_input",
+            dialect,
+          );
         return;
+      }
+      bridge.recordWrapping(event.sessionID, event.id, event.tool, "adopted", null, dialect);
       rewrites.set(command, { original, dialect, session: event.sessionID, call: event.id });
       input.command = command;
     } finally {
@@ -304,7 +324,28 @@ export async function registerOpenCodePlugin(
     ) {
       bridge.recordRecovery(event.sessionID, event.id, recoverySelection.texts, attribution);
     }
-    if (isShell(event.tool)) return;
+    if (isShell(event.tool)) {
+      bridge.recordObservation(
+        {
+          session: event.sessionID,
+          toolCallId: event.id,
+          tool: {
+            name: event.tool,
+            input: null,
+            source: "unknown",
+            exit_code: exitCodeFrom(event.result?.metadata),
+          },
+        },
+        recoverySelection?.texts.join("\n") ?? null,
+        null,
+        {
+          outcome: event.status === "cancelled" ? "cancelled" : "unsupported",
+          reason: event.status === "completed" ? "shell_result_observed" : "host_error",
+          metadataOnly: true,
+        },
+      );
+      return;
+    }
     const input = record(event.input);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
@@ -425,7 +466,29 @@ export async function registerOpenCodePlugin(
           const rewrite = rewrites.get(event.command);
           if (!rewrite) return;
           rewrites.delete(event.command);
-          if (shellDialect(event.shell) !== rewrite.dialect) event.command = rewrite.original;
+          const actual = shellDialect(event.shell);
+          if (actual !== rewrite.dialect) {
+            event.command = rewrite.original;
+            bridge.recordWrapping(
+              rewrite.session,
+              rewrite.call,
+              "shell",
+              "withdrawn",
+              "dialect_mismatch",
+              rewrite.dialect,
+              actual,
+            );
+          } else {
+            bridge.recordWrapping(
+              rewrite.session,
+              rewrite.call,
+              "shell",
+              "adopted",
+              null,
+              rewrite.dialect,
+              actual,
+            );
+          }
         }),
       );
     }

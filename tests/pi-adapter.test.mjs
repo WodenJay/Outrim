@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { registerPiExtension } from "../assets/outrim-pi.js";
@@ -76,6 +76,30 @@ function event(overrides = {}) {
 const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_tail" });
 
 describe("Pi execution adapter", () => {
+  it("records wrapping stages without retaining newly observed inputs", async () => {
+    const settings = join(homedir(), ".outrim", "recording.json");
+    mkdirSync(join(homedir(), ".outrim"), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ recording: true }));
+    const h = harness();
+    rmSync(settings);
+    const e = event();
+    const pending = h.call(e);
+    const child = h.children[0];
+    child.respond(
+      child.writes.find((r) => r.type === "rewrite"),
+      { command: "wrapped" },
+    );
+    await pending;
+    const records = child.writes.filter((r) => r.type === "record_observation");
+    expect(records.map((r) => r.diagnostics.wrapping)).toEqual(["planned", "adopted"]);
+    for (const record of records) {
+      expect(record.tool.input).toBeNull();
+      expect(record.original_text).toBeNull();
+      expect(record.metadata_only).toBe(true);
+      expect(record.diagnostics.adapter_build).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(record)).not.toContain("cargo test");
+    }
+  });
   it("mutates the original argument object before native execution", async () => {
     const h = harness();
     const e = event();

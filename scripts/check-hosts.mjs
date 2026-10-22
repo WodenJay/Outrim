@@ -162,6 +162,7 @@ if (process.argv[2] === "--host") {
       );
       assert.equal(stats.outcomes.compressed, 3);
       assert.equal(stats.outcomes.recovery_skipped, 1);
+      assert.ok(stats.recovery_chars > 0);
       if (!recording) {
         assert.throws(() => readdirSync(join(home, ".outrim/records")), { code: "ENOENT" });
         continue;
@@ -172,8 +173,7 @@ if (process.argv[2] === "--host") {
           .split("\n")
           .map(JSON.parse),
       );
-      assert.equal(events.length, 4);
-      const streams = events.filter((event) => event.tool_call_id === "wrapped");
+      const streams = events.filter((event) => event.tool_call_id === "wrapped" && event.execution);
       assert.deepEqual(streams.map((event) => event.execution.stream).sort(), ["stderr", "stdout"]);
       for (const event of streams) {
         assert.equal(event.host, "opencode");
@@ -181,7 +181,9 @@ if (process.argv[2] === "--host") {
         assert.equal(event.execution.unit_id, "wrapped:0");
         assert.equal(event.execution.recording, true);
       }
-      const recovered = events.filter((event) => event.outcome === "recovery_skipped");
+      const recovered = events.filter(
+        (event) => event.outcome === "recovery_skipped" && !event.metadata_only,
+      );
       assert.equal(recovered.length, 1);
       const stdout = streams.find((event) => event.execution.stream === "stdout");
       assert.deepEqual(recovered[0].original_references, [

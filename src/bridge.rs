@@ -44,7 +44,10 @@ pub fn run(
             }
             Message::Rewrite(request) => {
                 let executable = std::env::current_exe()?;
-                write_response(&mut output, &crate::rewrite::rewrite(request, &executable))?;
+                write_response(
+                    &mut output,
+                    &crate::rewrite::rewrite(request, &executable, processor),
+                )?;
             }
             Message::Process(request) => {
                 let response = processor.process(request);
@@ -54,7 +57,7 @@ pub fn run(
                 let response = DeliveryAcknowledgement {
                     version: VERSION,
                     id: observation.id.clone(),
-                    acknowledged: processor.record_observation(observation),
+                    acknowledged: processor.record_observation(*observation),
                 };
                 write_response(&mut output, &response)?;
             }
@@ -82,7 +85,7 @@ enum Message {
     Process(Request),
     RecordDelivery(RecordDeliveryRequest),
     RecordRecovery(crate::protocol::RecoveryRequest),
-    RecordObservation(RecordObservationRequest),
+    RecordObservation(Box<RecordObservationRequest>),
 }
 
 struct ParseFailure {

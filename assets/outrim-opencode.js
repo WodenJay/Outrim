@@ -350,7 +350,9 @@ function createBridge(host, executable, spawnProcess) {
       dialect,
       command
     }, signal, 5000);
-    return typeof response?.command === "string" ? response.command : undefined;
+    const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    recordWrapping(session, toolCallId, "shell", rewritten ? "planned" : "rejected", response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"), dialect);
+    return rewritten;
   }
   function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
@@ -402,9 +404,17 @@ function createBridge(host, executable, spawnProcess) {
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
-      tool: context.tool,
-      original_text: original,
-      final_text: final,
+      tool: facts.metadataOnly ? { ...context.tool, input: null } : context.tool,
+      original_text: facts.metadataOnly ? null : original,
+      final_text: facts.metadataOnly ? null : final,
+      metadata_only: facts.metadataOnly ?? false,
+      diagnostics: {
+        adapter_build: "6387ac356f626ed46c87bf5cd3b04b5b78ae6f53181acc9119fa7ace0879b8b2",
+        output_origin: "host_result",
+        completeness: "unknown",
+        observed_chars: original === null ? null : Array.from(original).length,
+        ...facts.diagnostics
+      },
       outcome: facts.outcome,
       applied_rule: facts.appliedRule ?? null,
       original_path: facts.originalPath ?? null,
@@ -440,6 +450,24 @@ function createBridge(host, executable, spawnProcess) {
       attribution
     });
   }
+  function recordWrapping(session, call, tool, state, reason, dialect, actual) {
+    recordObservation({
+      session,
+      toolCallId: call,
+      tool: { name: tool, input: null, source: "unknown", exit_code: null }
+    }, null, null, {
+      outcome: "unsupported",
+      metadataOnly: true,
+      reason,
+      diagnostics: {
+        wrapping: state,
+        attempt_id: JSON.stringify([host, session, call]),
+        requested_dialect: dialect,
+        actual_dialect: actual ?? null,
+        output_origin: null
+      }
+    });
+  }
   function close() {
     if (closed)
       return;
@@ -458,7 +486,15 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { rewrite, process, recordDelivery, recordObservation, recordRecovery, close };
+  return {
+    rewrite,
+    process,
+    recordDelivery,
+    recordObservation,
+    recordRecovery,
+    recordWrapping,
+    close
+  };
 }
 
 // adapters/opencode.ts
@@ -560,8 +596,10 @@ async function registerOpenCodePlugin(context, options = {}) {
     }
     const input = record(event.input);
     const dialect = dialects.get(event.sessionID)?.get(event.agent) ?? "unknown";
-    if (event.tool !== "shell" || !context.shell || dialect === "unknown" || typeof input?.command !== "string" || activeCodeModeCalls.get(event.sessionID)?.has(event.id))
+    if (event.tool !== "shell" || !context.shell || dialect === "unknown" || typeof input?.command !== "string" || activeCodeModeCalls.get(event.sessionID)?.has(event.id)) {
+      bridge.recordWrapping(event.sessionID, event.id, event.tool, "not_attempted", dialect === "unknown" ? "unknown_dialect" : "source_not_applicable", dialect);
       return;
+    }
     const original = input.command;
     const controller = new AbortController;
     let calls = activeCallsBySession.get(event.sessionID);
@@ -572,8 +610,12 @@ async function registerOpenCodePlugin(context, options = {}) {
     calls.add(controller);
     try {
       const command = await bridge.rewrite(event.sessionID, event.id, original, dialect, controller.signal);
-      if (closed || controller.signal.aborted || input.command !== original || !command || command === original)
+      if (closed || controller.signal.aborted || input.command !== original || !command || command === original) {
+        if (command)
+          bridge.recordWrapping(event.sessionID, event.id, event.tool, "withdrawn", controller.signal.aborted ? "cancelled" : "changed_input", dialect);
         return;
+      }
+      bridge.recordWrapping(event.sessionID, event.id, event.tool, "adopted", null, dialect);
       rewrites.set(command, { original, dialect, session: event.sessionID, call: event.id });
       input.command = command;
     } finally {
@@ -609,8 +651,24 @@ async function registerOpenCodePlugin(context, options = {}) {
     if (attribution && event.status === "completed" && recoverySelection && !isCodeModeCall && (exitCodeFrom(event.result?.metadata) ?? 0) === 0) {
       bridge.recordRecovery(event.sessionID, event.id, recoverySelection.texts, attribution);
     }
-    if (isShell2(event.tool))
+    if (isShell2(event.tool)) {
+      bridge.recordObservation({
+        session: event.sessionID,
+        toolCallId: event.id,
+        tool: {
+          name: event.tool,
+          input: null,
+          source: "unknown",
+          exit_code: exitCodeFrom(event.result?.metadata)
+        }
+      }, recoverySelection?.texts.join(`
+`) ?? null, null, {
+        outcome: event.status === "cancelled" ? "cancelled" : "unsupported",
+        reason: event.status === "completed" ? "shell_result_observed" : "host_error",
+        metadataOnly: true
+      });
       return;
+    }
     const input = record(event.input);
     const result = event.result;
     const selection = result ? textSelection(result) : undefined;
@@ -700,8 +758,13 @@ async function registerOpenCodePlugin(context, options = {}) {
         if (!rewrite)
           return;
         rewrites.delete(event.command);
-        if (shellDialect(event.shell) !== rewrite.dialect)
+        const actual = shellDialect(event.shell);
+        if (actual !== rewrite.dialect) {
           event.command = rewrite.original;
+          bridge.recordWrapping(rewrite.session, rewrite.call, "shell", "withdrawn", "dialect_mismatch", rewrite.dialect, actual);
+        } else {
+          bridge.recordWrapping(rewrite.session, rewrite.call, "shell", "adopted", null, rewrite.dialect, actual);
+        }
       }));
     }
     registrations.push(await context.tool.hook("execute.before", handleBefore));

@@ -29,6 +29,18 @@ pub(crate) fn candidates(tool: &Tool, text: &str) -> Option<Vec<(&'static str, S
     Some(candidates)
 }
 
+pub(crate) fn rejection(text: &str) -> Option<&'static str> {
+    if !matches!(text.trim_start().chars().next(), Some('{') | Some('[')) {
+        return None;
+    }
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    match serde_json::Value::deserialize(&mut deserializer) {
+        Err(_) => Some("parse_failed"),
+        Ok(_) if deserializer.end().is_err() => Some("extra_content"),
+        Ok(_) => None,
+    }
+}
+
 fn compact_json(text: &str) -> (String, bool) {
     const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
     let bytes = text.as_bytes();

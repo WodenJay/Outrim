@@ -141,6 +141,9 @@ pub struct RecordObservationRequest {
 #[serde(default, deny_unknown_fields)]
 pub struct Diagnostics {
     pub adapter_build: Option<String>,
+    pub unit_id: Option<String>,
+    pub execution_state: Option<String>,
+    pub terminal_reason: Option<String>,
     pub wrapping: Option<String>,
     pub attempt_id: Option<String>,
     pub requested_dialect: Option<String>,

@@ -126,10 +126,29 @@ impl Processor {
         } else if let Some(json_candidates) = json::candidates(&request.tool, &response.text) {
             json_candidates
         } else {
+            response.reason = Some(
+                if matches!(request.tool.source, Source::Search) {
+                    "parse_failed"
+                } else {
+                    "source_not_applicable"
+                }
+                .into(),
+            );
             return response;
         };
+        let json_rejection = candidates
+            .iter()
+            .any(|(rule, _)| *rule == "json_compact")
+            .then(|| json::rejection(&response.text))
+            .flatten();
         self.originals
             .compress(request.host, &request.session, candidates, &mut response);
+        if let Some(reason) = json_rejection {
+            response.reason = Some(reason.into());
+            for candidate in &mut response.candidates {
+                candidate.reason = reason.into();
+            }
+        }
         response
     }
 }

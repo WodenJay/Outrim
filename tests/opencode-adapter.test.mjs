@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -135,7 +136,9 @@ describe("OpenCode adapter", () => {
         ["build", "adapters/opencode-plugin.ts", "--target=bun", `--outfile=${asset}`],
         { cwd: root, stdio: "ignore" },
       );
-      expect(readFileSync(asset, "utf8").replace(/\r\n/g, "\n")).toBe(
+      const raw = readFileSync(asset, "utf8").replace(/\r\n/g, "\n");
+      const identity = createHash("sha256").update(raw).digest("hex");
+      expect(raw.replaceAll("__OUTRIM_ADAPTER_BUILD__", identity)).toBe(
         readFileSync(join(root, "assets/outrim-opencode.js"), "utf8").replace(/\r\n/g, "\n"),
       );
       expect(opencodePlugin.id).toBe("outrim");

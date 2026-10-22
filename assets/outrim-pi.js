@@ -350,7 +350,9 @@ function createBridge(host, executable, spawnProcess) {
       dialect,
       command
     }, signal, 5000);
-    return typeof response?.command === "string" ? response.command : undefined;
+    const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    recordWrapping(session, toolCallId, "shell", rewritten ? "planned" : "rejected", response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"), dialect);
+    return rewritten;
   }
   function recordDelivery(original, outcome, signal) {
     if (closed || signal?.aborted)
@@ -402,9 +404,17 @@ function createBridge(host, executable, spawnProcess) {
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
-      tool: context.tool,
-      original_text: original,
-      final_text: final,
+      tool: facts.metadataOnly ? { ...context.tool, input: null } : context.tool,
+      original_text: facts.metadataOnly ? null : original,
+      final_text: facts.metadataOnly ? null : final,
+      metadata_only: facts.metadataOnly ?? false,
+      diagnostics: {
+        adapter_build: "2f6f6e451e0802681f99ebb08a77f7c51ddfe5efaeb91ab54528b72b35dd41fb",
+        output_origin: "host_result",
+        completeness: "unknown",
+        observed_chars: original === null ? null : Array.from(original).length,
+        ...facts.diagnostics
+      },
       outcome: facts.outcome,
       applied_rule: facts.appliedRule ?? null,
       original_path: facts.originalPath ?? null,
@@ -440,6 +450,24 @@ function createBridge(host, executable, spawnProcess) {
       attribution
     });
   }
+  function recordWrapping(session, call, tool, state, reason, dialect, actual) {
+    recordObservation({
+      session,
+      toolCallId: call,
+      tool: { name: tool, input: null, source: "unknown", exit_code: null }
+    }, null, null, {
+      outcome: "unsupported",
+      metadataOnly: true,
+      reason,
+      diagnostics: {
+        wrapping: state,
+        attempt_id: JSON.stringify([host, session, call]),
+        requested_dialect: dialect,
+        actual_dialect: actual ?? null,
+        output_origin: null
+      }
+    });
+  }
   function close() {
     if (closed)
       return;
@@ -458,7 +486,15 @@ function createBridge(host, executable, spawnProcess) {
       }
     }
   }
-  return { rewrite, process, recordDelivery, recordObservation, recordRecovery, close };
+  return {
+    rewrite,
+    process,
+    recordDelivery,
+    recordObservation,
+    recordRecovery,
+    recordWrapping,
+    close
+  };
 }
 
 // adapters/pi.ts
@@ -496,16 +532,25 @@ function registerPiExtension(pi, options = {}) {
   const originalInputs = new Map;
   pi.on("tool_call", async (event, context) => {
     originalInputs.set(event.toolCallId, { ...event.input });
-    if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string")
+    const session = context.sessionManager.getSessionId();
+    const wrapping = (state, reason, dialect = "unknown") => bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
+    if (!isShell2(event.toolName) || event.parentToolCallId || typeof event.input.command !== "string") {
+      wrapping("not_attempted", event.parentToolCallId ? "nested_call" : "source_not_applicable");
       return;
+    }
     const original = event.input.command;
     try {
       const dialect = options.dialect ?? await shellDialect(pi, event.toolName);
-      if (dialect === "unknown")
+      if (dialect === "unknown") {
+        wrapping("not_attempted", "unknown_dialect");
         return;
+      }
       const command = await bridge.rewrite(context.sessionManager.getSessionId(), event.toolCallId, original, dialect, context.signal);
       if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
         event.input.command = command;
+        wrapping("adopted", null, dialect);
+      } else if (command !== undefined) {
+        wrapping("withdrawn", context.signal?.aborted ? "cancelled" : "changed_input", dialect);
       }
     } catch {}
   });
@@ -516,8 +561,25 @@ function registerPiExtension(pi, options = {}) {
     if (attribution && !event.isError && !context.signal?.aborted && !event.parentToolCallId) {
       bridge.recordRecovery(context.sessionManager.getSessionId(), event.toolCallId, event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []), attribution);
     }
-    if (isShell2(event.toolName))
+    if (isShell2(event.toolName)) {
+      const text = event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join(`
+`);
+      bridge.recordObservation({
+        session: context.sessionManager.getSessionId(),
+        toolCallId: event.toolCallId,
+        tool: {
+          name: event.toolName,
+          input: null,
+          source: "unknown",
+          exit_code: exitCodeFrom(event.structuredContent)
+        }
+      }, text, null, {
+        outcome: context.signal?.aborted ? "cancelled" : "unsupported",
+        reason: event.isError ? "host_error" : "shell_result_observed",
+        metadataOnly: true
+      });
       return;
+    }
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,

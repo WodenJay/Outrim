@@ -213,6 +213,8 @@ export interface ObservationContext {
 }
 
 export interface ObservationFacts {
+  metadataOnly?: boolean;
+  diagnostics?: Record<string, unknown>;
   outcome: ObservationOutcome;
   appliedRule?: string | null;
   originalPath?: string | null;
@@ -396,6 +398,15 @@ export function createBridge(
     texts: readonly string[],
     attribution: "confirmed" | "unattributed",
   ): void;
+  recordWrapping(
+    session: string,
+    call: string,
+    tool: string,
+    state: string,
+    reason: string | null,
+    dialect: string,
+    actual?: string,
+  ): void;
   close(): void;
 } {
   // Snapshot once when the host loads, including across bridge restarts.
@@ -564,7 +575,16 @@ export function createBridge(
       signal,
       5_000,
     );
-    return typeof response?.command === "string" ? response.command : undefined;
+    const rewritten = typeof response?.command === "string" ? response.command : undefined;
+    recordWrapping(
+      session,
+      toolCallId,
+      "shell",
+      rewritten ? "planned" : "rejected",
+      response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"),
+      dialect,
+    );
+    return rewritten;
   }
 
   // Called only when the host adopts the result. An absent outcome records fail-open;
@@ -629,9 +649,17 @@ export function createBridge(
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
-      tool: context.tool,
-      original_text: original,
-      final_text: final,
+      tool: facts.metadataOnly ? { ...context.tool, input: null } : context.tool,
+      original_text: facts.metadataOnly ? null : original,
+      final_text: facts.metadataOnly ? null : final,
+      metadata_only: facts.metadataOnly ?? false,
+      diagnostics: {
+        adapter_build: "__OUTRIM_ADAPTER_BUILD__",
+        output_origin: "host_result",
+        completeness: "unknown",
+        observed_chars: original === null ? null : Array.from(original).length,
+        ...facts.diagnostics,
+      },
       outcome: facts.outcome,
       applied_rule: facts.appliedRule ?? null,
       original_path: facts.originalPath ?? null,
@@ -674,6 +702,38 @@ export function createBridge(
     });
   }
 
+  function recordWrapping(
+    session: string,
+    call: string,
+    tool: string,
+    state: string,
+    reason: string | null,
+    dialect: string,
+    actual?: string,
+  ): void {
+    recordObservation(
+      {
+        session,
+        toolCallId: call,
+        tool: { name: tool, input: null, source: "unknown", exit_code: null },
+      },
+      null,
+      null,
+      {
+        outcome: "unsupported",
+        metadataOnly: true,
+        reason,
+        diagnostics: {
+          wrapping: state,
+          attempt_id: JSON.stringify([host, session, call]),
+          requested_dialect: dialect,
+          actual_dialect: actual ?? null,
+          output_origin: null,
+        },
+      },
+    );
+  }
+
   function close(): void {
     if (closed) return;
     closed = true;
@@ -691,5 +751,13 @@ export function createBridge(
     }
   }
 
-  return { rewrite, process, recordDelivery, recordObservation, recordRecovery, close };
+  return {
+    rewrite,
+    process,
+    recordDelivery,
+    recordObservation,
+    recordRecovery,
+    recordWrapping,
+    close,
+  };
 }
