@@ -34,6 +34,14 @@ pub fn run(
         };
 
         match message {
+            Message::RecordRecovery(recovery) => {
+                let response = DeliveryAcknowledgement {
+                    version: VERSION,
+                    id: recovery.id.clone(),
+                    acknowledged: processor.record_recovery(recovery),
+                };
+                write_response(&mut output, &response)?;
+            }
             Message::Rewrite(request) => {
                 let executable = std::env::current_exe()?;
                 write_response(&mut output, &crate::rewrite::rewrite(request, &executable))?;
@@ -73,6 +81,7 @@ enum Message {
     Rewrite(crate::rewrite::Request),
     Process(Request),
     RecordDelivery(RecordDeliveryRequest),
+    RecordRecovery(crate::protocol::RecoveryRequest),
     RecordObservation(RecordObservationRequest),
 }
 
@@ -107,6 +116,13 @@ fn parse_message(line: &[u8]) -> Result<Message, ParseFailure> {
             }),
         Some(Value::String(kind)) if kind == "record_observation" => serde_json::from_value(value)
             .map(Message::RecordObservation)
+            .map_err(|error| ParseFailure {
+                id,
+                error: ProtocolError::InvalidRequest,
+                details: error.to_string(),
+            }),
+        Some(Value::String(kind)) if kind == "record_recovery" => serde_json::from_value(value)
+            .map(Message::RecordRecovery)
             .map_err(|error| ParseFailure {
                 id,
                 error: ProtocolError::InvalidRequest,

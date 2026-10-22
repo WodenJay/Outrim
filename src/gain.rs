@@ -1,10 +1,10 @@
 use crate::{
-    protocol::{Disposition, RecordDeliveryRequest, VERSION},
+    protocol::{Disposition, RecordDeliveryRequest, RecoveryAttribution, RecoveryRequest, VERSION},
     storage,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as FmtWrite,
     fs::{self, File, OpenOptions},
     io::{self, Write as IoWrite},
@@ -48,6 +48,25 @@ impl Store {
         let mut stats = self.read()?;
         stats.record(&delivery);
         self.persist(&stats)
+    }
+
+    pub(crate) fn record_recovery(&self, recovery: &RecoveryRequest) -> io::Result<()> {
+        if recovery.version != VERSION || recovery.event_id.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid recovery statistics",
+            ));
+        }
+        storage::private_directory(&self.directory)?;
+        let _lock = self.lock()?;
+        let mut stats = self.read()?;
+        if stats.recovery_events.insert(recovery.event_id.clone()) {
+            if recovery.attribution == RecoveryAttribution::Confirmed {
+                stats.recovery_chars = stats.recovery_chars.saturating_add(recovery.characters);
+            }
+            self.persist(&stats)?;
+        }
+        Ok(())
     }
 
     fn lock(&self) -> io::Result<File> {
@@ -100,6 +119,8 @@ struct Stats {
     after_chars: u64,
     rules: BTreeMap<String, RuleStats>,
     outcomes: OutcomeCounts,
+    recovery_chars: u64,
+    recovery_events: BTreeSet<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -200,7 +221,7 @@ pub fn render(home: &Path) -> io::Result<String> {
 }
 
 fn render_stats(stats: &Stats) -> String {
-    if stats.outputs == 0 {
+    if stats.outputs == 0 && stats.recovery_events.is_empty() {
         return "No gain data.\n".into();
     }
 
@@ -213,6 +234,26 @@ fn render_stats(stats: &Stats) -> String {
 
     writeln!(report, "Gain\n").unwrap();
     writeln!(report, "Outputs: {}", format_number(stats.outputs)).unwrap();
+    writeln!(
+        report,
+        "Compression savings: {} chars",
+        format_number(saved_chars)
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "Recovery cost: {} chars",
+        format_number(stats.recovery_chars)
+    )
+    .unwrap();
+    let net = i128::from(saved_chars) - i128::from(stats.recovery_chars);
+    writeln!(
+        report,
+        "Net savings: {}{} chars",
+        if net < 0 { "-" } else { "" },
+        format_number(net.unsigned_abs() as u64)
+    )
+    .unwrap();
     writeln!(report, "Tokens (est.)").unwrap();
     writeln!(report, "  Before: {}", format_number(before_tokens)).unwrap();
     writeln!(report, "  After:  {}", format_number(after_tokens)).unwrap();

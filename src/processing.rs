@@ -35,6 +35,42 @@ impl Processor {
         }
     }
 
+    pub(crate) fn record_recovery(&self, recovery: protocol::RecoveryRequest) -> bool {
+        if self.gain.record_recovery(&recovery).is_err() {
+            return false;
+        }
+        self.recorder
+            .record(protocol::RecordObservationRequest {
+                message_type: protocol::ObservationMessageType::RecordObservation,
+                version: VERSION,
+                id: recovery.id.clone(),
+                host: recovery.host,
+                session: Some(recovery.session.clone()),
+                tool_call_id: Some(recovery.tool_call_id.clone()),
+                tool: protocol::Tool {
+                    name: "recovery".into(),
+                    input: serde_json::Value::Null,
+                    source: Source::Unknown,
+                    exit_code: None,
+                },
+                original_text: None,
+                final_text: None,
+                outcome: protocol::ObservationOutcome::RecoverySkipped,
+                applied_rule: None,
+                original_path: None,
+                candidates: vec![],
+                reason: None,
+                parts: vec![],
+                execution: None,
+                metadata_only: true,
+                diagnostics: Some(protocol::Diagnostics {
+                    recovery: Some(recovery),
+                    ..Default::default()
+                }),
+            })
+            .is_ok()
+    }
+
     pub(crate) fn record_delivery(&self, delivery: protocol::RecordDeliveryRequest) -> bool {
         self.gain.record(delivery).is_ok()
     }

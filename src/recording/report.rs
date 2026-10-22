@@ -74,12 +74,12 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
                 directory.join("events.jsonl").display()
             )
             .unwrap();
-            writeln!(
-                report,
-                "  Arguments: {}",
-                directory.join(&event.content.arguments).display()
-            )
-            .unwrap();
+            if let Some(path) = &event.content.arguments {
+                writeln!(report, "  Arguments: {}", directory.join(path).display()).unwrap();
+            }
+            if let Some(facts) = &event.diagnostics {
+                writeln!(report, "  Diagnostics: {}", serde_json::to_string(facts)?).unwrap();
+            }
             if let Some(path) = &event.content.original {
                 writeln!(report, "  Original: {}", directory.join(path).display()).unwrap();
             }
