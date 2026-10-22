@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { CallSnapshots } from "./calls";
 import { nativeReadSelection } from "./reads";
 import {
   type AbortSignalLike,
@@ -6,7 +7,6 @@ import {
   createBridge,
   hostOutputFacts,
   inputReferencesOriginals,
-  type PolicySelection,
   processingFacts,
   recoveryAttribution,
   type SpawnProcess,
@@ -130,30 +130,28 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     options.spawnProcess ?? defaultSpawn,
   );
 
-  const originalInputs = new Map<string, Record<string, unknown>>();
-  const callDirectories = new Map<string, string>();
-  const callPolicies = new Map<string, PolicySelection>();
-  const callKey = (session: string, call: string) => JSON.stringify([session, call]);
+  const calls = new CallSnapshots<Record<string, unknown>>();
+  let closed = false;
   pi.on("tool_call", async (event, context) => {
+    if (closed) return;
     const session = context.sessionManager.getSessionId();
-    const key = callKey(session, event.toolCallId);
-    originalInputs.set(key, structuredClone(event.input));
-    callDirectories.set(key, context.cwd);
-    if (!isShell(event.toolName) && !event.parentToolCallId) {
-      callPolicies.set(
-        key,
-        await bridge.selectPolicy(
-          session,
-          {
-            name: event.toolName,
-            input: originalInputs.get(key),
-            source: sourceFor("pi", event.toolName, event.input),
-            exit_code: null,
-          },
-          context.cwd,
-          context.signal,
-        ),
+    const snapshot = event.parentToolCallId
+      ? undefined
+      : calls.begin(session, event.toolCallId, event.input, context.cwd);
+    if (!isShell(event.toolName) && snapshot) {
+      snapshot.selection = "off";
+      snapshot.selection = await bridge.selectPolicy(
+        session,
+        {
+          name: event.toolName,
+          input: snapshot.input,
+          source: sourceFor("pi", event.toolName, snapshot.input),
+          exit_code: null,
+        },
+        snapshot.cwd,
+        context.signal,
       );
+      if (!calls.isCurrent(snapshot)) return;
     }
     const wrapping = (state: WrappingState, reason: string | null, dialect = "unknown") =>
       bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
@@ -168,23 +166,25 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     const original = event.input.command;
     try {
       const dialect = options.dialect ?? (await shellDialect(pi, event.toolName));
+      if (!snapshot || !calls.isCurrent(snapshot)) return;
       if (dialect === "unknown") {
         wrapping("not_attempted", "unknown_dialect");
         return;
       }
       const command = await bridge.rewrite(
-        context.sessionManager.getSessionId(),
+        session,
         event.toolCallId,
         original,
         dialect,
         context.signal,
         {
           name: event.toolName,
-          input: originalInputs.get(key) ?? event.input,
+          input: snapshot.input,
           source: sourceFor("pi", event.toolName, event.input),
           exit_code: null,
         },
       );
+      if (!calls.isCurrent(snapshot)) return;
       if (command !== undefined && !context.signal?.aborted && event.input.command === original) {
         event.input.command = command;
         wrapping("adopted", null, dialect);
@@ -197,15 +197,15 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   });
 
   pi.on("tool_result", async (event, context) => {
+    if (closed) return undefined;
     // Plugin compress completes a compact, even when it fails.
     if (event.toolName === "compress") bridge.resetReads();
-    const key = callKey(context.sessionManager.getSessionId(), event.toolCallId);
-    const originalInput = originalInputs.get(key) ?? event.input;
-    const cwd = callDirectories.get(key) ?? context.cwd;
-    const selection = callPolicies.get(key);
-    originalInputs.delete(key);
-    callDirectories.delete(key);
-    callPolicies.delete(key);
+    const snapshot = event.parentToolCallId
+      ? undefined
+      : calls.take(context.sessionManager.getSessionId(), event.toolCallId);
+    const originalInput = snapshot?.input ?? event.input;
+    const cwd = snapshot?.cwd ?? context.cwd;
+    const selection = snapshot?.selection;
     const attribution = recoveryAttribution(event.toolName, originalInput);
     if (
       attribution &&
@@ -371,11 +371,15 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
 
   for (const event of ["session_start", "session_compact", "session_tree"] as const) {
     pi.on(event, () => {
-      originalInputs.clear();
+      calls.invalidate();
       bridge.resetReads();
     });
   }
-  pi.on("session_shutdown", () => bridge.close());
+  pi.on("session_shutdown", () => {
+    closed = true;
+    calls.clear();
+    bridge.close();
+  });
 }
 
 export default function piExtension(pi: PiApi): void {

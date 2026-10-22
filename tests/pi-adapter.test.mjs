@@ -11,6 +11,7 @@ isolateHome();
 class FakeChild extends EventEmitter {
   writes = [];
   selection = "builtin";
+  deferPolicy = false;
   killed = false;
   ended = false;
   stdin = new EventEmitter();
@@ -26,7 +27,8 @@ class FakeChild extends EventEmitter {
         ["read_reset", "read_delivered"].includes(request.type)
       )
         this.respond(request, {});
-      if (request.type === "resolve_policy") this.respond(request, { selection: this.selection });
+      if (request.type === "resolve_policy" && !this.deferPolicy)
+        this.respond(request, { selection: this.selection });
       return true;
     };
     this.stdin.end = () => {
@@ -82,6 +84,28 @@ function event(overrides = {}) {
 const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_compaction" });
 
 describe("Pi execution adapter", () => {
+  it.each(["session_start", "session_compact", "session_tree"])(
+    "does not revive an invocation awaiting policy after %s",
+    async (lifecycle) => {
+      const child = new FakeChild();
+      child.deferPolicy = true;
+      const h = harness({ spawnProcess: () => child });
+      const e = event({ toolName: "read", input: { path: "data.json" } });
+      const before = h.call(e);
+      const policy = child.writes.find((message) => message.type === "resolve_policy");
+      h.handlers.get(lifecycle)();
+      child.respond(policy, { selection: "builtin" });
+      await before;
+      const pending = h.result(e);
+      const batch = child.writes.find((message) => message.type === "process_parts");
+      expect(batch.selection).toBe("off");
+      child.respond(batch, {
+        parts: [{ text: "original 🦀", disposition: "protected", applied_rule: null }],
+      });
+      expect(await pending).toBeUndefined();
+      h.handlers.get("session_shutdown")();
+    },
+  );
   it("keeps a failed policy snapshot off even if the bridge recovers", async () => {
     for (const failure of ["spawn", "missing-selection"]) {
       let first = true;

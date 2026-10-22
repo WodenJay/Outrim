@@ -15,6 +15,7 @@ isolateHome();
 class FakeChild extends EventEmitter {
   writes = [];
   selection = "builtin";
+  deferPolicy = false;
   ended = false;
   stdin = new EventEmitter();
   stdout = new EventEmitter();
@@ -30,7 +31,8 @@ class FakeChild extends EventEmitter {
         ["read_reset", "read_delivered"].includes(request.type)
       )
         this.respond(request);
-      if (request.type === "resolve_policy") this.respond(request, { selection: this.selection });
+      if (request.type === "resolve_policy" && !this.deferPolicy)
+        this.respond(request, { selection: this.selection });
       return true;
     };
     this.stdin.end = () => {
@@ -78,6 +80,48 @@ class FakeChild extends EventEmitter {
     this.respond(request, { text, disposition: "compressed", applied_rule: "log_compaction" });
   }
 }
+
+it.each(["session.execution.interrupted", "session.compaction.ended", "session.deleted"])(
+  "does not revive a policy snapshot after %s",
+  async (lifecycle) => {
+    const h = await harness();
+    h.child.deferPolicy = true;
+    const input = { filePath: "data.json" };
+    const pendingBefore = h.call("tool.execute.before", before(input, { tool: "read" }));
+    const policy = h.child.writes.find((message) => message.type === "resolve_policy");
+    h.interrupt("session", lifecycle);
+    await Promise.resolve();
+    h.child.respond(policy, { selection: "builtin" });
+    await pendingBefore;
+    const e = after({ tool: "read", input, result: { content: "original" } });
+    const pending = h.call("tool.execute.after", e);
+    const batch = h.child.writes.find((message) => message.type === "process_parts");
+    expect(batch.selection).toBe("off");
+    h.child.respond(batch, {
+      parts: [{ text: "original", disposition: "protected", applied_rule: null }],
+    });
+    await pending;
+    expect(e.result.content).toBe("original");
+    await h.dispose();
+  },
+);
+
+it("discards a before hook interrupted while resolving its directory", async () => {
+  let resolveDirectory;
+  const h = await harness({
+    sessionGet: () =>
+      new Promise((resolve) => {
+        resolveDirectory = resolve;
+      }),
+  });
+  const pending = h.call("tool.execute.before", before({}, { tool: "execute" }));
+  h.interrupt("session");
+  await Promise.resolve();
+  resolveDirectory({ location: { directory: "D:/old-session" } });
+  await pending;
+  expect(h.child.writes.some((message) => message.type === "resolve_policy")).toBe(false);
+  await h.dispose();
+});
 
 it("pins non-shell policy at invocation start for all parts", async () => {
   const h = await harness({ sessionGet: async () => ({ location: { directory: "D:/session" } }) });
@@ -606,6 +650,26 @@ describe("OpenCode adapter", () => {
     await pending;
     expect(event.result.content).toBe("short");
     expect(event.result.output).toBe("mentioned ~/.outrim/outputs/file.txt");
+    await h.dispose();
+  });
+
+  it("keeps interrupted Code Mode ownership until the outer result arrives", async () => {
+    const h = await harness();
+    await h.call("tool.execute.before", before({}, { tool: "execute" }));
+    await h.call("tool.execute.before", before({ filePath: "nested.json" }, { tool: "read" }));
+    h.interrupt("session");
+    await Promise.resolve();
+    await h.call("tool.execute.after", after({ tool: "read" }));
+    expect(h.child.requests()).toEqual([]);
+    const outer = after({ tool: "execute" });
+    const pending = h.call("tool.execute.after", outer);
+    const batch = h.child.writes.find((message) => message.type === "process_parts");
+    expect(batch.selection).toBe("off");
+    h.child.respond(batch, {
+      parts: [{ text: "original output", disposition: "protected", applied_rule: null }],
+    });
+    await pending;
+    expect(outer.result.content[0].text).toBe("original output");
     await h.dispose();
   });
 

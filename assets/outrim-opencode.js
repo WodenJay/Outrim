@@ -2,6 +2,44 @@
 // adapters/opencode.ts
 import { spawn as nodeSpawn } from "child_process";
 
+// adapters/calls.ts
+class CallSnapshots {
+  sessions = new Map;
+  begin(session, call, input, cwd) {
+    let calls = this.sessions.get(session);
+    if (!calls) {
+      calls = new Map;
+      this.sessions.set(session, calls);
+    }
+    const snapshot = { session, call, input: structuredClone(input), cwd };
+    calls.set(call, snapshot);
+    return snapshot;
+  }
+  isCurrent(snapshot) {
+    return this.sessions.get(snapshot.session)?.get(snapshot.call) === snapshot;
+  }
+  take(session, call) {
+    const calls = this.sessions.get(session);
+    const snapshot = calls?.get(call);
+    calls?.delete(call);
+    if (calls?.size === 0)
+      this.sessions.delete(session);
+    return snapshot === null ? { selection: "off" } : snapshot;
+  }
+  invalidate(session) {
+    const sessions = session === undefined ? this.sessions.values() : [this.sessions.get(session)];
+    for (const calls of sessions) {
+      if (!calls)
+        continue;
+      for (const call of calls.keys())
+        calls.set(call, null);
+    }
+  }
+  clear() {
+    this.sessions.clear();
+  }
+}
+
 // adapters/reads.ts
 import { realpathSync, statSync } from "fs";
 import { isAbsolute, resolve } from "path";
@@ -585,7 +623,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "84cc735d33eebc6eac969b0c00b01240c00e0da68e2c7d5f95cf54fe5c891207",
+        adapter_build: "40185440d0013261edfad50c2517c49eb0663d43f93eba0ea36f67d58d7cb508",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -743,9 +781,7 @@ function sessionIdFrom(event) {
 }
 async function registerOpenCodePlugin(context, options = {}) {
   const bridge = createBridge("opencode", options.executable ?? BRIDGE_EXECUTABLE, options.spawnProcess ?? defaultSpawn);
-  const originalInputs = new Map;
-  const callDirectories = new Map;
-  const callPolicies = new Map;
+  const calls = new CallSnapshots;
   async function sessionDirectory(sessionID) {
     try {
       const session = await context.session?.get?.({ sessionID });
@@ -756,7 +792,6 @@ async function registerOpenCodePlugin(context, options = {}) {
       return;
     }
   }
-  const callKey = (session, call) => JSON.stringify([session, call]);
   const activeCallsBySession = new Map;
   const activeCodeModeCalls = new Map;
   const dialects = new Map;
@@ -764,9 +799,9 @@ async function registerOpenCodePlugin(context, options = {}) {
   const eventController = new AbortController;
   let closed = false;
   function abortSession(session) {
+    calls.invalidate(session);
     for (const controller of activeCallsBySession.get(session) ?? [])
       controller.abort();
-    activeCodeModeCalls.delete(session);
     dialects.delete(session);
     for (const [command, rewrite] of rewrites) {
       if (rewrite.session === session)
@@ -777,22 +812,23 @@ async function registerOpenCodePlugin(context, options = {}) {
     if (closed)
       return;
     const originalInput = record(event.input);
-    const key = callKey(event.sessionID, event.id);
     const nested = activeCodeModeCalls.get(event.sessionID)?.has(event.id);
-    if (!nested) {
-      originalInputs.set(key, structuredClone(event.input));
-      const cwd = context.session?.get ? await sessionDirectory(event.sessionID) : undefined;
-      if (closed)
+    const snapshot = nested ? undefined : calls.begin(event.sessionID, event.id, event.input);
+    if (snapshot) {
+      if (!isShell2(event.tool))
+        snapshot.selection = "off";
+      snapshot.cwd = context.session?.get ? await sessionDirectory(event.sessionID) : undefined;
+      if (closed || !calls.isCurrent(snapshot))
         return;
-      if (cwd !== undefined)
-        callDirectories.set(key, cwd);
       if (!isShell2(event.tool)) {
-        callPolicies.set(key, await bridge.selectPolicy(event.sessionID, {
+        snapshot.selection = await bridge.selectPolicy(event.sessionID, {
           name: event.tool,
-          input: originalInputs.get(key) ?? null,
+          input: snapshot.input ?? null,
           source: sourceFor("opencode", event.tool, originalInput ?? {}),
           exit_code: null
-        }, cwd));
+        }, snapshot.cwd);
+        if (closed || !calls.isCurrent(snapshot))
+          return;
       }
     }
     if (event.tool === "execute") {
@@ -812,20 +848,20 @@ async function registerOpenCodePlugin(context, options = {}) {
     }
     const original = input.command;
     const controller = new AbortController;
-    let calls = activeCallsBySession.get(event.sessionID);
-    if (!calls) {
-      calls = new Set;
-      activeCallsBySession.set(event.sessionID, calls);
+    let controllers = activeCallsBySession.get(event.sessionID);
+    if (!controllers) {
+      controllers = new Set;
+      activeCallsBySession.set(event.sessionID, controllers);
     }
-    calls.add(controller);
+    controllers.add(controller);
     try {
       const command = await bridge.rewrite(event.sessionID, event.id, original, dialect, controller.signal, {
         name: event.tool,
-        input: originalInputs.get(callKey(event.sessionID, event.id)) ?? event.input,
+        input: snapshot?.input ?? event.input,
         source: sourceFor("opencode", event.tool, originalInput ?? {}),
         exit_code: null
       });
-      if (closed || controller.signal.aborted || input.command !== original || !command || command === original) {
+      if (closed || snapshot !== undefined && !calls.isCurrent(snapshot) || controller.signal.aborted || input.command !== original || !command || command === original) {
         if (command)
           bridge.recordWrapping(event.sessionID, event.id, event.tool, "withdrawn", controller.signal.aborted ? "cancelled" : "changed_input", dialect);
         return;
@@ -834,8 +870,8 @@ async function registerOpenCodePlugin(context, options = {}) {
       rewrites.set(command, { original, dialect, session: event.sessionID, call: event.id });
       input.command = command;
     } finally {
-      calls.delete(controller);
-      if (calls.size === 0)
+      controllers.delete(controller);
+      if (controllers.size === 0)
         activeCallsBySession.delete(event.sessionID);
     }
   }
@@ -858,16 +894,11 @@ async function registerOpenCodePlugin(context, options = {}) {
     }
     if (closed)
       return;
-    const key = callKey(event.sessionID, event.id);
     const ownsCall = !isCodeModeCall || event.tool === "execute" && codeModeDepth === 1;
-    const policy = ownsCall ? callPolicies.get(key) : undefined;
-    const cwd = (ownsCall ? callDirectories.get(key) : undefined) ?? (context.session?.get ? await sessionDirectory(event.sessionID) : undefined);
-    const recoveryInput = (ownsCall ? originalInputs.get(key) : undefined) ?? event.input;
-    if (ownsCall) {
-      callDirectories.delete(key);
-      originalInputs.delete(key);
-      callPolicies.delete(key);
-    }
+    const snapshot = ownsCall ? calls.take(event.sessionID, event.id) : undefined;
+    const policy = snapshot?.selection;
+    const cwd = snapshot?.cwd ?? (context.session?.get ? await sessionDirectory(event.sessionID) : undefined);
+    const recoveryInput = snapshot?.input ?? event.input;
     const recoverySelection = event.result ? textSelection(event.result) : undefined;
     const attribution = recoveryAttribution(event.tool, recoveryInput);
     if (attribution && event.status === "completed" && recoverySelection && !isCodeModeCall && (exitCodeFrom(event.result?.metadata) ?? 0) === 0) {
@@ -1033,6 +1064,7 @@ async function registerOpenCodePlugin(context, options = {}) {
             "session.revert.committed",
             "session.revert.cleared"
           ].includes(String(event.type))) {
+            calls.invalidate();
             bridge.resetReads();
             for (const session of activeCallsBySession.keys())
               abortSession(session);
@@ -1062,7 +1094,8 @@ async function registerOpenCodePlugin(context, options = {}) {
     bridge.close();
     dialects.clear();
     rewrites.clear();
-    originalInputs.clear();
+    calls.clear();
+    activeCodeModeCalls.clear();
     for (const registration of registrations.reverse())
       await registration.dispose();
     await eventLoop;
