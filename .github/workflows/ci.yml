@@ -118,11 +118,12 @@ jobs:
           RELEASE_NOTES: |
             ## What's changed
 
-            - Add `outrim exec` to capture, compress, and recover stdout and stderr independently, with timeout support and `--no-compress` passthrough.
-            - Automatically wrap safe native shell commands in Pi and OpenCode while keeping execution in the host shell.
-            - Support safe compound shell commands with per-unit stream recovery; leave uncertain or interactive forms unchanged.
-            - Honor explicit source facts instead of guessing from shell text, and preserve independent stream forwarding.
-            - Centralize diagnostic recording and final compression selection so reports match the output actually returned.
+            - Replace blind last-ten-line truncation with format-aware log compaction for `gh run watch`, Cargo (`test`, `build`, `check`, `clippy`), and Bun's default test reporter.
+            - Keep observed state and diagnostics: run and job identities, non-success steps, failure evidence from earlier snapshots, compiler warnings and errors, and full test failure output stay visible.
+            - Fold only positively identified repetition and success noise; unrecognized or ambiguous output is left unchanged instead of falling back to lossy truncation.
+            - Recognize Pi's appended search notices (count limits, 50.0KB output limit, 500-character line truncation), so search hits and path lists with these footers are compressed while the notices are preserved verbatim.
+            - Report compression savings, recovery cost, and net savings in `outrim gain`, deducting deduplicated recovery reads.
+            - Extend `outrim gain record` with command coverage, runtime fallbacks, and per-event diagnostics such as output completeness, terminal reason, and host truncation facts.
 
             ## Installation
 
