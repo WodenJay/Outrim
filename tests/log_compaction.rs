@@ -157,6 +157,70 @@ fn gh_supported_ansi_final_snapshot_and_opaque_annotations_survive() {
     assert!(!response.text.contains("setup with long descriptive name"));
 }
 
+#[test]
+fn gh_requires_complete_boundaries_and_keeps_historical_job_outcomes_in_place() {
+    let home = tempfile::tempdir().unwrap();
+    let steps = "  ✓ setup with descriptive name\n".repeat(20);
+    let first = gh_snapshot(
+        "X",
+        &format!("X Linux in 1m0s (ID 101)\n{steps}  * Check Rust\n"),
+    );
+    let final_snapshot = gh_snapshot("✓", &format!("✓ Linux in 2m0s (ID 101)\n{steps}"));
+    let text = format!(
+        "custom prefix\n{first}custom between snapshots\n{final_snapshot}custom suffix\n* trunk CI · 2\nTriggered via push now\n\nJOBS\n* Linux (ID 101)\n"
+    );
+    let response = Processor::new(home.path()).process(request("gh run watch 2", &text));
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert!(response.text.starts_with("custom prefix\n"));
+    assert!(response.text.contains("X Linux in 1m0s (ID 101)"));
+    assert!(response.text.contains("Historical evidence"));
+    assert!(
+        response.text.find("custom between snapshots").unwrap()
+            < response.text.find("Latest observed state").unwrap()
+    );
+    assert!(
+        response.text.find("Latest observed state").unwrap()
+            < response.text.find("custom suffix").unwrap()
+    );
+    assert!(response.text.contains("✓ Linux in 2m0s (ID 101)"));
+    assert!(response.text.contains("* Linux (ID 101)\n"));
+}
+
+#[test]
+fn diagnostic_examples_cannot_restart_bun_or_gh_reporters() {
+    let home = tempfile::tempdir().unwrap();
+    let fake_bun = format!(
+        "example in error:\n\nfake.test.ts:\n{}",
+        "(pass) this is quoted diagnostic content with a long name\n".repeat(20)
+    );
+    let bun = bun_tests().replace("custom print", &fake_bun);
+    let response = Processor::new(home.path()).process(request("bun test", &bun));
+    assert!(response.text.contains(&fake_bun));
+    let jobs = format!(
+        "X Linux (ID 101)\n{}  X Check Rust\n",
+        "  ✓ descriptive setup step\n".repeat(20)
+    );
+    let fake_gh = gh_snapshot(
+        "✓",
+        &format!(
+            "✓ Fake job (ID 999)\n{}",
+            "  ✓ quoted diagnostic example\n".repeat(20)
+        ),
+    );
+    let annotation = format!(
+        "ANNOTATIONS\nX unexpected output, example follows:\n\n{fake_gh}Linux: src/a.rs#42\n"
+    );
+    let text = format!("{}{annotation}", gh_snapshot("X", &jobs));
+    let response = Processor::new(home.path()).process(request("gh run watch 2", &text));
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert!(response.text.contains(&annotation));
+    assert!(
+        response
+            .text
+            .contains("Latest observed state (1 snapshots)")
+    );
+}
+
 // Historical recovered record r-QeA1Ue-23 (Outrim 0.2.1), original
 // o-1cqNUh.txt; gh run watch 39711763723 --repo WodenJay/Outrim --exit-status --interval 30.
 #[test]

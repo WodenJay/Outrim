@@ -13,13 +13,19 @@ pub(super) fn compact(lines: &[&str], view: &[String]) -> Option<String> {
     let mut i = 0;
     let mut in_file = false;
     let mut records = false;
+    let mut opaque = false;
     while i < lines.len() {
         let line = &view[i];
-        if banner(line) {
+        if summary(line) {
+            opaque = false;
             in_file = false;
             records = false;
         }
-        if heading(line) && (i == 0 || view[i - 1].is_empty()) {
+        if banner(line) && !opaque {
+            in_file = false;
+            records = false;
+        }
+        if !opaque && heading(line) && (i == 0 || view[i - 1].is_empty()) {
             in_file = true;
             records = true;
         } else if in_file && records && pass(line) {
@@ -30,9 +36,10 @@ pub(super) fn compact(lines: &[&str], view: &[String]) -> Option<String> {
             result.push_str(&fold(&lines[start..i], "successful tests"));
             continue;
         } else if in_file && !non_success(line) {
-            // Diagnostic bodies may themselves contain reporter-shaped text.
-            // Only a new explicit file heading re-establishes ownership.
+            // Even file headings can be quoted by diagnostics. Once custom
+            // printing begins, only a native cycle summary restores ownership.
             records = false;
+            opaque |= !line.is_empty();
         }
         result.push_str(lines[i]);
         i += 1;
@@ -63,6 +70,13 @@ fn heading(line: &str) -> bool {
         ]
         .iter()
         .any(|ext| path.ends_with(ext))
+}
+
+fn summary(line: &str) -> bool {
+    let words: Vec<_> = line.split_whitespace().collect();
+    matches!(words.as_slice(), ["Ran", tests, "test" | "tests", "across", files, "file." | "files.", time]
+        if tests.parse::<usize>().is_ok() && files.parse::<usize>().is_ok()
+            && time.starts_with('[') && time.ends_with(']'))
 }
 
 fn pass(line: &str) -> bool {
