@@ -3,6 +3,7 @@ import {
   type AbortSignalLike,
   type BridgeChild,
   createBridge,
+  hostOutputFacts,
   inputReferencesOriginals,
   processingFacts,
   recoveryAttribution,
@@ -329,6 +330,7 @@ export async function registerOpenCodePlugin(
         {
           session: event.sessionID,
           toolCallId: event.id,
+          diagnostics: hostOutputFacts("opencode", event.result?.metadata),
           tool: {
             name: event.tool,
             input: null,
@@ -352,6 +354,7 @@ export async function registerOpenCodePlugin(
     const observation = {
       session: event.sessionID ?? null,
       toolCallId: event.id ?? null,
+      diagnostics: hostOutputFacts("opencode", result?.metadata),
       tool: {
         name: event.tool,
         input: event.input ?? null,

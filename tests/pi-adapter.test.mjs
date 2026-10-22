@@ -76,6 +76,38 @@ function event(overrides = {}) {
 const processed = (text) => ({ text, disposition: "compressed", applied_rule: "log_tail" });
 
 describe("Pi execution adapter", () => {
+  it("retains only explicit host truncation facts on metadata-only results", async () => {
+    const settings = join(homedir(), ".outrim", "recording.json");
+    mkdirSync(join(homedir(), ".outrim"), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ recording: true }));
+    const h = harness();
+    rmSync(settings);
+    const e = event({
+      details: {
+        truncation: {
+          truncated: true,
+          truncatedBy: "bytes",
+          totalBytes: 90000,
+          outputBytes: 51200,
+          maxBytes: 51200,
+          content: "private payload",
+        },
+      },
+    });
+    const original = structuredClone(e);
+    expect(await h.result(e)).toBeUndefined();
+    expect(e).toEqual(original);
+    const record = h.children[0].writes.find((request) => request.type === "record_observation");
+    expect(record.diagnostics).toMatchObject({
+      completeness: "host_truncated",
+      host_truncation: { totalBytes: 90000, outputBytes: 51200, maxBytes: 51200 },
+      observed_chars: 10,
+      observed_bytes: 13,
+    });
+    expect(record.diagnostics.total_bytes).toBeUndefined();
+    expect(JSON.stringify(record)).not.toContain("private payload");
+    expect(record.original_text).toBeNull();
+  });
   it("records wrapping stages without retaining newly observed inputs", async () => {
     const settings = join(homedir(), ".outrim", "recording.json");
     mkdirSync(join(homedir(), ".outrim"), { recursive: true });
@@ -208,12 +240,19 @@ describe("Pi native result adapter", () => {
     const unchanged = structuredClone(shell);
     expect(await h.result(shell)).toBeUndefined();
     expect(shell).toEqual(unchanged);
+    expect(
+      await h.result({ ...shell, toolCallId: "failed-shell", structuredContent: { exit_code: 1 } }),
+    ).toBeUndefined();
     const recoveries = h.children[0].writes.filter((r) => r.type === "record_recovery");
     expect(recoveries).toHaveLength(4);
     expect(recoveries[0]).toMatchObject({ characters: 16, attribution: "confirmed" });
     expect(recoveries[0].event_id).toBe(recoveries[1].event_id);
     expect(recoveries[2].event_id).not.toBe(recoveries[0].event_id);
-    expect(recoveries[3]).toMatchObject({ characters: 10, attribution: "confirmed" });
+    expect(recoveries[3]).toMatchObject({
+      characters: 10,
+      attribution: "confirmed",
+      original_paths: [path],
+    });
     expect(h.children[0].writes.some((r) => !r.type)).toBe(false);
   });
   it("preserves metadata and correlates concurrent native tool results", async () => {

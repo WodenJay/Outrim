@@ -130,6 +130,10 @@ if (process.argv[2] === "--host") {
     assert.equal(recovery.length, 1);
     assert.equal(stats.recovery_chars, recovery[0].diagnostics.recovery.characters);
     assert.ok(stats.recovery_chars > 0);
+    const stdout = streams.find((event) => event.execution.stream === "stdout");
+    assert.deepEqual(recovery[0].original_references, [
+      { original_path: stdout.original_path, record_id: stdout.event_id },
+    ]);
     const metadata = events.filter((event) => event.metadata_only);
     assert.ok(metadata.length > 0);
     assert.ok(

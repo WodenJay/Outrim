@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerOpenCodePlugin } from "../adapters/opencode.ts";
@@ -49,6 +49,30 @@ class FakeChild extends EventEmitter {
     this.respond(request, { text, disposition: "compressed", applied_rule: "log_tail" });
   }
 }
+
+it("preserves explicit OpenCode completeness without retaining result content", async () => {
+  const settings = join(homedir(), ".outrim", "recording.json");
+  mkdirSync(join(homedir(), ".outrim"), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ recording: true }));
+  const h = await harness();
+  rmSync(settings);
+  for (const [truncated, completeness] of [
+    [true, "host_truncated"],
+    [false, "complete"],
+    [undefined, "unknown"],
+  ]) {
+    const event = after({ result: { output: "private output", metadata: { truncated } } });
+    const original = structuredClone(event);
+    await h.call("tool.execute.after", event);
+    expect(event).toEqual(original);
+    const record = h.child.writes.at(-1);
+    expect(record.diagnostics.completeness).toBe(completeness);
+    expect(record.diagnostics.total_bytes).toBeUndefined();
+    expect(record.original_text).toBeNull();
+    expect(JSON.stringify(record)).not.toContain("private output");
+  }
+  await h.dispose();
+});
 
 async function harness(options = {}) {
   const handlers = new Map();

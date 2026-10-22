@@ -3,11 +3,13 @@ import {
   type AbortSignalLike,
   type BridgeChild,
   createBridge,
+  hostOutputFacts,
   inputReferencesOriginals,
   processingFacts,
   recoveryAttribution,
   type SpawnProcess,
   sourceFor,
+  type WrappingState,
 } from "./shared";
 
 export const OUTRIM_EXTENSION_MARKER = "outrim-managed: pi-extension";
@@ -126,7 +128,7 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
   pi.on("tool_call", async (event, context) => {
     originalInputs.set(event.toolCallId, { ...event.input });
     const session = context.sessionManager.getSessionId();
-    const wrapping = (state: string, reason: string | null, dialect = "unknown") =>
+    const wrapping = (state: WrappingState, reason: string | null, dialect = "unknown") =>
       bridge.recordWrapping(session, event.toolCallId, event.toolName, state, reason, dialect);
     if (
       !isShell(event.toolName) ||
@@ -165,7 +167,13 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
     originalInputs.delete(event.toolCallId);
     const attribution = recoveryAttribution(event.toolName, originalInput);
-    if (attribution && !event.isError && !context.signal?.aborted && !event.parentToolCallId) {
+    if (
+      attribution &&
+      !event.isError &&
+      (!isShell(event.toolName) || (exitCodeFrom(event.structuredContent) ?? 0) === 0) &&
+      !context.signal?.aborted &&
+      !event.parentToolCallId
+    ) {
       bridge.recordRecovery(
         context.sessionManager.getSessionId(),
         event.toolCallId,
@@ -185,6 +193,7 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
         {
           session: context.sessionManager.getSessionId(),
           toolCallId: event.toolCallId,
+          diagnostics: hostOutputFacts("pi", event.details),
           tool: {
             name: event.toolName,
             input: null,
@@ -205,6 +214,7 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,
+      diagnostics: hostOutputFacts("pi", event.details),
       tool: {
         name: event.toolName,
         input: event.input,

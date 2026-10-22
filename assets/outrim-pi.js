@@ -116,6 +116,46 @@ function sourceFor(host, toolName, input) {
     return "runtime_log";
   return "unknown";
 }
+function hostOutputFacts(host, value) {
+  const details = value && typeof value === "object" ? value : {};
+  const raw = host === "pi" ? details.truncation : details;
+  const truncation = raw && typeof raw === "object" ? raw : {};
+  const facts = {};
+  if (typeof truncation.truncated === "boolean")
+    facts.truncated = truncation.truncated;
+  if (host === "pi") {
+    for (const name of [
+      "totalLines",
+      "totalBytes",
+      "outputLines",
+      "outputBytes",
+      "maxLines",
+      "maxBytes"
+    ]) {
+      const number = truncation[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number >= 0)
+        facts[name] = number;
+    }
+    if (truncation.truncatedBy === "bytes" || truncation.truncatedBy === "lines")
+      facts.truncatedBy = truncation.truncatedBy;
+    for (const name of ["lastLinePartial", "firstLineExceedsLimit"]) {
+      if (typeof truncation[name] === "boolean")
+        facts[name] = truncation[name];
+    }
+    for (const name of ["matchLimitReached", "resultLimitReached", "entryLimitReached"]) {
+      const number = details[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number > 0)
+        facts[name] = number;
+    }
+    if (typeof details.linesTruncated === "boolean")
+      facts.linesTruncated = details.linesTruncated;
+  }
+  const limited = facts.truncated === true || facts.linesTruncated === true || ["matchLimitReached", "resultLimitReached", "entryLimitReached"].some((name) => (name in facts));
+  return {
+    completeness: limited ? "host_truncated" : facts.truncated === false ? "complete" : "unknown",
+    host_truncation: Object.keys(facts).length ? facts : null
+  };
+}
 function distinct(values) {
   return [...new Set(values.flatMap((value) => value === null ? [] : [value]))];
 }
@@ -158,33 +198,34 @@ function inputReferencesOriginals(value) {
 function recoveryAttribution(tool, input) {
   if (!inputReferencesOriginals(input))
     return null;
+  const unattributed = { attribution: "unattributed", original_paths: [] };
   if (!input || typeof input !== "object" || Array.isArray(input))
-    return "unattributed";
+    return unattributed;
   const args = input;
   let paths;
   if (tool === "read") {
     const path = args.path ?? args.filePath ?? args.file_path;
     if (typeof path !== "string")
-      return "unattributed";
+      return unattributed;
     paths = [path];
   } else if (["bash", "powershell", "shell"].includes(tool) && typeof args.command === "string") {
     const command = args.command;
     if (/[\\`$\r\n\0|&;<>()*?{}[\]]/.test(command.replaceAll("\\", "/")))
-      return "unattributed";
+      return unattributed;
     const words = [];
     const pattern = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"\\]+))(?=\s|$)/gy;
     let end = 0;
     for (const match of command.matchAll(pattern)) {
       if (match.index !== end)
-        return "unattributed";
+        return unattributed;
       words.push(match[1] ?? match[2] ?? match[3] ?? "");
       end = match.index + match[0].length;
     }
     if (command.slice(end).trim())
-      return "unattributed";
+      return unattributed;
     const program = words.shift();
     if (program !== "cat" && program !== "head")
-      return "unattributed";
+      return unattributed;
     if (program === "head" && words[0] === "-n" && /^\d+$/.test(words[1] ?? ""))
       words.splice(0, 2);
     if (program === "head" && /^-\d+$/.test(words[0] ?? ""))
@@ -192,10 +233,10 @@ function recoveryAttribution(tool, input) {
     if (words[0] === "--")
       words.shift();
     if (words.some((word) => word.startsWith("-")))
-      return "unattributed";
+      return unattributed;
     paths = words;
   } else
-    return "unattributed";
+    return unattributed;
   try {
     const root = realpathSync(join(homedir(), ".outrim", "outputs"));
     return paths.length > 0 && paths.every((path) => {
@@ -204,9 +245,9 @@ function recoveryAttribution(tool, input) {
       const resolved = realpathSync(path);
       const within = relative(root, resolved);
       return within !== "" && !within.startsWith("..") && !isAbsolute(within) && statSync(resolved).isFile();
-    }) ? "confirmed" : "unattributed";
+    }) ? { attribution: "confirmed", original_paths: [...new Set(paths)] } : unattributed;
   } catch {
-    return "unattributed";
+    return unattributed;
   }
 }
 function createBridge(host, executable, spawnProcess) {
@@ -409,10 +450,12 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "2f6f6e451e0802681f99ebb08a77f7c51ddfe5efaeb91ab54528b72b35dd41fb",
+        adapter_build: "5ae6cea7cb97720e58a23fbe8ea1b94bcb9f7e3f6d75a4d8b8abc1cd4f55b28f",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
+        observed_bytes: original === null ? null : Buffer.byteLength(original, "utf8"),
+        ...context.diagnostics,
         ...facts.diagnostics
       },
       outcome: facts.outcome,
@@ -439,7 +482,7 @@ function createBridge(host, executable, spawnProcess) {
       fail(currentChild);
     }
   }
-  function recordRecovery(session, toolCallId, texts, attribution) {
+  function recordRecovery(session, toolCallId, texts, evidence) {
     exchange({
       type: "record_recovery",
       host,
@@ -447,7 +490,7 @@ function createBridge(host, executable, spawnProcess) {
       tool_call_id: toolCallId,
       event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
       characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
-      attribution
+      ...evidence
     });
   }
   function recordWrapping(session, call, tool, state, reason, dialect, actual) {
@@ -558,7 +601,7 @@ function registerPiExtension(pi, options = {}) {
     const originalInput = originalInputs.get(event.toolCallId) ?? event.input;
     originalInputs.delete(event.toolCallId);
     const attribution = recoveryAttribution(event.toolName, originalInput);
-    if (attribution && !event.isError && !context.signal?.aborted && !event.parentToolCallId) {
+    if (attribution && !event.isError && (!isShell2(event.toolName) || (exitCodeFrom(event.structuredContent) ?? 0) === 0) && !context.signal?.aborted && !event.parentToolCallId) {
       bridge.recordRecovery(context.sessionManager.getSessionId(), event.toolCallId, event.content.flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []), attribution);
     }
     if (isShell2(event.toolName)) {
@@ -567,6 +610,7 @@ function registerPiExtension(pi, options = {}) {
       bridge.recordObservation({
         session: context.sessionManager.getSessionId(),
         toolCallId: event.toolCallId,
+        diagnostics: hostOutputFacts("pi", event.details),
         tool: {
           name: event.toolName,
           input: null,
@@ -583,6 +627,7 @@ function registerPiExtension(pi, options = {}) {
     const observation = {
       session: context.sessionManager.getSessionId(),
       toolCallId: event.toolCallId ?? null,
+      diagnostics: hostOutputFacts("pi", event.details),
       tool: {
         name: event.toolName,
         input: event.input,

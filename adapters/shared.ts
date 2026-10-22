@@ -3,6 +3,12 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 
 export type Host = "pi" | "opencode";
+export type WrappingState = "not_attempted" | "rejected" | "planned" | "adopted" | "withdrawn";
+
+interface RecoveryEvidence {
+  attribution: "confirmed" | "unattributed";
+  original_paths: string[];
+}
 export type Source =
   | "source_code"
   | "configuration"
@@ -207,9 +213,53 @@ export interface ProcessedResult {
 }
 
 export interface ObservationContext {
+  diagnostics?: Record<string, unknown>;
   session: string | null;
   toolCallId: string | null;
   tool: ToolInput;
+}
+
+// Retain only verified host scalar facts, never truncator content or output paths.
+export function hostOutputFacts(host: Host, value: unknown): Record<string, unknown> {
+  const details = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const raw = host === "pi" ? details.truncation : details;
+  const truncation = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const facts: Record<string, unknown> = {};
+  if (typeof truncation.truncated === "boolean") facts.truncated = truncation.truncated;
+  if (host === "pi") {
+    for (const name of [
+      "totalLines",
+      "totalBytes",
+      "outputLines",
+      "outputBytes",
+      "maxLines",
+      "maxBytes",
+    ]) {
+      const number = truncation[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number >= 0)
+        facts[name] = number;
+    }
+    if (truncation.truncatedBy === "bytes" || truncation.truncatedBy === "lines")
+      facts.truncatedBy = truncation.truncatedBy;
+    for (const name of ["lastLinePartial", "firstLineExceedsLimit"]) {
+      if (typeof truncation[name] === "boolean") facts[name] = truncation[name];
+    }
+    for (const name of ["matchLimitReached", "resultLimitReached", "entryLimitReached"]) {
+      const number = details[name];
+      if (typeof number === "number" && Number.isSafeInteger(number) && number > 0)
+        facts[name] = number;
+    }
+    if (typeof details.linesTruncated === "boolean") facts.linesTruncated = details.linesTruncated;
+  }
+  const limited =
+    facts.truncated === true ||
+    facts.linesTruncated === true ||
+    ["matchLimitReached", "resultLimitReached", "entryLimitReached"].some((name) => name in facts);
+  return {
+    completeness: limited ? "host_truncated" : facts.truncated === false ? "complete" : "unknown",
+    // These sizes describe the host truncator's input/output, not a whole file.
+    host_truncation: Object.keys(facts).length ? facts : null,
+  };
 }
 
 export interface ObservationFacts {
@@ -309,39 +359,37 @@ export function inputReferencesOriginals(value: unknown): boolean {
 
 // Stricter than recovery protection: only literal, successful original reads
 // justify a deduction. Never read file contents to estimate returned characters.
-export function recoveryAttribution(
-  tool: string,
-  input: unknown,
-): "confirmed" | "unattributed" | null {
+export function recoveryAttribution(tool: string, input: unknown): RecoveryEvidence | null {
   if (!inputReferencesOriginals(input)) return null;
-  if (!input || typeof input !== "object" || Array.isArray(input)) return "unattributed";
+  const unattributed: RecoveryEvidence = { attribution: "unattributed", original_paths: [] };
+  if (!input || typeof input !== "object" || Array.isArray(input)) return unattributed;
   const args = input as Record<string, unknown>;
   let paths: string[];
   if (tool === "read") {
     const path = args.path ?? args.filePath ?? args.file_path;
-    if (typeof path !== "string") return "unattributed";
+    if (typeof path !== "string") return unattributed;
     paths = [path];
   } else if (["bash", "powershell", "shell"].includes(tool) && typeof args.command === "string") {
     // No expansions, redirections, scripts, transformations or compound commands.
     const command = args.command;
-    if (/[\\`$\r\n\0|&;<>()*?{}[\]]/.test(command.replaceAll("\\", "/"))) return "unattributed";
+    if (/[\\`$\r\n\0|&;<>()*?{}[\]]/.test(command.replaceAll("\\", "/"))) return unattributed;
     const words: string[] = [];
     const pattern = /\s*(?:'([^']*)'|"([^"]*)"|([^\s'"\\]+))(?=\s|$)/gy;
     let end = 0;
     for (const match of command.matchAll(pattern)) {
-      if (match.index !== end) return "unattributed";
+      if (match.index !== end) return unattributed;
       words.push(match[1] ?? match[2] ?? match[3] ?? "");
       end = match.index + match[0].length;
     }
-    if (command.slice(end).trim()) return "unattributed";
+    if (command.slice(end).trim()) return unattributed;
     const program = words.shift();
-    if (program !== "cat" && program !== "head") return "unattributed";
+    if (program !== "cat" && program !== "head") return unattributed;
     if (program === "head" && words[0] === "-n" && /^\d+$/.test(words[1] ?? "")) words.splice(0, 2);
     if (program === "head" && /^-\d+$/.test(words[0] ?? "")) words.shift();
     if (words[0] === "--") words.shift();
-    if (words.some((word) => word.startsWith("-"))) return "unattributed";
+    if (words.some((word) => word.startsWith("-"))) return unattributed;
     paths = words;
-  } else return "unattributed";
+  } else return unattributed;
   try {
     const root = realpathSync(join(homedir(), ".outrim", "outputs"));
     return paths.length > 0 &&
@@ -356,10 +404,10 @@ export function recoveryAttribution(
           statSync(resolved).isFile()
         );
       })
-      ? "confirmed"
-      : "unattributed";
+      ? { attribution: "confirmed", original_paths: [...new Set(paths)] }
+      : unattributed;
   } catch {
-    return "unattributed";
+    return unattributed;
   }
 }
 
@@ -396,13 +444,13 @@ export function createBridge(
     session: string,
     toolCallId: string,
     texts: readonly string[],
-    attribution: "confirmed" | "unattributed",
+    evidence: RecoveryEvidence,
   ): void;
   recordWrapping(
     session: string,
     call: string,
     tool: string,
-    state: string,
+    state: WrappingState,
     reason: string | null,
     dialect: string,
     actual?: string,
@@ -658,6 +706,8 @@ export function createBridge(
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
+        observed_bytes: original === null ? null : Buffer.byteLength(original, "utf8"),
+        ...context.diagnostics,
         ...facts.diagnostics,
       },
       outcome: facts.outcome,
@@ -688,7 +738,7 @@ export function createBridge(
     session: string,
     toolCallId: string,
     texts: readonly string[],
-    attribution: "confirmed" | "unattributed",
+    evidence: RecoveryEvidence,
   ): void {
     // The durable identity is independent of bridge transport/restarts.
     void exchange({
@@ -698,7 +748,7 @@ export function createBridge(
       tool_call_id: toolCallId,
       event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
       characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
-      attribution,
+      ...evidence,
     });
   }
 
@@ -706,7 +756,7 @@ export function createBridge(
     session: string,
     call: string,
     tool: string,
-    state: string,
+    state: WrappingState,
     reason: string | null,
     dialect: string,
     actual?: string,

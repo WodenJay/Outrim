@@ -49,7 +49,7 @@ impl Processor {
                 tool_call_id: Some(recovery.tool_call_id.clone()),
                 tool: protocol::Tool {
                     name: "recovery".into(),
-                    input: serde_json::Value::Null,
+                    input: serde_json::json!(recovery.original_paths),
                     source: Source::Unknown,
                     exit_code: None,
                 },

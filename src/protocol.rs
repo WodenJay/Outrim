@@ -150,6 +150,7 @@ pub struct Diagnostics {
     pub actual_dialect: Option<String>,
     pub output_origin: Option<String>,
     pub completeness: Option<String>,
+    pub host_truncation: Option<serde_json::Value>,
     pub observed_bytes: Option<u64>,
     pub observed_chars: Option<u64>,
     pub total_bytes: Option<u64>,
@@ -215,6 +216,8 @@ pub struct RecoveryRequest {
     pub tool_call_id: String,
     pub characters: u64,
     pub attribution: RecoveryAttribution,
+    #[serde(default)]
+    pub original_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
