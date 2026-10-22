@@ -6,7 +6,7 @@
     "lint": "biome check adapters tests scripts",
     "format": "biome check --write adapters tests scripts",
     "test": "bun test --path-ignore-patterns='target/**'",
-    "test:hosts": "bun run scripts/check-hosts.mjs",
+    "test:hosts": "bun run tests/hosts/check-hosts.mjs",
     "verify": "bun check && bun run lint && bun run test && bun run test:hosts"
   },
   "devDependencies": {

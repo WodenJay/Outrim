@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 if (process.argv[2] === "--host") {
   const { registerPiExtension } = await import(
@@ -126,7 +128,12 @@ if (process.argv[2] === "--host") {
     OUTRIM_FIXTURE: fixture,
   };
   try {
-    execFileSync("rustc", ["--edition=2024", "tests/fixtures/exec-child.rs", "-o", fixture]);
+    execFileSync("rustc", [
+      "--edition=2024",
+      join(root, "tests/fixtures/exec-child.rs"),
+      "-o",
+      fixture,
+    ]);
     execFileSync(executable, ["install", "--agent", "pi"], { env });
     execFileSync(executable, ["gain", "record", "on"], { env });
     execFileSync(process.execPath, [import.meta.filename, "--host"], {

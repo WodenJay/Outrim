@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 if (process.argv[2] === "--host") {
   const { default: plugin } = await import(
@@ -153,7 +153,7 @@ if (process.argv[2] === "--host") {
     .map(JSON.parse)
     .find((message) => message.target?.name === "outrim" && message.executable);
   assert.ok(artifact?.executable, "Cargo must produce the outrim executable");
-  execFileSync(process.execPath, [join(root, "scripts/check-pi.mjs"), artifact.executable], {
+  execFileSync(process.execPath, [join(root, "tests/hosts/check-pi.mjs"), artifact.executable], {
     stdio: "inherit",
   });
 

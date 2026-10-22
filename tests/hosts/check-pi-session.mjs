@@ -13,7 +13,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 // Point at the installed @earendil-works/pi-coding-agent package directory.
 assert.ok(
@@ -24,7 +26,8 @@ const sdkDir = resolve(process.env.PI_SDK_DIR);
 assert.ok(existsSync(join(sdkDir, "dist/index.js")), `Pi SDK not found at ${sdkDir}`);
 if (process.argv[2] !== "--host") {
   const sourceBinary = resolve(
-    process.argv[2] || `target/debug/outrim${process.platform === "win32" ? ".exe" : ""}`,
+    process.argv[2] ||
+      join(root, `target/debug/outrim${process.platform === "win32" ? ".exe" : ""}`),
   );
   const home = mkdtempSync(join(tmpdir(), "outrim-pi-session-"));
   const binary = join(home, process.platform === "win32" ? "outrim.exe" : "outrim");
