@@ -116,14 +116,20 @@ impl Store {
 
     fn persist(&self, stats: &Stats) -> io::Result<()> {
         let mut file = NamedTempFile::new_in(&self.directory)?;
-        serde_json::to_writer(file.as_file_mut(), stats).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
+        write_stats(file.as_file_mut(), stats)?;
         file.as_file().sync_all()?;
         storage::replace(file, &self.path)?;
         #[cfg(unix)]
         File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
+}
+
+fn write_stats(writer: impl IoWrite, stats: &Stats) -> io::Result<()> {
+    let mut buffer = io::BufWriter::new(writer);
+    serde_json::to_writer(&mut buffer, stats).map_err(io::Error::other)?;
+    buffer.write_all(b"\n")?;
+    buffer.flush()
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -296,6 +302,30 @@ fn exists(path: &Path) -> io::Result<bool> {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[test]
+    fn serialization_propagates_buffer_flush_failure() {
+        struct FailedDisk;
+        impl io::Write for FailedDisk {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            write_stats(FailedDisk, &Stats::default())
+                .unwrap_err()
+                .to_string(),
+            "disk full"
+        );
     }
 }
 
