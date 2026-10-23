@@ -219,12 +219,6 @@ fn render_stats(stats: &Stats) -> String {
     let mut report = String::new();
 
     writeln!(report, "Gain\n").unwrap();
-    writeln!(
-        report,
-        "Text tokens: {} (not model billing)\n",
-        tokens::ENCODING
-    )
-    .unwrap();
     writeln!(report, "Processed outputs: {}", format_number(outputs)).unwrap();
     writeln!(
         report,

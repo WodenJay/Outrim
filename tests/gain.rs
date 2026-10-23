@@ -84,7 +84,6 @@ fn exact_delivery_counts_use_full_o200k_text_and_preserve_negative_savings() {
         assert_eq!(stats["rules"]["custom_rule"]["before_tokens"], before);
         assert_eq!(stats["rules"]["custom_rule"]["after_tokens"], after);
         let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
-        assert!(report.contains("o200k_base"), "{report}");
         assert!(
             report.contains(&format!("Compression savings: {} tokens", before - after)),
             "{report}"
@@ -235,7 +234,7 @@ fn gain_renders_token_summary_and_rule_totals() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         concat!(
-            "Gain\n\nText tokens: o200k_base (not model billing)\n\n",
+            "Gain\n\n",
             "Processed outputs: 1,037\n",
             "Compression savings: 52.6k tokens\n",
             "Compression rate: 54%\n",
@@ -285,7 +284,7 @@ fn gain_formats_token_boundaries_and_preserves_unknown_rule_labels() {
             String::from_utf8(output.stdout).unwrap(),
             format!(
                 concat!(
-                    "Gain\n\nText tokens: o200k_base (not model billing)\n\n",
+                    "Gain\n\n",
                     "Processed outputs: 1,234\n",
                     "Compression savings: {saved} tokens\n",
                     "Compression rate: 100%\n",
@@ -354,7 +353,7 @@ fn gain_distinguishes_empty_outcomes_from_recovery_and_zero_count_data() {
 fn zero_output_report(recovery: &str, net: &str) -> String {
     format!(
         concat!(
-            "Gain\n\nText tokens: o200k_base (not model billing)\n\n",
+            "Gain\n\n",
             "Processed outputs: 0\n",
             "Compression savings: 0 tokens\n",
             "Compression rate: 0%\n",
