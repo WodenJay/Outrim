@@ -55,6 +55,20 @@ fn bun_tests() -> String {
 }
 
 #[test]
+fn bun_supports_default_test_file_names() {
+    let home = tempfile::tempdir().unwrap();
+    for suffix in [".test", ".spec", "_test", "_spec"] {
+        for extension in ["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"] {
+            let heading = format!("tests/example{suffix}.{extension}:");
+            let text = bun_tests().replace("tests/example.test.ts:", &heading);
+            let response = Processor::new(home.path()).process(request("bun test", &text));
+            assert_eq!(response.disposition, Disposition::Compressed, "{heading}");
+            assert!(response.text.contains(&heading));
+        }
+    }
+}
+
+#[test]
 fn bun_preserves_pre_failure_diagnostics_and_native_summaries() {
     let home = tempfile::tempdir().unwrap();
     for command in ["bun test", "bun run test", "npm run test"] {

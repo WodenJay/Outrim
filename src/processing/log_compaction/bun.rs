@@ -56,20 +56,17 @@ fn heading(line: &str) -> bool {
     let Some(path) = line.strip_suffix(':') else {
         return false;
     };
-    !path.is_empty()
-        && !path.chars().any(char::is_whitespace)
-        && [
-            ".test.ts",
-            ".test.tsx",
-            ".test.js",
-            ".test.jsx",
-            ".spec.ts",
-            ".spec.tsx",
-            ".spec.js",
-            ".spec.jsx",
-        ]
-        .iter()
-        .any(|ext| path.ends_with(ext))
+    let Some((stem, extension)) = path.rsplit_once('.') else {
+        return false;
+    };
+    !path.chars().any(char::is_whitespace)
+        && matches!(
+            extension,
+            "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs" | "mts" | "cts"
+        )
+        && [".test", ".spec", "_test", "_spec"]
+            .iter()
+            .any(|suffix| stem.ends_with(suffix))
 }
 
 fn summary(line: &str) -> bool {
