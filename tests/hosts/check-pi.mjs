@@ -1,10 +1,12 @@
 // Installed Pi adapter + real bridge + native shell. SDK dispatch is verified separately.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { removeTestHome } from "./test-home.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -185,6 +187,6 @@ if (process.argv[2] === "--host") {
       "pi: installed bundle → rewrite → native shell → per-stream originals/gain/records passed",
     );
   } finally {
-    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await removeTestHome(home);
   }
 }

@@ -7,13 +7,14 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { removeTestHome } from "./test-home.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -78,7 +79,7 @@ fn main()->ExitCode {
     });
   } finally {
     if (process.env.OUTRIM_KEEP_TEST_HOME) console.log(`test home: ${home}`);
-    else rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    else await removeTestHome(home);
   }
 } else {
   const sdk = await import(pathToFileURL(join(sdkDir, "dist/index.js")).href);
