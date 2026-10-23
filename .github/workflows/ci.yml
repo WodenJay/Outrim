@@ -118,14 +118,16 @@ jobs:
           RELEASE_NOTES: |
             ## What's changed
 
-            - Add per-call compression policies with configuration precedence, tool/input/command matching, literal and glob patterns, and explicit compression-method selection or disabling.
-            - Carry policy context through Pi and OpenCode, snapshot policy before tool execution, and preserve native output when policy resolution fails.
-            - Omit unchanged repeated file reads within a session, including supported `cat`, `head`, `tail`, and `sed` commands. Reads still execute, changed content stays visible, and omitted output remains recoverable.
-            - Harden command rewriting for MSYS arguments and explicitly configured interpreter runs; normalize relative and native glob paths and reject invalid null policy declarations.
-            - Derive `outrim gain` token totals from rule statistics and centralize rule display labels.
-            - Pin bootstrap downloads to a single latest-release version and simplify bridge transport and host installation internals.
+            - Reuse verified overlapping file-read ranges across Pi, OpenCode, and supported native shell reads. Reads still execute; changed content and ambiguous final lines remain protected against stale reuse.
+            - Count exact o200k text tokens instead of character estimates across delivery, recovery, and recording. Include unchanged output in `outrim gain` totals and preserve signed savings.
+            - Recognize complete bannerless Bun test cycles and default test filenames while retaining guards against incomplete or opaque reports.
+            - Merge search-grouping diagnostics and distinguish inapplicable grouping from failed compression.
+            - Guide agents to search saved output when details are needed; preserve specific read-reuse guidance.
+            - Fix Windows command-rewrite tests to avoid platform argument-length limits.
 
-            Full comparison: https://github.com/WodenJay/Outrim/compare/v0.4.0...v0.5.0
+            **Compatibility:** Internal accounting payloads and stored statistics now use text/token fields, without migration or legacy compatibility.
+
+            Full comparison: https://github.com/WodenJay/Outrim/compare/v0.5.0...v0.6.0
 
             ## Installation
 
