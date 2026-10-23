@@ -129,6 +129,8 @@ impl Store {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Stats {
+    before_tokens: u64,
+    after_tokens: u64,
     rules: BTreeMap<String, RuleStats>,
     outcomes: BTreeMap<Disposition, u64>,
     recovery_tokens: u64,
@@ -147,6 +149,8 @@ impl Stats {
     fn record(&mut self, delivery: &RecordDeliveryRequest, counts: tokens::Counts) {
         let count = self.outcomes.entry(delivery.disposition).or_default();
         *count = count.saturating_add(1);
+        self.before_tokens = self.before_tokens.saturating_add(counts.before);
+        self.after_tokens = self.after_tokens.saturating_add(counts.after);
 
         if delivery.disposition == Disposition::Compressed {
             let rule = self
@@ -207,8 +211,8 @@ fn render_stats(stats: &Stats) -> String {
         return "No gain data.\n".into();
     }
 
-    let before_tokens: u64 = stats.rules.values().map(|rule| rule.before_tokens).sum();
-    let after_tokens: u64 = stats.rules.values().map(|rule| rule.after_tokens).sum();
+    let before_tokens = stats.before_tokens;
+    let after_tokens = stats.after_tokens;
     let saved_tokens = i128::from(before_tokens) - i128::from(after_tokens);
     let savings_rate = percentage(saved_tokens, before_tokens);
     let outputs = stats.outcomes.values().sum();

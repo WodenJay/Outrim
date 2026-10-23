@@ -168,12 +168,56 @@ fn whole_delivery_and_recovery_counts_match_recording_without_archiving_recovery
 }
 
 #[test]
-fn gain_derives_a_token_only_summary_from_current_rules() {
+fn aggregate_rate_includes_unchanged_deliveries_across_processes() {
+    let home = tempfile::tempdir().unwrap();
+    let mut bridge = Bridge::start(home.path());
+    for disposition in [
+        "protected",
+        "no_match",
+        "failed_open",
+        "not_shorter",
+        "recovery_skipped",
+    ] {
+        assert_eq!(
+            bridge.exchange(&json!({
+                "type": "record_delivery", "version": 2, "id": disposition,
+                "disposition": disposition, "applied_rule": null,
+                "original_text": "hello world", "final_text": "hello world"
+            }))["acknowledged"],
+            true
+        );
+    }
+    bridge.stop();
+    let mut bridge = Bridge::start(home.path());
+    assert_eq!(
+        bridge.exchange(&json!({
+            "type": "record_delivery", "version": 2, "id": "compressed",
+            "disposition": "compressed", "applied_rule": "custom_rule",
+            "original_text": "hello world", "final_text": "hello"
+        }))["acknowledged"],
+        true
+    );
+    bridge.stop();
+    let stats: Value =
+        serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap()).unwrap();
+    assert_eq!(stats["before_tokens"], 12);
+    assert_eq!(stats["after_tokens"], 11);
+    assert_eq!(stats["rules"]["custom_rule"]["before_tokens"], 2);
+    assert_eq!(stats["rules"]["custom_rule"]["after_tokens"], 1);
+    let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
+    assert!(report.contains("Compression savings: 1 tokens"), "{report}");
+    assert!(report.contains("Compression rate: 8%"), "{report}");
+    assert!(report.contains("50%"), "{report}");
+}
+
+#[test]
+fn gain_renders_token_summary_and_rule_totals() {
     let home = tempfile::tempdir().unwrap();
     fs::create_dir(home.path().join(".outrim")).unwrap();
     fs::write(
         home.path().join(".outrim/gain.json"),
         json!({
+            "before_tokens": 97320, "after_tokens": 44704,
             "rules": {
                 "log_compaction": { "count": 69, "before_tokens": 60000, "after_tokens": 12000 },
                 "search_hit_groups": { "count": 33, "before_tokens": 35000, "after_tokens": 30500 },
@@ -230,6 +274,7 @@ fn gain_formats_token_boundaries_and_preserves_unknown_rule_labels() {
         (1100000, "1.1M"),
     ] {
         fs::write(home.path().join(".outrim/gain.json"), json!({
+            "before_tokens": tokens, "after_tokens": 0,
             "rules": { "custom_rule": { "count": 1234, "before_tokens": tokens, "after_tokens": 0 } },
             "outcomes": { "compressed": 1234 },
             "recovery_tokens": 0, "recovery_events": []
@@ -293,6 +338,7 @@ fn gain_distinguishes_empty_outcomes_from_recovery_and_zero_count_data() {
         fs::write(
             home.path().join(".outrim/gain.json"),
             json!({
+                "before_tokens": 0, "after_tokens": 0,
                 "rules": {}, "outcomes": outcomes,
                 "recovery_tokens": recovery, "recovery_events": events
             })
@@ -337,6 +383,7 @@ fn gain_rejects_old_incomplete_and_invalid_statistics_without_overwriting() {
     fs::create_dir(home.path().join(".outrim")).unwrap();
     let path = home.path().join(".outrim/gain.json");
     let complete = json!({
+        "before_tokens": 100, "after_tokens": 20,
         "rules": { "json_toon": { "count": 1, "before_tokens": 100, "after_tokens": 20 } },
         "outcomes": { "compressed": 1 }, "recovery_tokens": 0, "recovery_events": []
     });
@@ -346,7 +393,14 @@ fn gain_rejects_old_incomplete_and_invalid_statistics_without_overwriting() {
     old["before_chars"] = json!(100);
     old["after_chars"] = json!(20);
     invalid.push(old.to_string());
-    for field in ["rules", "outcomes", "recovery_tokens", "recovery_events"] {
+    for field in [
+        "before_tokens",
+        "after_tokens",
+        "rules",
+        "outcomes",
+        "recovery_tokens",
+        "recovery_events",
+    ] {
         let mut missing = complete.clone();
         missing.as_object_mut().unwrap().remove(field);
         invalid.push(missing.to_string());
@@ -1007,7 +1061,7 @@ fn gain_aggregates_all_delivery_outcomes_across_writes() {
     for expected in [
         "Processed outputs: 8",
         "Compression savings: 170 tokens",
-        "Compression rate: 53%",
+        "Compression rate: 24%",
         "JSON compact",
         "Compressed: 3",
         "Protected: 1",
