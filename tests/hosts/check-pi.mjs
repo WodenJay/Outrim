@@ -106,7 +106,10 @@ if (process.argv[2] === "--host") {
         );
         const delivered = result?.content[0].text ?? text;
         if (toolName === "read" && index === 0) assert.equal(delivered, text);
-        else assert.ok(delivered.length < text.length);
+        else {
+          assert.ok(delivered.length < text.length);
+          assert.ok(delivered.includes("; verified unchanged, so omitted."));
+        }
       }
     }
   } finally {
@@ -145,7 +148,7 @@ if (process.argv[2] === "--host") {
       8,
       "two streams + recovery + custom tool + four delivered file reads",
     );
-    assert.equal(stats.rules.read_dedup.count, 2);
+    assert.equal(stats.rules.read_dedup.count, 3);
     assert.ok(stats.rules.read_dedup.after_chars < stats.rules.read_dedup.before_chars);
     const events = readdirSync(join(home, ".outrim/records")).flatMap((instance) =>
       readFileSync(join(home, ".outrim/records", instance, "events.jsonl"), "utf8")
