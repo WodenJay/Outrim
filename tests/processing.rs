@@ -140,7 +140,7 @@ fn search_host_match_notice_preserves_interleaved_order_and_original() {
     assert_eq!(
         response.text,
         format!(
-            "{file}:\n  1:03:first\n  1:03:first\nother.rs:\n  2:middle\n{file}:\n  3:last\n{tail}\n[outrim]: The full output is available at {original_path}"
+            "{file}:\n  1:03:first\n  1:03:first\nother.rs:\n  2:middle\n{file}:\n  3:last\n{tail}\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -170,7 +170,7 @@ fn path_lists_preserve_host_results_notices_and_original() {
         assert_eq!(
             response.text,
             format!(
-                "{prefix}\n  a.rs\n  b.rs\n  b.rs\n{tail}[outrim]: The full output is available at {original_path}"
+                "{prefix}\n  a.rs\n  b.rs\n  b.rs\n{tail}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
             )
         );
     }
@@ -209,7 +209,7 @@ fn search_host_notices_preserve_all_supported_combinations_and_endings() {
             assert_eq!(
                 response.text,
                 format!(
-                    "{file}:{first}  0001-context{first}  2:03:[{notice}]{second}{tail}{separator}[outrim]: The full output is available at {original_path}"
+                    "{file}:{first}  0001-context{first}  2:03:[{notice}]{second}{tail}{separator}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
                 )
             );
         }
@@ -309,7 +309,7 @@ fn host_footer_paths_preserve_mixed_endings_and_notice_like_literals() {
         assert_eq!(
             response.text,
             format!(
-                "{prefix}{first}  a.rs{first}  b.rs{second}{tail}{separator}[outrim]: The full output is available at {original_path}"
+                "{prefix}{first}  a.rs{first}  b.rs{second}{tail}{separator}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
             )
         );
     }
@@ -320,7 +320,7 @@ fn host_footer_paths_preserve_mixed_endings_and_notice_like_literals() {
     assert_eq!(
         response.text,
         format!(
-            "{prefix}\n  a.rs\n  b.rs\n[50.0KB-limit-reached]\n[outrim]: The full output is available at {original_path}"
+            "{prefix}\n  a.rs\n  b.rs\n[50.0KB-limit-reached]\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -336,7 +336,7 @@ fn host_footers_keep_strict_final_unicode_savings_with_real_recovery_paths() {
     let probe_body = format!("{0}/a.rs\n{0}/b.rs\n{tail}", "long-directory".repeat(40));
     let probe = processor.process(request(&probe_body, Source::Search));
     let hint_length = format!(
-        "\n[outrim]: The full output is available at {}",
+        "\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {}",
         probe.original_path.unwrap()
     )
     .chars()
@@ -489,7 +489,7 @@ fn path_lists_group_contiguous_prefixes_and_save_the_original() {
     assert_eq!(
         response.text,
         format!(
-            "{prefix}\n  client.rs\n  server.rs\n  server.rs\nother.txt\n[outrim]: The full output is available at {original_path}"
+            "{prefix}\n  client.rs\n  server.rs\n  server.rs\nother.txt\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -547,7 +547,7 @@ fn path_lists_keep_greedy_blocks_order_and_explicit_directory_entries() {
     assert_eq!(
         response.text,
         format!(
-            "{prefix}\n{prefix}deep/\n  a.rs\n  b.rs\n{prefix}other.rs\nelsewhere.txt\n{prefix}deep/\n  a.rs\n  a.rs\n{prefix}child/\na/one\na/{prefix}\n  b\n  c\n[outrim]: The full output is available at {original_path}"
+            "{prefix}\n{prefix}deep/\n  a.rs\n  b.rs\n{prefix}other.rs\nelsewhere.txt\n{prefix}deep/\n  a.rs\n  a.rs\n{prefix}child/\na/one\na/{prefix}\n  b\n  c\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -576,7 +576,7 @@ fn path_lists_preserve_literal_paths_and_each_record_ending() {
             assert_eq!(
                 response.text,
                 format!(
-                    "{prefix}{first}  a.rs{first}  B/{second}{tail}{separator}[outrim]: The full output is available at {original_path}"
+                    "{prefix}{first}  a.rs{first}  B/{second}{tail}{separator}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
                 )
             );
         }
@@ -598,7 +598,7 @@ fn path_lists_do_not_group_similar_names_or_locally_unprofitable_blocks() {
     assert_eq!(
         response.text,
         format!(
-            "{unchanged}{prefix}\n  a.rs\n  b.rs\n[outrim]: The full output is available at {original_path}"
+            "{unchanged}{prefix}\n  a.rs\n  b.rs\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -610,7 +610,7 @@ fn path_lists_require_strict_unicode_savings_after_the_recovery_hint() {
     let probe_text = format!("{0}/a.rs\n{0}/b.rs", "long-directory".repeat(40));
     let probe = processor.process(request(&probe_text, Source::Search));
     let hint_length = format!(
-        "\n[outrim]: The full output is available at {}",
+        "\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {}",
         probe.original_path.unwrap()
     )
     .chars()
@@ -996,7 +996,7 @@ fn mixed_json_uses_a_lossless_compact_candidate_when_final_text_is_shorter() {
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     let (encoded, hint) = response
         .text
-        .split_once("\n[outrim]: The full output is available at ")
+        .split_once("\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at ")
         .unwrap();
     assert_eq!(serde_json::from_str::<Value>(encoded).unwrap(), value);
     assert_eq!(hint, path);
@@ -1072,7 +1072,7 @@ fn repeated_json_records_choose_the_smaller_lossless_toon_candidate() {
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     let (encoded, hint) = response
         .text
-        .split_once("\n[outrim]: The full output is available at ")
+        .split_once("\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at ")
         .unwrap();
     assert_eq!(
         toon_format::decode_default::<Value>(encoded).unwrap(),
@@ -1099,7 +1099,7 @@ fn numeric_and_escaped_string_boundaries_fall_back_to_exact_compact_json() {
     assert_eq!(fs::read_to_string(original_path).unwrap(), text);
     let (encoded, _) = response
         .text
-        .split_once("\n[outrim]: The full output is available at ")
+        .split_once("\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at ")
         .unwrap();
     assert_eq!(encoded, expected);
 }
@@ -1120,7 +1120,7 @@ fn duplicate_json_keys_are_preserved_by_compact_fallback() {
     assert_eq!(fs::read_to_string(original_path).unwrap(), text);
     let (encoded, _) = response
         .text
-        .split_once("\n[outrim]: The full output is available at ")
+        .split_once("\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at ")
         .unwrap();
     assert_eq!(
         encoded,
@@ -1239,7 +1239,7 @@ fn context_search_groups_blocks_without_losing_records_or_limit_notice() {
     assert_eq!(
         response.text,
         format!(
-            "{file}:\n  41- const retries = 3;\n  42: const timeout = 5000;\n  43- connect(retries, timeout);\n  --\n  88- const config = {{\n  89:   timeout: 10000,\n  90- }};\n[100 matches limit reached.]\n[outrim]: The full output is available at {original_path}"
+            "{file}:\n  41- const retries = 3;\n  42: const timeout = 5000;\n  43- connect(retries, timeout);\n  --\n  88- const config = {{\n  89:   timeout: 10000,\n  90- }};\n[100 matches limit reached.]\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -1279,7 +1279,7 @@ fn extended_search_keeps_interleaved_paths_and_cross_file_separators_in_order() 
         assert_eq!(
             response.text,
             format!(
-                "{file}:\n  9:first\n  9:duplicate\n{expected_middle}other.rs:\n  2:other\n{separator}{file}:\n  1:last\n  1:last\n{ending}[outrim]: The full output is available at {original_path}"
+                "{file}:\n  9:first\n  9:duplicate\n{expected_middle}other.rs:\n  2:other\n{separator}{file}:\n  1:last\n  1:last\n{ending}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
             )
         );
     }
@@ -1302,7 +1302,7 @@ fn context_search_preserves_positions_body_and_windows_paths() {
     assert_eq!(
         response.text,
         format!(
-            "{file}:\n  0009-\n  0008:03: body:7:value -8- -- [12 matches limit reached.]\n  9- body:8:value -9- -- [13 matches limit reached.]\n  8\n  8:\n[outrim]: The full output is available at {original_path}"
+            "{file}:\n  0009-\n  0008:03: body:7:value -8- -- [12 matches limit reached.]\n  9- body:8:value -9- -- [13 matches limit reached.]\n  8\n  8:\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -1328,7 +1328,7 @@ fn context_search_preserves_record_endings_and_terminal_blank_lines() {
         assert_eq!(
             response.text,
             format!(
-                "{file}:{first_ending}  18446744073709551615:hit{first_ending}  0001-context{second_ending}{tail}{separator}[outrim]: The full output is available at {original_path}"
+                "{file}:{first_ending}  18446744073709551615:hit{first_ending}  0001-context{second_ending}{tail}{separator}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
             )
         );
     }
@@ -1345,7 +1345,7 @@ fn context_search_preserves_record_endings_and_terminal_blank_lines() {
         assert_eq!(
             response.text,
             format!(
-                "{file}:\n  1:hit\n  2:hit\n[999999999999999999999999 matches limit reached.]{ending}{separator}[outrim]: The full output is available at {original_path}"
+                "{file}:\n  1:hit\n  2:hit\n[999999999999999999999999 matches limit reached.]{ending}{separator}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
             )
         );
     }
@@ -1422,7 +1422,7 @@ fn context_search_requires_strict_final_unicode_savings_including_hint_separator
         Source::Search,
     ));
     let hint_length = format!(
-        "\n[outrim]: The full output is available at {}",
+        "\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {}",
         probe.original_path.unwrap()
     )
     .chars()
@@ -1494,14 +1494,14 @@ fn prose_prefixes_are_not_mistaken_for_search_paths() {
 #[test]
 fn terminal_blank_records_are_preserved_while_grouping_hits() {
     let home = tempfile::tempdir().unwrap();
-    let file = format!("workspace/{}/module.rs", "long-component-name/".repeat(8));
+    let file = format!("workspace/{}/module.rs", "long-component-name/".repeat(12));
     let text = format!("{file}:12:hit\n{file}:47:hit\n\n");
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
 
     assert_eq!(response.disposition, Disposition::Compressed);
     let original_path = response.original_path.unwrap();
     assert!(response.text.contains(&format!(
-        "{file}:\n  12:hit\n  47:hit\n\n[outrim]: The full output is available at {original_path}"
+        "{file}:\n  12:hit\n  47:hit\n\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
     )));
     assert_eq!(fs::read_to_string(original_path).unwrap(), text);
 }
@@ -1623,7 +1623,7 @@ fn grouping_separates_an_unterminated_hit_moved_before_another_group() {
     let home = tempfile::tempdir().unwrap();
     let file = format!(
         "workspace/{}/duplicate.rs",
-        "long-component-name/".repeat(8)
+        "long-component-name/".repeat(12)
     );
     let text = format!("{file}:12:first hit\nother.rs:3:other hit\n{file}:21:last hit");
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
@@ -1645,7 +1645,7 @@ fn search_grouping_preserves_crlf_record_endings_and_trailing_blank_lines() {
     assert_eq!(response.disposition, Disposition::Compressed);
     let original_path = response.original_path.unwrap();
     assert!(response.text.contains(&format!(
-        "{file}:\r\n  12:match\r\n  47:match\r\n  81:match\r\n  96:match\r\n\r\n[outrim]: The full output is available at {original_path}"
+        "{file}:\r\n  12:match\r\n  47:match\r\n  81:match\r\n  96:match\r\n\r\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
     )));
     assert_eq!(fs::read_to_string(original_path).unwrap(), text);
 }
@@ -1686,7 +1686,7 @@ fn position_only_search_hits_group_repeated_paths_without_losing_positions() {
     assert_eq!(
         response.text,
         format!(
-            "{file}:\n  8\n  21\n  34\n  55\n[outrim]: The full output is available at {original_path}"
+            "{file}:\n  8\n  21\n  34\n  55\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
         )
     );
 }
@@ -1721,7 +1721,7 @@ fn search_results_group_repeated_paths_without_losing_hits_or_positions() {
         assert_eq!(
             response.text,
             format!(
-                "{file}:\n  12:same match\n  47:same match\n  81:same match\n  96:same match\n{other}:\n  9:same match\n[outrim]: The full output is available at {original_path}"
+                "{file}:\n  12:same match\n  47:same match\n  81:same match\n  96:same match\n{other}:\n  9:same match\n[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {original_path}"
             )
         );
     }

@@ -59,7 +59,7 @@ impl Originals {
                 .map(|(index, (rule, candidate))| {
                     let separator = if candidate.ends_with('\n') { "" } else { "\n" };
                     let text = format!(
-                        "{candidate}{separator}[outrim]: The full output is available at {path}"
+                        "{candidate}{separator}[outrim]: Search first (grep/rg); read fully if needed. The full output is available at {path}"
                     );
                     let final_chars = text.chars().count();
                     response.candidates[index].final_chars = Some(final_chars as u64);
@@ -115,7 +115,7 @@ impl Originals {
                 .to_str()
                 .ok_or_else(|| io::Error::other("non-Unicode original path"))?;
             let text = format!(
-                "[outrim]: Already read {}:{}; unchanged, so omitted. Reread: read \"{path}\".",
+                "[outrim]: Already read {}:{}; unchanged, so omitted. Search first (grep/rg); read fully if needed. Reread: read \"{path}\".",
                 selection.path, selection.label
             );
             if text.chars().count() >= response.text.chars().count() {

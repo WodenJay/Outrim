@@ -197,7 +197,7 @@ fn delivered_reads_omit_only_the_current_identical_body_and_reset_on_compact() {
         assert_eq!(
             omitted["text"],
             format!(
-                "[outrim]: Already read {}:10–300; unchanged, so omitted. Reread: read \"{recovery}\".",
+                "[outrim]: Already read {}:10–300; unchanged, so omitted. Search first (grep/rg); read fully if needed. Reread: read \"{recovery}\".",
                 path.display()
             )
         );
