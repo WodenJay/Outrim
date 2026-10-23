@@ -44,6 +44,8 @@ pub struct Line {
 struct Baseline {
     exact: HashMap<String, String>,
     lines: BTreeMap<(bool, u64), String>,
+    // Ambiguous terminal newlines are comparable only within the same selection.
+    final_lines: HashMap<(String, u64), String>,
 }
 
 struct Pending {
@@ -52,6 +54,7 @@ struct Pending {
     text: Option<String>,
     retain_exact: bool,
     lines: Vec<((bool, u64), String)>,
+    final_line: Option<(u64, String)>,
 }
 
 pub(super) struct Comparison {
@@ -136,6 +139,12 @@ impl Reads {
         let mut omitted = vec![false; body.as_ref().map_or(0, |b| b.lines.len())];
         let mut conflict = false;
         if let (Some(baseline), Some(body)) = (baseline, &body) {
+            if let Some((position, text)) = body.final_observation() {
+                conflict = baseline
+                    .final_lines
+                    .get(&(selection.key.clone(), position))
+                    .is_some_and(|old| old != text);
+            }
             for (index, line) in body.lines.iter().enumerate() {
                 if let Some(old) = baseline.lines.get(&body.position(index)) {
                     if old != &line.text {
@@ -189,6 +198,12 @@ impl Reads {
                 text: complete.then(|| original.to_owned()),
                 retain_exact: ranged && comparison.identical,
                 lines,
+                final_line: comparison
+                    .body
+                    .as_ref()
+                    .filter(|_| complete || (ranged && !comparison.identical))
+                    .and_then(Body::final_observation)
+                    .map(|(position, text)| (position, text.to_owned())),
             },
         );
     }
@@ -198,6 +213,11 @@ impl Reads {
             let conflict = self.delivered.get(&pending.file).is_some_and(|baseline| {
                 pending.lines.iter().any(|(position, text)| {
                     baseline.lines.get(position).is_some_and(|old| old != text)
+                }) || pending.final_line.as_ref().is_some_and(|(position, text)| {
+                    baseline
+                        .final_lines
+                        .get(&(pending.selection.clone(), *position))
+                        .is_some_and(|old| old != text)
                 }) || (pending.lines.is_empty()
                     && pending.text.as_ref().is_some_and(|text| {
                         baseline
@@ -211,6 +231,11 @@ impl Reads {
                 self.pending.retain(|_, old| old.file != pending.file);
             }
             let baseline = self.delivered.entry(pending.file).or_default();
+            if let Some((position, text)) = pending.final_line {
+                baseline
+                    .final_lines
+                    .insert((pending.selection.clone(), position), text);
+            }
             if let Some(text) = pending.text {
                 baseline.exact.insert(pending.selection, text);
             } else if !pending.retain_exact {
@@ -256,6 +281,12 @@ impl Body {
                 self.start + index as u64
             },
         )
+    }
+
+    fn final_observation(&self) -> Option<(u64, &str)> {
+        self.final_line
+            .as_deref()
+            .map(|line| (self.start + self.lines.len() as u64, line))
     }
 
     pub(super) fn omit_exact(&self, selection: &Selection) -> String {

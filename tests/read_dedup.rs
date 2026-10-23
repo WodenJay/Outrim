@@ -302,6 +302,40 @@ fn exact_native_repeats_omit_ambiguous_final_lines_but_keep_host_metadata() {
 }
 
 #[test]
+fn changed_native_final_line_returns_full_output_and_clears_file_evidence() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("source.rs");
+    fs::write(&path, "source").unwrap();
+    let line = "long source line ".repeat(200) + "\n";
+    for initially_partial in [false, true] {
+        let mut bridge = Bridge::new(home.path());
+        if initially_partial {
+            let seed = bridge.range(&path, 1, &line);
+            bridge.adopt(&seed);
+        }
+        let pending = bridge.range(&path, 20, &line);
+        let request = |last: &str| {
+            json!({
+                "type": "read_process", "host": "pi", "session": "one",
+                "tool": {"name": "read", "input": {"path": path}, "source": "source_code"},
+                "text": format!("{line}{last}"),
+                "selection": {"path": path, "key": "native", "label": "1–2",
+                    "body": {"start": 1, "lines": [{"text": line, "rendered": line}],
+                        "suffix": last, "final_line": last}}
+            })
+        };
+        let first = bridge.send(request("old"));
+        bridge.adopt(&first);
+        let changed = bridge.send(request("new"));
+        assert_eq!(changed["text"], format!("{line}new"));
+        bridge.adopt(&changed);
+        bridge.adopt(&pending);
+        assert_eq!(bridge.range(&path, 20, &line)["text"], line);
+        assert_eq!(bridge.range(&path, 1, &line)["applied_rule"], "read_dedup");
+    }
+}
+
+#[test]
 fn ranges_require_verified_rendering_and_final_savings() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("source.rs");
