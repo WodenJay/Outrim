@@ -246,6 +246,50 @@ fn explicit_log_selection_recognizes_custom_reporters_and_preserves_diagnostics(
 }
 
 #[test]
+fn explicit_bun_selection_requires_the_same_bannerless_report_evidence() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    config(
+        project.path(),
+        json!([{"match": {}, "compression": "log_compaction"}]),
+    );
+    let mut input = request(project.path());
+    input.tool.source = Source::Unknown;
+    input.tool.input = json!({});
+    let report = include_str!("fixtures/logs/bun-r-7cC5WY-2.txt");
+    let (body, _) = report.split_once(" 68 pass").unwrap();
+    let (before_summary, _) = report.split_once("Ran 68 tests").unwrap();
+    for text in [
+        report.to_owned(),
+        body.to_owned(),
+        before_summary.to_owned(),
+        report.replace(" 68 pass\n 0 fail\n 262 expect() calls\n", ""),
+        format!("Example output:\n\n{report}"),
+        "$ bun test\n".to_owned(),
+    ] {
+        input.text = text.clone();
+        let response = Processor::new(home.path()).process(input.clone());
+        if text == report {
+            assert_eq!(response.disposition, Disposition::Compressed);
+            assert_eq!(response.applied_rule.as_deref(), Some("log_compaction"));
+            assert!(
+                response
+                    .text
+                    .starts_with("$ bun test --path-ignore-patterns='target/**'\n")
+            );
+            assert_eq!(
+                fs::read_to_string(response.original_path.unwrap()).unwrap(),
+                text
+            );
+        } else {
+            assert_eq!(response.disposition, Disposition::NoMatch);
+            assert_eq!(response.text, text);
+            assert!(response.original_path.is_none());
+        }
+    }
+}
+
+#[test]
 fn user_config_is_not_a_project_config_through_a_path_alias() {
     let outer = tempfile::tempdir().unwrap();
     let home = outer.path().join("user");

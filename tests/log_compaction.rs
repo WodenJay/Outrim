@@ -165,6 +165,127 @@ fn bun_preserves_pre_failure_diagnostics_and_native_summaries() {
 }
 
 #[test]
+fn bun_bannerless_reports_require_native_completion_and_a_report_opening() {
+    let home = tempfile::tempdir().unwrap();
+    let text = bun_tests().split_once("\n\n").unwrap().1.to_owned();
+    let passes = "(pass) long successful test name\n".repeat(25);
+    for uncertain in [
+        format!("tests/example.test.ts:\n{passes}"),
+        passes.clone(),
+        text.replace(
+            " 25 pass\n 1 fail\n 1 skip\n 1 todo\n 26 expect() calls\n",
+            "",
+        ),
+        text.replace("Ran 28 tests across 1 file. [30.00ms]\n", ""),
+        "$ bun test --watch\n".to_owned(),
+        format!("Here is an example report:\n\n{text}"),
+        format!("$ bun run test\n\n{text}"),
+        text.replace("tests/example.test.ts:", "tests/example.test.unknown:"),
+        text.replace("tests/example.test.ts:", "tests/example.test.ts"),
+        text.replace("tests/example.test.ts:", "tests/space name.test.ts:"),
+        text.replace("tests/example.test.ts:", "tests/example.ts:"),
+        format!("\x1b[2K{text}"),
+    ] {
+        let response = Processor::new(home.path()).process(request("bun run test", &uncertain));
+        assert_eq!(response.disposition, Disposition::NoMatch, "{uncertain}");
+        assert_eq!(response.text, uncertain);
+        assert!(response.original_path.is_none());
+    }
+    for opening in ["", "\n\n", "$ bun test --watch\n\n"] {
+        let colored = text
+            .replace("(pass)", "\x1b[32m✓\x1b[0m")
+            .replace(" [0.12ms]", "");
+        let report = format!("{opening}{colored}");
+        let response = Processor::new(home.path()).process(request("bun test", &report));
+        assert_eq!(response.disposition, Disposition::Compressed);
+        assert!(response.text.starts_with(opening));
+        assert!(response.text.contains("25 successful tests omitted"));
+        assert_eq!(
+            fs::read_to_string(response.original_path.unwrap()).unwrap(),
+            report
+        );
+    }
+    // Banner evidence retains the existing support for unfinished reports.
+    let unfinished = format!("bun test v1.4.3 (test-version)\n\ntests/example.test.ts:\n{passes}");
+    assert_eq!(
+        Processor::new(home.path())
+            .process(request("bun test", &unfinished))
+            .disposition,
+        Disposition::Compressed
+    );
+}
+
+#[test]
+fn bun_bannerless_cycles_do_not_borrow_completion_or_diagnostic_ownership() {
+    let home = tempfile::tempdir().unwrap();
+    let complete = bun_tests().split_once("\n\n").unwrap().1.to_owned();
+    let unfinished = format!(
+        "\nnext.test.mjs:\n{}",
+        "(pass) unfinished next cycle with long test names\n".repeat(25)
+    );
+    for (text, cycles) in [
+        (format!("{complete}{unfinished}"), 1),
+        (format!("{complete}\n{complete}{unfinished}"), 2),
+    ] {
+        let response = Processor::new(home.path()).process(request("bun test --watch", &text));
+        assert_eq!(response.disposition, Disposition::Compressed);
+        assert_eq!(
+            response.text.matches("25 successful tests omitted").count(),
+            cycles
+        );
+        assert!(response.text.contains(&unfinished));
+    }
+    let opaque = format!(
+        "custom diagnostic example:\n\nfake.test.mjs:\n{}",
+        "(pass) quoted diagnostic record with long name\n".repeat(25)
+    );
+    let text = complete.replace("custom print", &opaque);
+    let response = Processor::new(home.path()).process(request("bun test", &text));
+    assert!(response.text.contains(&opaque));
+    assert_eq!(
+        response.text.matches("25 successful tests omitted").count(),
+        1
+    );
+}
+
+#[test]
+fn bun_pass_runs_do_not_cross_files_or_non_success_records() {
+    let home = tempfile::tempdir().unwrap();
+    let passes = "(pass) consecutive successful test with a long name\n".repeat(10);
+    let text = format!(
+        "first_test.mts:\n{passes}(skip) skipped\n{passes}(todo) future\n{passes}(fail) broken\n{passes}\nsecond_spec.cts:\n{passes}\n 50 pass\n 1 fail\n 1 skip\n 1 todo\nRan 53 tests across 2 files. [1ms]\n"
+    );
+    let response = Processor::new(home.path()).process(request("bun test", &text));
+    assert_eq!(response.disposition, Disposition::Compressed);
+    assert_eq!(
+        response.text.matches("10 successful tests omitted").count(),
+        5
+    );
+    for preserved in [
+        "first_test.mts:",
+        "second_spec.cts:",
+        "(skip) skipped",
+        "(todo) future",
+        "(fail) broken",
+        " 50 pass\n 1 fail",
+    ] {
+        assert!(response.text.contains(preserved));
+    }
+}
+
+#[test]
+fn bun_bannerless_storage_failure_returns_the_entire_report() {
+    let home = tempfile::tempdir().unwrap();
+    fs::write(home.path().join(".outrim"), "blocked").unwrap();
+    let text = bun_tests().split_once("\n\n").unwrap().1.to_owned();
+    let response = Processor::new(home.path()).process(request("bun test", &text));
+    assert_eq!(response.disposition, Disposition::FailedOpen);
+    assert_eq!(response.text, text);
+    assert!(response.original_path.is_none());
+    assert_eq!(response.candidates[0].reason, "storage_failed");
+}
+
+#[test]
 fn bun_ansi_optional_timings_and_watch_cycles_remain_separate() {
     let home = tempfile::tempdir().unwrap();
     let plain = bun_tests();
