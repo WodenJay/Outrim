@@ -333,11 +333,15 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
       context.signal,
       cwd,
       selection,
-      event.toolName === "read" &&
-        !event.isError &&
-        observation.diagnostics.completeness !== "host_truncated"
+      event.toolName === "read" && !event.isError
         ? (() => {
-            const selection = nativeReadSelection("pi", originalInput, text, cwd);
+            const selection = nativeReadSelection(
+              "pi",
+              originalInput,
+              text,
+              cwd,
+              (observation.diagnostics.host_truncation as Record<string, unknown> | null) ?? {},
+            );
             return selection ? { selection } : undefined;
           })()
         : undefined,

@@ -308,11 +308,33 @@ function after(overrides = {}) {
 
 // Bridge framing and parsing safety are shared; these tests exercise host adoption.
 describe("OpenCode adapter", () => {
+  it("indexes complete numbered lines in recognized truncated pages", async () => {
+    const path = join(homedir(), "paginated source.txt");
+    writeFileSync(path, "one\ntwo\nthree");
+    const h = await harness();
+    const text = `Read file ${path}, lines 1-2\n1: one\n2: two\n[Output truncated. Continue reading with offset: 3]`;
+    const e = after({
+      tool: "read",
+      input: { path },
+      result: { content: text, metadata: { truncated: true } },
+    });
+    const pending = h.call("tool.execute.after", e);
+    const request = h.child.requests().at(-1);
+    expect(request.type).toBe("read_process");
+    expect(request.selection.body.lines).toEqual([{ text: "one\n", rendered: "1: one\n" }]);
+    expect(request.selection.body.suffix).toBe(
+      "2: two\n[Output truncated. Continue reading with offset: 3]",
+    );
+    h.child.respond(request, { text, disposition: "protected", applied_rule: null });
+    await pending;
+    expect(e.result.content).toBe(text);
+    await h.dispose();
+  });
   it("adopts native read facts and discards results pending at compact", async () => {
     const path = join(homedir(), "native source.txt");
     writeFileSync(path, "source");
     const h = await harness();
-    const text = `Read file ${path}, lines 10-300\n${"10: source\n".repeat(291)}`;
+    const text = `Read file ${path}, lines 10-300\n${Array.from({ length: 291 }, (_, index) => `${index + 10}: source`).join("\n")}`;
     const e = after({
       tool: "read",
       input: { filePath: path, offset: 10 },
@@ -322,6 +344,9 @@ describe("OpenCode adapter", () => {
     const request = h.child.requests().at(-1);
     expect(request.type).toBe("read_process");
     expect(request.selection.label).toBe("10–300");
+    expect(request.selection.body.lines).toHaveLength(290);
+    expect(request.selection.body.lines[0]).toEqual({ text: "source\n", rendered: "10: source\n" });
+    expect(request.selection.body.suffix).toBe("300: source");
     h.child.respond(request, { text, disposition: "protected", applied_rule: null });
     await first;
     expect(h.child.writes.find((r) => r.type === "read_delivered").request_id).toBe(request.id);

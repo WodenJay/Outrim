@@ -130,7 +130,7 @@ if (process.argv[2] === "--host") {
         await handlers.get("tool.execute.before")(event);
         const text =
           tool === "read"
-            ? `Read file ${source}, lines 1-200\n${body}`
+            ? `Read file ${source}, lines 1-200\n${Array.from({ length: 200 }, (_, index) => `${index + 1}: fn source_content() {}`).join("\n")}`
             : spawnSync("bash", ["-c", event.input.command], { encoding: "utf8" }).stdout;
         event.result = { content: text, metadata: { exit: 0 } };
         await handlers.get("tool.execute.after")(event);
