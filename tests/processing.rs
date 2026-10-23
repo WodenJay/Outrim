@@ -29,6 +29,104 @@ fn log() -> String {
 }
 
 #[test]
+fn recognized_search_results_without_grouping_pass_through_with_accurate_diagnostics() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    for text in [
+        "src/a.rs:1:hit",
+        "src/a.rs:1:hit\nsrc/b.rs:2:hit\n",
+        "src/a.rs:1:hit\nsrc/b.rs-2-context\nsrc/a.rs:3:hit\n",
+        "src/a.rs:1:hit\n\n",
+        "src/a.rs:1:hit\r\n\r\n",
+        "src/a.rs:1:hit\n[1 matches limit reached.]\n",
+        "src/a.rs:1:hit\n\n[50.0KB limit reached]",
+        "src/a.rs:1:hit\n--\nsrc/b.rs:2:hit\nsrc/a.rs:3:hit\n",
+        "a.rs\nb.rs\n",
+        "src/a.rs\ntests/b.rs\n",
+        "a/one.rs\na/two.rs\n",
+        "a/one.rs\na/two.rs\r\n\r\n",
+        "src/a.rs\n",
+        "src/a.rs\r\n\r\n",
+        "src/a.rs\n\n[2 results limit reached]\n",
+    ] {
+        let response = processor.process(request(text, Source::Search));
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("no_applicable_grouping"),
+            "{text:?}"
+        );
+        assert_eq!(response.disposition, Disposition::NoMatch);
+        assert_eq!(response.text, text);
+        assert!(response.candidates.is_empty());
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn unrecognized_search_results_keep_parse_failed_diagnostics() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    for text in [
+        "",
+        "\n",
+        "\r\n",
+        "\n\r\n",
+        " ",
+        "\t",
+        " \n\t\r\n",
+        "src/a.rs-1-context\n",
+        "src/a.rs-1-context\n--\nsrc/a.rs-2-context\n",
+        "50.0KB limit reached\n",
+        "src/a.rs:1:hit\ninvalid record\n",
+        "src/a.rs\ninvalid record\n",
+        "src/a.rs:1:hit\n\nsrc/b.rs:2:hit\n",
+        "src/a.rs\r\n\r\nsrc/b.rs\r\n",
+        "src/a.rs:1:hit\n \n",
+        "src/a.rs\n\t\n",
+        "src/a.rs-1-body.rs:2:ambiguous\n",
+        "C:12345678901234567890:5:hit\n",
+        "Makefile:1:hit\n",
+        "space name.rs\n",
+        "--\nsrc/a.rs:1:hit\n",
+        "src/a.rs:1:hit\n--\n",
+    ] {
+        let response = processor.process(request(text, Source::Search));
+        assert_eq!(response.reason.as_deref(), Some("parse_failed"), "{text:?}");
+        assert_eq!(response.disposition, Disposition::NoMatch);
+        assert_eq!(response.text, text);
+        assert!(response.candidates.is_empty());
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
+fn recognized_search_without_a_candidate_still_respects_protection() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    for text in ["src/a.rs:1:hit\n", "src/a.rs\ntests/b.rs\n"] {
+        for path in ["src/main.rs", "config/settings.json"] {
+            let mut input = request(text, Source::Search);
+            input.tool.input = json!({"path": path});
+            let response = processor.process(input);
+            assert_eq!(response.disposition, Disposition::Protected);
+            assert_eq!(
+                response.reason.as_deref(),
+                Some("source_or_configuration_protection")
+            );
+            assert_eq!(response.text, text);
+            assert!(response.candidates.is_empty());
+            assert!(response.applied_rule.is_none());
+            assert!(response.original_path.is_none());
+        }
+    }
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
 fn search_host_match_notice_preserves_interleaved_order_and_original() {
     let home = tempfile::tempdir().unwrap();
     let file = format!("workspace/{}/a.rs", "long-directory/".repeat(24));
@@ -320,6 +418,23 @@ fn host_footers_do_not_bypass_source_configuration_or_storage_guards() {
 }
 
 #[test]
+fn search_notices_without_hits_still_reach_json_fallback() {
+    let home = tempfile::tempdir().unwrap();
+    for text in ["[2 matches limit reached.]\n", "\n[50.0KB limit reached]\n"] {
+        let response = Processor::new(home.path()).process(request(text, Source::Search));
+        assert_eq!(response.text, text);
+        assert_eq!(response.disposition, Disposition::NotShorter);
+        assert_eq!(response.reason.as_deref(), Some("parse_failed"));
+        assert_eq!(response.candidates.len(), 1);
+        assert_eq!(response.candidates[0].rule, "json_compact");
+        assert_eq!(response.candidates[0].reason, "parse_failed");
+        assert!(response.applied_rule.is_none());
+        assert!(response.original_path.is_none());
+    }
+    assert!(!home.path().join(".outrim").exists());
+}
+
+#[test]
 fn unknown_host_notice_text_does_not_disable_independent_json_compression() {
     let home = tempfile::tempdir().unwrap();
     let text = serde_json::to_string_pretty(
@@ -403,6 +518,7 @@ fn path_lists_reject_the_whole_list_when_any_record_is_unsupported() {
         let text = format!("{prefix}a.rs\n{prefix}b.rs\n{invalid}\n");
         let response = processor.process(request(&text, Source::Search));
         assert_eq!(response.disposition, Disposition::NoMatch, "{invalid:?}");
+        assert_eq!(response.reason.as_deref(), Some("parse_failed"));
         assert_eq!(response.text, text);
         assert!(response.original_path.is_none());
         assert!(response.candidates.is_empty());
@@ -1059,6 +1175,9 @@ fn search_candidate_that_loses_ingress_savings_to_hint_keeps_original_output() {
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
     assert_eq!(response.disposition, Disposition::NotShorter);
     assert_eq!(response.text, text);
+    assert_eq!(response.reason, None);
+    assert_eq!(response.candidates.len(), 1);
+    assert_eq!(response.candidates[0].reason, "not_shorter_with_hint");
     assert!(response.applied_rule.is_none());
     assert!(response.original_path.is_none());
 }
@@ -1073,6 +1192,9 @@ fn search_candidate_without_ingress_savings_keeps_original_output() {
     assert_eq!(grouped.chars().count(), text.chars().count());
 
     let response = Processor::new(home.path()).process(request(&text, Source::Search));
+    assert_eq!(response.reason, None);
+    assert_eq!(response.candidates.len(), 1);
+    assert_eq!(response.candidates[0].reason, "not_shorter");
     assert_eq!(response.disposition, Disposition::NotShorter);
     assert_eq!(response.text, text);
     assert!(response.applied_rule.is_none());
@@ -1415,6 +1537,10 @@ fn short_path_only_search_output_is_not_shorter_with_hint() {
     let text = "src/main.rs\nsrc/lib.rs\nsrc/main.rs\n";
     let response = Processor::new(home.path()).process(request(text, Source::Search));
 
+    assert_eq!(response.reason, None);
+    assert_eq!(response.candidates.len(), 1);
+    assert_eq!(response.candidates[0].rule, "path_prefix_groups");
+    assert_eq!(response.candidates[0].reason, "not_shorter_with_hint");
     assert_eq!(response.disposition, Disposition::NotShorter);
     assert_eq!(response.text, text);
 }

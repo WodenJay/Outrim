@@ -1,13 +1,19 @@
-use super::search_hits::{is_search_record, valid_search_path};
+use super::{
+    Grouping,
+    search_hits::{is_search_record, valid_search_path},
+};
 
-pub(crate) fn group_prefixes(text: &str) -> Option<String> {
+pub(super) fn group_prefixes(text: &str) -> Grouping {
     let (body, footer) = super::search_footer::split(text, " results limit reached", false);
     let records: Vec<_> = body.split_inclusive('\n').collect();
     let path_count = records
         .iter()
         .rposition(|record| !matches!(*record, "\n" | "\r\n"))
         .map_or(0, |index| index + 1);
-    let paths = records[..path_count]
+    if path_count == 0 {
+        return Grouping::Unrecognized;
+    }
+    let Some(paths) = records[..path_count]
         .iter()
         .map(|raw| {
             let path = raw.strip_suffix('\n').unwrap_or(raw);
@@ -18,7 +24,10 @@ pub(crate) fn group_prefixes(text: &str) -> Option<String> {
             };
             (valid_search_path(path) && !is_search_record(raw)).then_some(path)
         })
-        .collect::<Option<Vec<_>>>()?;
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Grouping::Unrecognized;
+    };
 
     let mut output = String::new();
     let mut grouped = false;
@@ -67,5 +76,9 @@ pub(crate) fn group_prefixes(text: &str) -> Option<String> {
         output.push_str(raw);
     }
     output.push_str(footer);
-    grouped.then_some(output)
+    if grouped {
+        Grouping::Candidate(output)
+    } else {
+        Grouping::NotApplicable
+    }
 }

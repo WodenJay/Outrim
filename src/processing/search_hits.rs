@@ -1,6 +1,7 @@
+use super::Grouping;
 use std::collections::HashMap;
 
-pub(crate) fn group_search_hits(text: &str) -> Option<String> {
+pub(super) fn group_search_hits(text: &str) -> Grouping {
     let (body, footer) = super::search_footer::split(text, " matches limit reached", true);
     let records: Vec<_> = body.split_inclusive('\n').collect();
     let trailing_blank_count = records
@@ -9,15 +10,18 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
         .take_while(|record| matches!(**record, "\n" | "\r\n"))
         .count();
     let record_count = records.len() - trailing_blank_count;
-    let parsed: Vec<_> = records[..record_count]
+    let Some(parsed) = records[..record_count]
         .iter()
         .map(|record| parse_search_record(record))
-        .collect::<Option<_>>()?;
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Grouping::Unrecognized;
+    };
     let mut has_hit = false;
     let mut ordered = !footer.is_empty();
     for (index, record) in parsed.iter().enumerate() {
         match record {
-            SearchRecord::Ambiguous => return None,
+            SearchRecord::Ambiguous => return Grouping::Unrecognized,
             SearchRecord::Line(line) => {
                 has_hit |= !line.context;
                 ordered |= line.context;
@@ -27,32 +31,35 @@ pub(crate) fn group_search_hits(text: &str) -> Option<String> {
                     || !matches!(parsed[index - 1], SearchRecord::Line(_))
                     || !matches!(parsed.get(index + 1), Some(SearchRecord::Line(_)))
                 {
-                    return None;
+                    return Grouping::Unrecognized;
                 }
                 ordered = true;
             }
             SearchRecord::Limit(_) => {
                 if !footer.is_empty() || index + 1 != parsed.len() {
-                    return None;
+                    return Grouping::Unrecognized;
                 }
                 ordered = true;
             }
         }
     }
     if !has_hit {
-        return None;
+        return Grouping::Unrecognized;
     }
 
-    let mut grouped = if ordered {
-        group_in_order(&parsed)?
+    let grouped = if ordered {
+        group_in_order(&parsed)
     } else {
-        group_by_path(parsed)?
+        group_by_path(parsed)
+    };
+    let Some(mut grouped) = grouped else {
+        return Grouping::NotApplicable;
     };
     for record in &records[record_count..] {
         grouped.push_str(record);
     }
     grouped.push_str(footer);
-    Some(grouped)
+    Grouping::Candidate(grouped)
 }
 
 // Extended results preserve global order, including separators and notices.
