@@ -79,7 +79,9 @@ test("ambiguous final lines permit exact repeats but never become range evidence
     lines: [],
     final_line: { text: "only", rendered: "only" },
   });
-  expect(body("pi", "\n[Showing lines 1-1 of 8. Use offset=2 to continue.]")).toBeUndefined();
+  for (const text of ["complete\n", "\n[Showing lines 1-1 of 8. Use offset=2 to continue.]"]) {
+    expect(body("pi", text)?.final_line).toEqual({ text: "", rendered: "" });
+  }
   expect(
     body(
       "pi",

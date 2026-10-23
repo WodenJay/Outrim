@@ -65,12 +65,12 @@ function piBody(text, start, facts) {
 `, rendered: `${line}
 ` }));
   const final_line = chunks.at(-1);
-  if (!lines.length && !final_line)
+  if (final_line === undefined)
     return;
   return {
     start,
     lines,
-    ...final_line ? { final_line: { text: final_line, rendered: final_line } } : {},
+    final_line: { text: final_line, rendered: final_line },
     suffix: text.slice(lines.reduce((size, line) => size + line.rendered.length, 0))
   };
 }
@@ -706,7 +706,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "f2e28437f393b47b211ce34696518d0f3ea46c02ad7ad415e3f12f4c9cc76d81",
+        adapter_build: "26013bf1b2654b79c1964f74c81c190e55cfb8bc33e9db6181f4fac9834d7a52",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,

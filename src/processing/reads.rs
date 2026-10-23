@@ -263,8 +263,7 @@ impl Body {
         self.start > 0
             && (!self.lines.is_empty() || self.final_line.is_some())
             && self.final_line.as_ref().is_none_or(|line| {
-                !line.rendered.is_empty()
-                    && !line.text.contains('\n')
+                !line.text.contains('\n')
                     && !line.rendered.contains('\n')
                     && self.suffix.starts_with(&line.rendered)
             })
@@ -306,7 +305,11 @@ impl Body {
 
     pub(super) fn omit_exact(&self, selection: &Selection) -> String {
         let mut complete = self.clone();
-        if let Some(line) = &self.final_line {
+        if let Some(line) = self
+            .final_line
+            .as_ref()
+            .filter(|line| !line.rendered.is_empty())
+        {
             complete.suffix = self.suffix[line.rendered.len()..].to_owned();
             complete.lines.push(line.clone());
         }

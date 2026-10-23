@@ -33,11 +33,11 @@ function piBody(text: string, start: number, facts: Record<string, unknown>): Re
   }
   const lines = chunks.slice(0, -1).map((line) => ({ text: `${line}\n`, rendered: `${line}\n` }));
   const final_line = chunks.at(-1);
-  if (!lines.length && !final_line) return undefined;
+  if (final_line === undefined) return undefined;
   return {
     start,
     lines,
-    ...(final_line ? { final_line: { text: final_line, rendered: final_line } } : {}),
+    final_line: { text: final_line, rendered: final_line },
     suffix: text.slice(lines.reduce((size, line) => size + line.rendered.length, 0)),
   };
 }

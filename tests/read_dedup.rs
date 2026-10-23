@@ -326,14 +326,19 @@ fn changed_native_final_line_returns_full_output_and_clears_file_evidence() {
         })
     };
     for initially_partial in [false, true] {
-        for (old_extra, new_extra) in [(false, false), (false, true), (true, false)] {
+        for (old, old_extra, new_extra) in [
+            ("old", false, false),
+            ("old", false, true),
+            ("old", true, false),
+            ("", false, false),
+        ] {
             let mut bridge = Bridge::new(home.path());
             if initially_partial {
                 let seed = bridge.range(&path, 1, &line);
                 bridge.adopt(&seed);
             }
             let pending = bridge.range(&path, 20, &line);
-            let first = bridge.send(request("old", old_extra));
+            let first = bridge.send(request(old, old_extra));
             bridge.adopt(&first);
             let mut next = request("new", new_extra);
             if initially_partial {
