@@ -6,7 +6,7 @@ interface ReadBody {
   prefix?: string;
   lines: { text: string; rendered: string }[];
   suffix: string;
-  final_line?: string;
+  final_line?: { text: string; rendered: string };
 }
 
 export interface ReadSelection {
@@ -37,7 +37,7 @@ function piBody(text: string, start: number, facts: Record<string, unknown>): Re
   return {
     start,
     lines,
-    ...(final_line ? { final_line } : {}),
+    ...(final_line ? { final_line: { text: final_line, rendered: final_line } } : {}),
     suffix: text.slice(lines.reduce((size, line) => size + line.rendered.length, 0)),
   };
 }
@@ -73,7 +73,7 @@ function openCodeBody(
     start,
     prefix,
     lines,
-    final_line,
+    final_line: { text: final_line.slice(`${end}: `.length), rendered: final_line },
     suffix: rest.slice(lines.reduce((size, line) => size + line.rendered.length, 0)),
   };
 }

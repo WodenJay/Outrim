@@ -70,7 +70,7 @@ function piBody(text, start, facts) {
   return {
     start,
     lines,
-    ...final_line ? { final_line } : {},
+    ...final_line ? { final_line: { text: final_line, rendered: final_line } } : {},
     suffix: text.slice(lines.reduce((size, line) => size + line.rendered.length, 0))
   };
 }
@@ -106,7 +106,7 @@ function openCodeBody(text, start, end, prefix, facts) {
     start,
     prefix,
     lines,
-    final_line,
+    final_line: { text: final_line.slice(`${end}: `.length), rendered: final_line },
     suffix: rest.slice(lines.reduce((size, line) => size + line.rendered.length, 0))
   };
 }
@@ -706,7 +706,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "18dde03cc46fecef32b86a304ec0ad0fc3ecbfeb4bbc125cfea2e23e8be97a01",
+        adapter_build: "b302db538a633c57c36b80cea4b4640148fd7c0fdb4eefba3ec4460f4bb1346c",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,

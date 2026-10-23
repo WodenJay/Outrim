@@ -283,7 +283,8 @@ fn exact_native_repeats_omit_ambiguous_final_lines_but_keep_host_metadata() {
             "selection": {
                 "path": path, "key": "native", "label": format!("10–{end}"),
                 "body": {"start": 10, "prefix": prefix, "lines": lines,
-                    "suffix": format!("{final_line}{notice}"), "final_line": final_line}
+                    "suffix": format!("{final_line}{notice}"),
+                    "final_line": {"text": "x".repeat(10000), "rendered": final_line}}
             }
         });
         let first = bridge.send(request.clone());
@@ -307,31 +308,41 @@ fn changed_native_final_line_returns_full_output_and_clears_file_evidence() {
     let path = home.path().join("source.rs");
     fs::write(&path, "source").unwrap();
     let line = "long source line ".repeat(200) + "\n";
-    for initially_partial in [false, true] {
-        let mut bridge = Bridge::new(home.path());
-        if initially_partial {
-            let seed = bridge.range(&path, 1, &line);
-            bridge.adopt(&seed);
-        }
-        let pending = bridge.range(&path, 20, &line);
-        let request = |last: &str| {
-            json!({
-                "type": "read_process", "host": "pi", "session": "one",
-                "tool": {"name": "read", "input": {"path": path}, "source": "source_code"},
-                "text": format!("{line}{last}"),
-                "selection": {"path": path, "key": "native", "label": "1–2",
-                    "body": {"start": 1, "lines": [{"text": line, "rendered": line}],
-                        "suffix": last, "final_line": last}}
-            })
+    let request = |last: &str, extra: bool| {
+        let mut lines = vec![json!({"text": line, "rendered": line})];
+        let final_line = if extra {
+            lines.push(json!({"text": format!("{last}\n"), "rendered": format!("{last}\n")}));
+            "extra"
+        } else {
+            last
         };
-        let first = bridge.send(request("old"));
-        bridge.adopt(&first);
-        let changed = bridge.send(request("new"));
-        assert_eq!(changed["text"], format!("{line}new"));
-        bridge.adopt(&changed);
-        bridge.adopt(&pending);
-        assert_eq!(bridge.range(&path, 20, &line)["text"], line);
-        assert_eq!(bridge.range(&path, 1, &line)["applied_rule"], "read_dedup");
+        json!({
+            "type": "read_process", "host": "pi", "session": "one",
+            "tool": {"name": "read", "input": {"path": path}, "source": "source_code"},
+            "text": if extra { format!("{line}{last}\nextra") } else { format!("{line}{last}") },
+            "selection": {"path": path, "key": "native", "label": "native",
+                "body": {"start": 1, "lines": lines, "suffix": final_line,
+                    "final_line": {"text": final_line, "rendered": final_line}}}
+        })
+    };
+    for initially_partial in [false, true] {
+        for (old_extra, new_extra) in [(false, false), (false, true), (true, false)] {
+            let mut bridge = Bridge::new(home.path());
+            if initially_partial {
+                let seed = bridge.range(&path, 1, &line);
+                bridge.adopt(&seed);
+            }
+            let pending = bridge.range(&path, 20, &line);
+            let first = bridge.send(request("old", old_extra));
+            bridge.adopt(&first);
+            let next = request("new", new_extra);
+            let changed = bridge.send(next.clone());
+            assert_eq!(changed["text"], next["text"]);
+            bridge.adopt(&changed);
+            bridge.adopt(&pending);
+            assert_eq!(bridge.range(&path, 20, &line)["text"], line);
+            assert_eq!(bridge.range(&path, 1, &line)["applied_rule"], "read_dedup");
+        }
     }
 }
 

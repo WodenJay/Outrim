@@ -31,7 +31,7 @@ pub struct Body {
     // Hosts may discard the final source newline. This rendered suffix prefix
     // can be omitted on an exact repeat, but never establishes range evidence.
     #[serde(default)]
-    pub final_line: Option<String>,
+    pub final_line: Option<Line>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -140,19 +140,11 @@ impl Reads {
         let mut conflict = false;
         if let (Some(baseline), Some(body)) = (baseline, &body) {
             if let Some((position, text)) = body.final_observation() {
-                conflict = baseline
-                    .final_lines
-                    .get(&(selection.key.clone(), position))
-                    .is_some_and(|old| old != text);
+                conflict = baseline.final_changed(&selection.key, position, text);
             }
             for (index, line) in body.lines.iter().enumerate() {
-                if let Some(old) = baseline.lines.get(&body.position(index)) {
-                    if old != &line.text {
-                        conflict = true;
-                    } else {
-                        omitted[index] = true;
-                    }
-                }
+                conflict |= baseline.changed(&selection.key, body.position(index), &line.text);
+                omitted[index] = baseline.lines.get(&body.position(index)) == Some(&line.text);
             }
         } else if let Some(old) = baseline.and_then(|b| b.exact.get(&selection.key)) {
             conflict = old != text;
@@ -210,22 +202,20 @@ impl Reads {
 
     pub(super) fn adopt(&mut self, id: &str) {
         if let Some(pending) = self.pending.remove(id) {
-            let conflict = self.delivered.get(&pending.file).is_some_and(|baseline| {
-                pending.lines.iter().any(|(position, text)| {
-                    baseline.lines.get(position).is_some_and(|old| old != text)
-                }) || pending.final_line.as_ref().is_some_and(|(position, text)| {
-                    baseline
-                        .final_lines
-                        .get(&(pending.selection.clone(), *position))
-                        .is_some_and(|old| old != text)
-                }) || (pending.lines.is_empty()
-                    && pending.text.as_ref().is_some_and(|text| {
-                        baseline
-                            .exact
-                            .get(&pending.selection)
-                            .is_some_and(|old| old != text)
-                    }))
-            });
+            let conflict =
+                self.delivered.get(&pending.file).is_some_and(|baseline| {
+                    pending.lines.iter().any(|(position, text)| {
+                        baseline.changed(&pending.selection, *position, text)
+                    }) || pending.final_line.as_ref().is_some_and(|(position, text)| {
+                        baseline.final_changed(&pending.selection, *position, text)
+                    }) || (pending.lines.is_empty()
+                        && pending.text.as_ref().is_some_and(|text| {
+                            baseline
+                                .exact
+                                .get(&pending.selection)
+                                .is_some_and(|old| old != text)
+                        }))
+                });
             if conflict {
                 self.delivered.remove(&pending.file);
                 self.pending.retain(|_, old| old.file != pending.file);
@@ -246,12 +236,36 @@ impl Reads {
     }
 }
 
+impl Baseline {
+    fn changed(&self, selection: &str, position: (bool, u64), text: &str) -> bool {
+        self.lines.get(&position).is_some_and(|old| old != text)
+            || (!position.0
+                && self
+                    .final_lines
+                    .get(&(selection.to_owned(), position.1))
+                    .is_some_and(|old| old != text.strip_suffix('\n').unwrap_or(text)))
+    }
+
+    fn final_changed(&self, selection: &str, position: u64, text: &str) -> bool {
+        self.final_lines
+            .get(&(selection.to_owned(), position))
+            .is_some_and(|old| old != text)
+            || self
+                .lines
+                .get(&(false, position))
+                .is_some_and(|old| old.strip_suffix('\n').unwrap_or(old) != text)
+    }
+}
+
 impl Body {
     fn valid(&self, text: &str) -> bool {
         self.start > 0
             && (!self.lines.is_empty() || self.final_line.is_some())
             && self.final_line.as_ref().is_none_or(|line| {
-                !line.is_empty() && !line.contains('\n') && self.suffix.starts_with(line)
+                !line.rendered.is_empty()
+                    && !line.text.contains('\n')
+                    && !line.rendered.contains('\n')
+                    && self.suffix.starts_with(&line.rendered)
             })
             && self.start.checked_add(self.lines.len() as u64).is_some()
             && (!self.end_relative
@@ -285,18 +299,15 @@ impl Body {
 
     fn final_observation(&self) -> Option<(u64, &str)> {
         self.final_line
-            .as_deref()
-            .map(|line| (self.start + self.lines.len() as u64, line))
+            .as_ref()
+            .map(|line| (self.start + self.lines.len() as u64, line.text.as_str()))
     }
 
     pub(super) fn omit_exact(&self, selection: &Selection) -> String {
         let mut complete = self.clone();
         if let Some(line) = &self.final_line {
-            complete.suffix = self.suffix[line.len()..].to_owned();
-            complete.lines.push(Line {
-                text: line.clone(),
-                rendered: line.clone(),
-            });
+            complete.suffix = self.suffix[line.rendered.len()..].to_owned();
+            complete.lines.push(line.clone());
         }
         complete.omit(selection, &vec![true; complete.lines.len()])
     }
