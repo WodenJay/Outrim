@@ -1,6 +1,8 @@
 //! Single-output ingress processing. The caller supplies the current user's home,
 //! not an independently configurable original-output directory.
 
+#[doc(hidden)]
+pub mod bookkeeping;
 pub mod bridge;
 pub mod command;
 pub mod execution;

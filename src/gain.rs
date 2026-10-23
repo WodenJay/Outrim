@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as FmtWrite,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Write as IoWrite},
     path::{Path, PathBuf},
 };
@@ -44,6 +44,7 @@ impl Store {
 
     pub(crate) fn record(
         &self,
+        event_id: &str,
         delivery: &RecordDeliveryRequest,
         counts: tokens::Counts,
     ) -> io::Result<()> {
@@ -57,12 +58,15 @@ impl Store {
         let _lock = self.lock()?;
 
         let mut stats = self.read()?;
-        stats.record(delivery, counts);
+        if stats.delivery_events.insert(event_id.to_owned()) {
+            stats.record(delivery, counts);
+        }
         self.persist(&stats)
     }
 
     pub(crate) fn record_recovery(
         &self,
+        event_id: &str,
         recovery: &RecoveryRequest,
         tokens: u64,
     ) -> io::Result<()> {
@@ -75,24 +79,18 @@ impl Store {
         storage::private_directory(&self.directory)?;
         let _lock = self.lock()?;
         let mut stats = self.read()?;
-        if stats.recovery_events.insert(recovery.event_id.clone()) {
-            if recovery.attribution == RecoveryAttribution::Confirmed {
-                stats.recovery_tokens = stats.recovery_tokens.saturating_add(tokens);
-            }
-            self.persist(&stats)?;
+        // Legacy versions persisted the caller's event ID directly.
+        if !stats.recovery_events.contains(&recovery.event_id)
+            && stats.recovery_events.insert(event_id.to_owned())
+            && recovery.attribution == RecoveryAttribution::Confirmed
+        {
+            stats.recovery_tokens = stats.recovery_tokens.saturating_add(tokens);
         }
-        Ok(())
+        self.persist(&stats)
     }
 
     fn lock(&self) -> io::Result<File> {
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&self.lock_path)?;
-        lock.lock()?;
-        Ok(lock)
+        storage::lock(&self.lock_path)
     }
 
     fn read_for_render(&self) -> io::Result<Stats> {
@@ -141,6 +139,8 @@ struct Stats {
     outcomes: BTreeMap<Disposition, u64>,
     recovery_tokens: u64,
     recovery_events: BTreeSet<String>,
+    #[serde(default)]
+    delivery_events: BTreeSet<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -305,30 +305,6 @@ fn exists(path: &Path) -> io::Result<bool> {
     }
 }
 
-#[cfg(test)]
-mod persistence_tests {
-    use super::*;
-
-    #[test]
-    fn serialization_propagates_buffer_flush_failure() {
-        struct FailedDisk;
-        impl io::Write for FailedDisk {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::Error::other("disk full"))
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        assert_eq!(
-            write_stats(FailedDisk, &Stats::default())
-                .unwrap_err()
-                .to_string(),
-            "disk full"
-        );
-    }
-}
-
 fn saved_tokens_for(rule: &RuleStats) -> i128 {
     i128::from(rule.before_tokens) - i128::from(rule.after_tokens)
 }
@@ -382,4 +358,28 @@ fn format_tokens(tokens: i128) -> String {
         "{}{suffix}",
         value.trim_end_matches('0').trim_end_matches('.')
     )
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[test]
+    fn serialization_propagates_buffer_flush_failure() {
+        struct FailedDisk;
+        impl io::Write for FailedDisk {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            write_stats(FailedDisk, &Stats::default())
+                .unwrap_err()
+                .to_string(),
+            "disk full"
+        );
+    }
 }

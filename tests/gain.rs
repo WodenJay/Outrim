@@ -56,6 +56,71 @@ fn gain_command(home: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn independent_commands_reuse_a_resident_bookkeeper() {
+    let home = tempfile::tempdir().unwrap();
+    let delivery = json!({
+        "type": "record_delivery", "version": 2, "id": "same-local-id",
+        "disposition": "no_match", "applied_rule": null,
+        "original_text": "hello world", "final_text": "hello world"
+    });
+    let mut first = Bridge::start(home.path());
+    assert_eq!(first.exchange(&delivery)["acknowledged"], true);
+    first.stop();
+    let endpoint_path = home.path().join(".outrim/bookkeeping.json");
+    let endpoint = fs::read(&endpoint_path).expect("resident endpoint");
+    let mut second = Bridge::start(home.path());
+    assert_eq!(second.exchange(&delivery)["acknowledged"], true);
+    second.stop();
+    assert_eq!(fs::read(endpoint_path).unwrap(), endpoint);
+    let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
+    assert!(report.contains("Processed outputs: 2"), "{report}");
+}
+
+#[test]
+fn a_crashed_resident_restarts_without_losing_committed_totals() {
+    let home = tempfile::tempdir().unwrap();
+    let delivery = json!({
+        "type":"record_delivery", "version":2, "id":"reused-id",
+        "disposition":"no_match", "applied_rule":null,
+        "original_text":"hello world", "final_text":"hello world"
+    });
+    let mut first = Bridge::start(home.path());
+    assert_eq!(first.exchange(&delivery)["acknowledged"], true);
+    first.stop();
+    let endpoint_path = home.path().join(".outrim/bookkeeping.json");
+    let old: Value = serde_json::from_slice(&fs::read(&endpoint_path).unwrap()).unwrap();
+    let pid = old["pid"].as_u64().unwrap() as u32;
+    #[cfg(windows)]
+    // SAFETY: the PID belongs to the worker started in this test's private home.
+    unsafe {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{
+                OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+                WaitForSingleObject,
+            },
+        };
+        let process = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid);
+        assert!(!process.is_null());
+        assert_ne!(TerminateProcess(process, 1), 0);
+        assert_eq!(WaitForSingleObject(process, 5000), 0);
+        CloseHandle(process);
+    }
+    #[cfg(unix)]
+    // SAFETY: this is the isolated worker PID, and SIGKILL takes no pointers.
+    unsafe {
+        assert_eq!(libc::kill(pid as i32, libc::SIGKILL), 0);
+    }
+    let mut second = Bridge::start(home.path());
+    assert_eq!(second.exchange(&delivery)["acknowledged"], true);
+    second.stop();
+    let new: Value = serde_json::from_slice(&fs::read(&endpoint_path).unwrap()).unwrap();
+    assert_ne!(new["secret"], old["secret"]);
+    let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
+    assert!(report.contains("Processed outputs: 2"), "{report}");
+}
+
+#[test]
 fn exact_delivery_counts_use_full_o200k_text_and_preserve_negative_savings() {
     // Expected counts confirmed with Python tiktoken's o200k_base, ordinary text.
     for (original, final_text, before, after) in [
@@ -1226,7 +1291,14 @@ fn stats_persistence_failure_does_not_block_processed_output() {
         count_codepoints(response["text"].as_str().unwrap()) as u64,
     ));
     assert_eq!(acknowledgement["acknowledged"], false);
-    assert!(bridge.stop().stderr.is_empty());
+    let stopped = bridge.stop();
+    let error = String::from_utf8(stopped.stderr).unwrap();
+    assert!(
+        error
+            .trim_start()
+            .starts_with("[outrim] Failed to save gain:"),
+        "{error}"
+    );
 
     let gain = Command::new(env!("CARGO_BIN_EXE_outrim"))
         .arg("gain")

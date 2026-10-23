@@ -9,6 +9,32 @@ use tempfile::NamedTempFile;
 #[cfg(windows)]
 mod windows;
 
+/// Never wait indefinitely for an auxiliary writer (including a hung resident).
+pub(crate) fn lock(path: &Path) -> io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Bookkeeping lock unavailable",
+                ));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
+}
+
 pub(crate) fn commit(mut file: NamedTempFile, text: &str) -> io::Result<PathBuf> {
     file.write_all(text.as_bytes())?;
     file.as_file().sync_all()?;

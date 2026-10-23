@@ -271,6 +271,9 @@ fn original(bytes: &[u8]) -> PathBuf {
             .split("The full output is available at ")
             .nth(1)
             .expect("recovery hint")
+            .lines()
+            .next()
+            .unwrap()
             .trim(),
     )
 }
@@ -318,7 +321,10 @@ fn storage_and_diagnostic_failures_never_replace_the_child_result() {
                 expected.stdout
             );
             assert_eq!(
-                std::fs::read(original(&output.stderr)).unwrap(),
+                std::fs::read(original(&output.stderr)).unwrap_or_else(|error| panic!(
+                    "{error}; stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )),
                 expected.stderr
             );
         }
@@ -326,6 +332,27 @@ fn storage_and_diagnostic_failures_never_replace_the_child_result() {
             std::fs::read_to_string(home.path().join("executed")).unwrap(),
             "once"
         );
+        let errors = String::from_utf8_lossy(&output.stderr);
+        if broken == "gain.json" {
+            assert_eq!(
+                errors.matches("[outrim] Failed to save gain:").count(),
+                2,
+                "{errors}"
+            );
+            let detail = wrapper(home.path())
+                .args(["gain", "--detail"])
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&detail.stdout).matches("  Events:").count(), 2);
+        } else if broken == "records" {
+            assert_eq!(
+                errors.matches("[outrim] Failed to save recording:").count(),
+                2,
+                "{errors}"
+            );
+            let gain = wrapper(home.path()).arg("gain").output().unwrap();
+            assert!(String::from_utf8_lossy(&gain.stdout).contains("Processed outputs: 2"));
+        }
     }
 }
 

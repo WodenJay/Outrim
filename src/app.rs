@@ -11,6 +11,12 @@ mod upgrade;
 
 pub(crate) fn run() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.len() == 3 && arguments[0] == "__bookkeeping" {
+        return finish(outrim::bookkeeping::run(
+            Path::new(&arguments[1]),
+            &arguments[2].to_string_lossy(),
+        ));
+    }
     if arguments.len() == 3 && arguments[0] == "__upgrade-apply" {
         return finish(upgrade::apply(
             Path::new(&arguments[1]),

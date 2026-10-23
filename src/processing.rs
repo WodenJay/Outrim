@@ -11,10 +11,10 @@ mod search_footer;
 mod search_hits;
 
 use crate::{
-    gain,
+    bookkeeping,
     policy::{self, Method, Selection},
     protocol::{self, Disposition, Request, Response, Source, VERSION},
-    recording, tokens,
+    recording,
 };
 use std::{cell::RefCell, path::Path};
 
@@ -40,8 +40,7 @@ impl Grouping {
 pub struct Processor {
     home: std::path::PathBuf,
     originals: compression::Originals,
-    gain: gain::Store,
-    recorder: recording::Recorder,
+    bookkeeping: bookkeeping::Client,
     reads: RefCell<reads::Reads>,
 }
 
@@ -55,75 +54,24 @@ impl Processor {
         Self {
             home: user_home.to_owned(),
             originals: compression::Originals::new(user_home),
-            gain: gain::Store::new(user_home),
-            recorder: recording::Recorder::new(user_home, enabled),
+            bookkeeping: bookkeeping::Client::new(user_home, enabled),
             reads: RefCell::default(),
         }
     }
 
     pub(crate) fn record_recovery(&self, recovery: protocol::RecoveryRequest) -> bool {
-        let cost = tokens::count(&recovery.text);
-        if self.gain.record_recovery(&recovery, cost).is_err() {
-            return false;
-        }
-        self.recorder
-            .record(
-                protocol::RecordObservationRequest {
-                    message_type: protocol::ObservationMessageType::RecordObservation,
-                    version: VERSION,
-                    id: recovery.id.clone(),
-                    host: recovery.host,
-                    session: Some(recovery.session.clone()),
-                    tool_call_id: Some(recovery.tool_call_id.clone()),
-                    tool: protocol::Tool {
-                        name: "recovery".into(),
-                        input: serde_json::json!(recovery.original_paths),
-                        source: Source::Unknown,
-                        exit_code: None,
-                    },
-                    original_text: None,
-                    final_text: None,
-                    outcome: protocol::ObservationOutcome::RecoverySkipped,
-                    applied_rule: None,
-                    original_path: None,
-                    candidates: vec![],
-                    reason: None,
-                    parts: vec![],
-                    execution: None,
-                    metadata_only: true,
-                    diagnostics: Some(protocol::Diagnostics {
-                        recovery: Some(protocol::RecoveryDetails {
-                            event_id: recovery.event_id,
-                            tokens: cost,
-                            attribution: recovery.attribution,
-                            original_paths: recovery.original_paths,
-                        }),
-                        ..Default::default()
-                    }),
-                },
-                None,
-            )
-            .is_ok()
+        self.bookkeeping.recovery(recovery)
     }
 
-    pub(crate) fn record_delivery(&self, mut delivery: protocol::RecordDeliveryRequest) -> bool {
-        let counts = tokens::Counts::new(&delivery.original_text, &delivery.final_text);
-        let recorded = self.gain.record(&delivery, counts).is_ok();
-        if let Some(observation) = delivery.observation.take() {
-            let same_text = observation.original_text.as_deref() == Some(&delivery.original_text)
-                && observation.final_text.as_deref() == Some(&delivery.final_text);
-            let _ = self
-                .recorder
-                .record(*observation, same_text.then_some(counts));
-        }
-        recorded
+    pub(crate) fn record_delivery(&self, delivery: protocol::RecordDeliveryRequest) -> bool {
+        self.bookkeeping.delivery(delivery)
     }
 
     pub(crate) fn record_observation(
         &self,
         observation: protocol::RecordObservationRequest,
     ) -> bool {
-        self.recorder.record(observation, None).is_ok()
+        self.bookkeeping.observation(observation)
     }
 
     pub fn selection(

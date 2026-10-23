@@ -83,7 +83,7 @@ pub enum Disposition {
     FailedOpen,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordDeliveryRequest {
     #[serde(rename = "type")]
@@ -97,7 +97,7 @@ pub struct RecordDeliveryRequest {
     pub observation: Option<Box<RecordObservationRequest>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryMessageType {
     RecordDelivery,

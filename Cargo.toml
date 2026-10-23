@@ -12,6 +12,7 @@ toon-format = { version = "0.7", default-features = false }
 tempfile = "3"
 ureq = "3.4.2"
 sha2 = "0.11.1"
+getrandom = "0.4.3"
 semver = "1.0.28"
 
 # The embedded vocabulary decoder overflows Windows' default stack without
