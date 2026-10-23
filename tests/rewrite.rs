@@ -337,19 +337,25 @@ fn successful_branches_and_explicit_bypass_remain_native() {
         vec!["bash"]
     } {
         let home = tempfile::tempdir().unwrap();
-        let p = program(dialect);
+        // shell() puts the fixture first on PATH. Repeating its absolute path
+        // bloats every unit's encoded context past the Windows Bash argv limit.
+        let p = "cargo";
         let wrapper = env!("CARGO_BIN_EXE_outrim").replace('\\', "/");
         let call = if dialect == "bash" { "" } else { "& " };
         let command = format!(
             "{p} check || {p} build && {p} test; {call}'{wrapper}' exec --no-compress -- {p} build; {p} check"
         );
-        // The nested call operator is not an argv token for explicit exec.
-        let command = command.replace("-- & ", "-- ");
         let direct = shell(&command, dialect, home.path());
         assert_eq!(fs::read(home.path().join("executed")).unwrap(), b"once");
         fs::remove_file(home.path().join("executed")).unwrap();
         let rewritten = rewrite(&command, dialect);
-        let output = shell(rewritten["command"].as_str().unwrap(), dialect, home.path());
+        let output = shell(
+            rewritten["command"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{dialect}: {rewritten}")),
+            dialect,
+            home.path(),
+        );
         assert_eq!(output.status.code(), direct.status.code());
         assert_eq!(output.stdout, direct.stdout);
         assert_eq!(output.stderr, direct.stderr);
