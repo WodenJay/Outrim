@@ -674,11 +674,16 @@ function createBridge(host, executable, spawnProcess) {
     recordWrapping(session, toolCallId, "shell", rewritten ? "planned" : "rejected", response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"), dialect);
     return rewritten;
   }
-  function recordDelivery(original, outcome, signal) {
-    if (closed || signal?.aborted)
+  function recordDelivery(original, outcome, signal, observation) {
+    if (closed)
       return;
-    const texts = typeof original === "string" ? [original] : original;
-    const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
+    const originalText = typeof original === "string" ? original : original.join(`
+`);
+    if (signal?.aborted) {
+      if (observation)
+        recordObservation(observation.context, originalText, originalText, observation.facts);
+      return;
+    }
     const processed = typeof outcome === "object" ? outcome : undefined;
     const read = processed && readIds.get(processed);
     if (processed && read && read.epoch === readEpoch) {
@@ -689,15 +694,23 @@ function createBridge(host, executable, spawnProcess) {
       type: "record_delivery",
       disposition: processed?.disposition ?? (typeof outcome === "string" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
-      before_chars: beforeChars,
-      after_chars: processed ? Array.from(processed.text).length : beforeChars
+      original_text: originalText,
+      final_text: processed?.text ?? originalText,
+      ...observation && recording ? {
+        observation: observationPayload(observation.context, originalText, processed?.text ?? originalText, observation.facts)
+      } : {}
     });
   }
   function recordObservation(context, original, final, facts) {
     if (closed || !recording)
       return;
-    exchange({
+    exchange(observationPayload(context, original, final, facts));
+  }
+  function observationPayload(context, original, final, facts) {
+    return {
       type: "record_observation",
+      version: 2,
+      id: "",
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
@@ -706,7 +719,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "26013bf1b2654b79c1964f74c81c190e55cfb8bc33e9db6181f4fac9834d7a52",
+        adapter_build: "7bf173878facae48d89567fa3494c78549b31219511369fc4813e2adb71450dd",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -720,7 +733,7 @@ function createBridge(host, executable, spawnProcess) {
       candidates: facts.candidates ?? [],
       reason: facts.reason ?? null,
       parts: facts.parts ?? []
-    });
+    };
   }
   function recordRecovery(session, toolCallId, texts, evidence) {
     exchange({
@@ -729,7 +742,8 @@ function createBridge(host, executable, spawnProcess) {
       session,
       tool_call_id: toolCallId,
       event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
-      characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
+      text: texts.join(`
+`),
       ...evidence
     });
   }
@@ -1030,11 +1044,13 @@ async function registerOpenCodePlugin(context, options = {}) {
       return;
     }
     if (inputReferencesOriginals(input)) {
-      bridge.recordObservation(observation, originalText, originalText, {
-        outcome: "recovery_skipped",
-        reason: "original_directory_in_arguments"
+      bridge.recordDelivery(selection.texts, "recovery_skipped", undefined, {
+        context: observation,
+        facts: {
+          outcome: "recovery_skipped",
+          reason: "original_directory_in_arguments"
+        }
       });
-      bridge.recordDelivery(selection.texts, "recovery_skipped");
       return;
     }
     const controller = new AbortController;
@@ -1054,12 +1070,25 @@ async function registerOpenCodePlugin(context, options = {}) {
         });
         return;
       }
-      selection.texts.forEach((original, index) => {
-        bridge.recordDelivery(original, processedResults[index], controller.signal);
-      });
       const replacements = processedResults.map((processed) => processed?.text);
-      bridge.recordObservation(observation, originalText, selection.texts.map((text, index) => replacements[index] ?? text).join(`
-`), processingFacts(processedResults));
+      const finalText = selection.texts.map((text, index) => replacements[index] ?? text).join(`
+`);
+      const representative = processedResults.find((processed) => processed?.disposition === "compressed") ?? (processedResults.some((processed) => processed === undefined) ? undefined : processedResults[0]);
+      const compressedRules = [
+        ...new Set(processedResults.flatMap((processed) => processed?.disposition === "compressed" && processed.appliedRule ? [processed.appliedRule] : []))
+      ].sort();
+      const delivery = selection.texts.length === 1 ? processedResults[0] : {
+        text: finalText,
+        disposition: representative?.disposition ?? "failed_open",
+        appliedRule: compressedRules.join(" + ") || null,
+        originalPath: representative?.originalPath ?? null,
+        candidates: representative?.candidates ?? [],
+        reason: representative?.reason ?? null
+      };
+      bridge.recordDelivery(selection.texts, delivery, controller.signal, {
+        context: observation,
+        facts: { ...processingFacts(processedResults), appliedRule: delivery?.appliedRule ?? null }
+      });
       if (replacements.some((text, index) => text !== undefined && text !== selection.texts[index])) {
         event.result = { ...result, content: selection.apply(replacements) };
       }

@@ -69,6 +69,14 @@ fn config_off_bypasses_capture_and_explicit_no_compress_wins() {
 #[test]
 fn execution_keeps_one_policy_snapshot_for_both_streams() {
     let home = tempfile::tempdir().unwrap();
+    assert!(
+        wrapper(home.path())
+            .args(["gain", "record", "on"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     let project = tempfile::tempdir().unwrap();
     fs::create_dir(project.path().join(".outrim")).unwrap();
     let config = project.path().join(".outrim/config.json");
@@ -89,6 +97,38 @@ fn execution_keeps_one_policy_snapshot_for_both_streams() {
     assert_eq!(output.status.code(), raw.status.code());
     assert_eq!(fs::read(original(&output.stdout)).unwrap(), raw.stdout);
     assert_eq!(fs::read(original(&output.stderr)).unwrap(), raw.stderr);
+    let instance = fs::read_dir(home.path().join(".outrim/records"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let lines = fs::read_to_string(instance.join("events.jsonl")).unwrap();
+    let events: Vec<serde_json::Value> = lines
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 2);
+    let stats: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap()).unwrap();
+    let mut before = 0;
+    let mut after = 0;
+    for event in &events {
+        let delivered = if event["execution"]["stream"] == "stdout" {
+            &output.stdout
+        } else {
+            &output.stderr
+        };
+        assert_eq!(
+            fs::read(instance.join(event["content"]["final"].as_str().unwrap())).unwrap(),
+            *delivered
+        );
+        assert_eq!(event["token_encoding"], "o200k_base");
+        before += event["before_tokens"].as_u64().unwrap();
+        after += event["after_tokens"].as_u64().unwrap();
+    }
+    assert_eq!(stats["rules"]["json_compact"]["before_tokens"], before);
+    assert_eq!(stats["rules"]["json_compact"]["after_tokens"], after);
     let next = wrapper(home.path())
         .args(["exec", "--"])
         .arg(fixture())

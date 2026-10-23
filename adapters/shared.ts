@@ -278,6 +278,11 @@ export interface ObservationFacts {
   parts?: ProcessingPart[];
 }
 
+export interface DeliveryObservation {
+  context: ObservationContext;
+  facts: ObservationFacts;
+}
+
 export interface ProcessingPart {
   outcome: Disposition;
   applied_rule: string | null;
@@ -342,7 +347,7 @@ export function inputReferencesOriginals(value: unknown): boolean {
 }
 
 // Stricter than recovery protection: only literal, successful original reads
-// justify a deduction. Never read file contents to estimate returned characters.
+// justify a deduction. Count the actual returned text, never the file on disk.
 export function recoveryAttribution(tool: string, input: unknown): RecoveryEvidence | null {
   if (!inputReferencesOriginals(input)) return null;
   const unattributed: RecoveryEvidence = { attribution: "unattributed", original_paths: [] };
@@ -437,6 +442,7 @@ export function createBridge(
     original: string | readonly string[],
     outcome: ProcessedResult | "recovery_skipped" | "protected" | undefined,
     signal?: AbortSignalLike,
+    observation?: DeliveryObservation,
   ): void;
   recordObservation(
     context: ObservationContext,
@@ -649,10 +655,15 @@ export function createBridge(
     original: string | readonly string[],
     outcome: ProcessedResult | "recovery_skipped" | "protected" | undefined,
     signal?: AbortSignalLike,
+    observation?: DeliveryObservation,
   ): void {
-    if (closed || signal?.aborted) return;
-    const texts = typeof original === "string" ? [original] : original;
-    const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
+    if (closed) return;
+    const originalText = typeof original === "string" ? original : original.join("\n");
+    if (signal?.aborted) {
+      if (observation)
+        recordObservation(observation.context, originalText, originalText, observation.facts);
+      return;
+    }
     const processed = typeof outcome === "object" ? outcome : undefined;
     const read = processed && readIds.get(processed);
     if (processed && read && read.epoch === readEpoch) {
@@ -664,8 +675,18 @@ export function createBridge(
       disposition:
         processed?.disposition ?? (typeof outcome === "string" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
-      before_chars: beforeChars,
-      after_chars: processed ? Array.from(processed.text).length : beforeChars,
+      original_text: originalText,
+      final_text: processed?.text ?? originalText,
+      ...(observation && recording
+        ? {
+            observation: observationPayload(
+              observation.context,
+              originalText,
+              processed?.text ?? originalText,
+              observation.facts,
+            ),
+          }
+        : {}),
     });
   }
 
@@ -678,8 +699,19 @@ export function createBridge(
     facts: ObservationFacts,
   ): void {
     if (closed || !recording) return;
-    void exchange({
+    void exchange(observationPayload(context, original, final, facts));
+  }
+
+  function observationPayload(
+    context: ObservationContext,
+    original: string | null,
+    final: string | null,
+    facts: ObservationFacts,
+  ) {
+    return {
       type: "record_observation",
+      version: 2,
+      id: "",
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
@@ -702,7 +734,7 @@ export function createBridge(
       candidates: facts.candidates ?? [],
       reason: facts.reason ?? null,
       parts: facts.parts ?? [],
-    });
+    };
   }
 
   function recordRecovery(
@@ -718,7 +750,7 @@ export function createBridge(
       session,
       tool_call_id: toolCallId,
       event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
-      characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
+      text: texts.join("\n"),
       ...evidence,
     });
   }

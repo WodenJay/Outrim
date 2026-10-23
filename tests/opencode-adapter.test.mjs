@@ -596,8 +596,12 @@ describe("OpenCode adapter", () => {
     await h.dispose();
   });
 
-  it("preserves structured data and per-part delivery for non-shell tools", async () => {
+  it("preserves structured data and records one complete multipart delivery", async () => {
+    const settings = join(homedir(), ".outrim", "recording.json");
+    mkdirSync(join(homedir(), ".outrim"), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ recording: true }));
     const h = await harness();
+    rmSync(settings);
     const file = { type: "file", uri: "file:///tmp/result" };
     const output = { rows: ["caller data"] };
     const metadata = { exit: 1, custom: true };
@@ -609,33 +613,50 @@ describe("OpenCode adapter", () => {
           { type: "text", text: "🦀 original" },
           file,
           { type: "text", text: "🙂 unchanged" },
+          { type: "text", text: "second original" },
         ],
         output,
         metadata,
       },
     });
     const pending = h.call("tool.execute.after", event);
-    const [request, unchanged] = h.child.requests();
+    const [request, unchanged, other] = h.child.requests();
     expect(request.tool).toMatchObject({ name: "read", source: "unknown", exit_code: 1 });
-    h.child.compress(request, "🦀 short");
+    h.child.compress(request, "🦀 short\n[recovery hint]");
     h.child.respond(unchanged, {
       text: "🙂 unchanged",
       disposition: "protected",
       applied_rule: null,
     });
+    h.child.respond(other, {
+      text: "second short",
+      disposition: "compressed",
+      applied_rule: "json_compact",
+    });
     await pending;
     expect(event.result.content).toEqual([
-      { type: "text", text: "🦀 short" },
+      { type: "text", text: "🦀 short\n[recovery hint]" },
       file,
       { type: "text", text: "🙂 unchanged" },
+      { type: "text", text: "second short" },
     ]);
     expect(event.result.content[1]).toBe(file);
     expect(event.result.output).toBe(output);
     expect(event.result.metadata).toBe(metadata);
-    expect(h.child.deliveries()).toMatchObject([
-      { disposition: "compressed", before_chars: 10, after_chars: 7 },
-      { disposition: "protected", before_chars: 11, after_chars: 11 },
-    ]);
+    expect(h.child.deliveries()).toHaveLength(1);
+    expect(h.child.deliveries()[0]).toMatchObject({
+      disposition: "compressed",
+      applied_rule: "json_compact + log_compaction",
+      original_text: "🦀 original\n🙂 unchanged\nsecond original",
+      final_text: "🦀 short\n[recovery hint]\n🙂 unchanged\nsecond short",
+      observation: {
+        original_text: "🦀 original\n🙂 unchanged\nsecond original",
+        final_text: "🦀 short\n[recovery hint]\n🙂 unchanged\nsecond short",
+        outcome: "mixed",
+        parts: [{ outcome: "compressed" }, { outcome: "protected" }, { outcome: "compressed" }],
+      },
+    });
+    expect(h.child.writes.filter((r) => r.type === "record_observation")).toHaveLength(0);
     await h.dispose();
   });
 

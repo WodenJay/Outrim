@@ -318,11 +318,13 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
     const original = content as TextContent;
     const text = original.text;
     if (inputReferencesOriginals(originalInput)) {
-      bridge.recordObservation(observation, text, text, {
-        outcome: context.signal?.aborted ? "cancelled" : "recovery_skipped",
-        reason: "original_directory_in_arguments",
+      bridge.recordDelivery(text, "recovery_skipped", context.signal, {
+        context: observation,
+        facts: {
+          outcome: context.signal?.aborted ? "cancelled" : "recovery_skipped",
+          reason: "original_directory_in_arguments",
+        },
       });
-      bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return undefined;
     }
 
@@ -346,22 +348,14 @@ export function registerPiExtension(pi: PiApi, options: PiOptions = {}): void {
           })()
         : undefined,
     );
-    bridge.recordObservation(
-      observation,
-      text,
-      context.signal?.aborted ? text : (processed?.text ?? text),
-      {
+    bridge.recordDelivery(text, processed, context.signal, {
+      context: observation,
+      facts: {
         ...processingFacts([processed]),
         ...(context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}),
       },
-    );
-    if (processed === undefined) {
-      bridge.recordDelivery(text, undefined, context.signal);
-      return undefined;
-    }
-    if (context.signal?.aborted) return undefined;
-
-    bridge.recordDelivery(text, processed, context.signal);
+    });
+    if (processed === undefined || context.signal?.aborted) return undefined;
     if (processed.text === text) return undefined;
 
     return {

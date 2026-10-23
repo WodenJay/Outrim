@@ -12,5 +12,6 @@ pub mod protocol;
 mod recording;
 pub mod rewrite;
 mod storage;
+mod tokens;
 
 pub use processing::Processor;

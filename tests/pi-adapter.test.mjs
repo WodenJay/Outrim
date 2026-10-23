@@ -396,15 +396,43 @@ describe("Pi native result adapter", () => {
     ).toBeUndefined();
     const recoveries = h.children[0].writes.filter((r) => r.type === "record_recovery");
     expect(recoveries).toHaveLength(4);
-    expect(recoveries[0]).toMatchObject({ characters: 16, attribution: "confirmed" });
+    expect(recoveries[0]).toMatchObject({ text: "2: 🦀\n[continued]", attribution: "confirmed" });
     expect(recoveries[0].event_id).toBe(recoveries[1].event_id);
     expect(recoveries[2].event_id).not.toBe(recoveries[0].event_id);
     expect(recoveries[3]).toMatchObject({
-      characters: 10,
+      text: "original 🦀",
       attribution: "confirmed",
       original_paths: [path],
     });
     expect(h.children[0].writes.some((r) => !r.type)).toBe(false);
+  });
+  it("bundles the single-text observation only when recording is enabled", async () => {
+    const settings = join(homedir(), ".outrim", "recording.json");
+    mkdirSync(join(homedir(), ".outrim"), { recursive: true });
+    writeFileSync(settings, JSON.stringify({ recording: true }));
+    try {
+      const h = harness();
+      const pending = h.result(event({ toolName: "grep", input: { pattern: "hit" } }));
+      const child = h.children[0];
+      child.respond(child.writes[0], processed("short 🦀\n[recovery hint]"));
+      await pending;
+      const delivery = child.writes.find((r) => r.type === "record_delivery");
+      expect(delivery).toMatchObject({
+        original_text: "original 🦀",
+        final_text: "short 🦀\n[recovery hint]",
+        observation: {
+          type: "record_observation",
+          version: 2,
+          id: "",
+          original_text: "original 🦀",
+          final_text: "short 🦀\n[recovery hint]",
+          outcome: "compressed",
+        },
+      });
+      expect(child.writes.filter((r) => r.type === "record_observation")).toHaveLength(0);
+    } finally {
+      rmSync(settings, { force: true });
+    }
   });
   it("preserves metadata and correlates concurrent native tool results", async () => {
     const h = harness();
@@ -426,10 +454,13 @@ describe("Pi native result adapter", () => {
     const deliveries = child.writes.filter((r) => r.type === "record_delivery");
     expect(deliveries).toHaveLength(2);
     expect(deliveries[1]).toMatchObject({
-      before_chars: 10,
-      after_chars: 7,
+      original_text: "original 🦀",
+      final_text: "short 🦀",
       disposition: "compressed",
     });
+    expect(deliveries[1]).not.toHaveProperty("before_chars");
+    expect(deliveries[1]).not.toHaveProperty("after_chars");
+    expect(deliveries[1]).not.toHaveProperty("observation");
   });
   it("protects original references and unsupported content", async () => {
     const h = harness();

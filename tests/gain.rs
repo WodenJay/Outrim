@@ -56,6 +56,118 @@ fn gain_command(home: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn exact_delivery_counts_use_full_o200k_text_and_preserve_negative_savings() {
+    // Expected counts confirmed with Python tiktoken's o200k_base, ordinary text.
+    for (original, final_text, before, after) in [
+        ("hello world", "hello world", 2, 2),
+        ("你好世界", "你好世界", 2, 2),
+        ("fn main() { println!(\"hello\"); }", "", 9, 0),
+        ("{\"ok\":true,\"n\":42}", "", 9, 0),
+        ("C:/Users/alice/project/src/main.rs", "", 9, 0),
+        (" \t\n", "", 1, 0),
+        ("🦀 café é 中文", "", 7, 0),
+        ("", "", 0, 0),
+        ("aaaaaaaaaaaaaaaaaaaa", "<|endoftext|>", 3, 7),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let mut bridge = Bridge::start(home.path());
+        let ack = bridge.exchange(&json!({
+            "type": "record_delivery", "version": 2, "id": "exact",
+            "disposition": "compressed", "applied_rule": "custom_rule",
+            "original_text": original, "final_text": final_text
+        }));
+        assert_eq!(ack["acknowledged"], true, "{ack}");
+        bridge.stop();
+        let stats: Value =
+            serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap())
+                .unwrap();
+        assert_eq!(stats["rules"]["custom_rule"]["before_tokens"], before);
+        assert_eq!(stats["rules"]["custom_rule"]["after_tokens"], after);
+        let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
+        assert!(report.contains("o200k_base"), "{report}");
+        assert!(
+            report.contains(&format!("Compression savings: {} tokens", before - after)),
+            "{report}"
+        );
+        if after > before {
+            assert!(report.contains("Compression rate: -133%"), "{report}");
+            assert!(report.contains(&"░".repeat(24)), "{report}");
+        }
+        assert!(!home.path().join(".outrim/records").exists());
+    }
+}
+
+#[test]
+fn whole_delivery_and_recovery_counts_match_recording_without_archiving_recovery_text() {
+    let home = tempfile::tempdir().unwrap();
+    assert!(
+        gain_command(home.path(), &["record", "on"])
+            .status
+            .success()
+    );
+    let original = "aaaaaaaaaaaaaaaaaaaa";
+    let final_text = "hello\n[outrim] original: C:/tmp/full.txt\nUse read to recover.";
+    let mut bridge = Bridge::start(home.path());
+    let observation = json!({
+        "type": "record_observation", "version": 2, "id": "facts", "host": "pi",
+        "session": "whole", "tool": {"name": "read", "input": {}, "source": "unknown"},
+        "original_text": original, "final_text": final_text,
+        "outcome": "compressed", "applied_rule": "custom_rule", "candidates": []
+    });
+    assert_eq!(
+        bridge.exchange(&json!({
+            "type": "record_delivery", "version": 2, "id": "delivery",
+            "disposition": "compressed", "applied_rule": "custom_rule",
+            "original_text": original, "final_text": final_text, "observation": observation
+        }))["acknowledged"],
+        true
+    );
+    assert_eq!(
+        bridge.exchange(&json!({
+            "type": "record_recovery", "version": 2, "id": "recovery", "host": "pi",
+            "event_id": "whole/recovery", "session": "whole", "tool_call_id": "read",
+            "text": "recovered original\n<|endoftext|>\nUse read to recover.",
+            "attribution": "confirmed"
+        }))["acknowledged"],
+        true
+    );
+    bridge.stop();
+    let stats: Value =
+        serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap()).unwrap();
+    assert_eq!(stats["rules"]["custom_rule"]["before_tokens"], 3);
+    assert_eq!(stats["rules"]["custom_rule"]["after_tokens"], 19);
+    assert_eq!(stats["recovery_tokens"], 16);
+    let instance = fs::read_dir(home.path().join(".outrim/records"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let lines = fs::read_to_string(instance.join("events.jsonl")).unwrap();
+    let events: Vec<Value> = lines
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["token_encoding"], "o200k_base");
+    assert_eq!(events[0]["before_tokens"], 3);
+    assert_eq!(events[0]["after_tokens"], 19);
+    assert_eq!(events[1]["diagnostics"]["recovery"]["tokens"], 16);
+    assert!(events[1]["content"]["original"].is_null());
+    assert!(!lines.contains("recovered original"));
+    let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
+    assert!(
+        report.contains("Compression savings: -16 tokens"),
+        "{report}"
+    );
+    assert!(report.contains("Net savings: -32 tokens"), "{report}");
+    let detail =
+        String::from_utf8(gain_command(home.path(), &["--detail", "--session", "whole"]).stdout)
+            .unwrap();
+    assert!(detail.contains("tokens 3 → 19"), "{detail}");
+}
+
+#[test]
 fn gain_derives_a_token_only_summary_from_current_rules() {
     let home = tempfile::tempdir().unwrap();
     fs::create_dir(home.path().join(".outrim")).unwrap();
@@ -63,13 +175,13 @@ fn gain_derives_a_token_only_summary_from_current_rules() {
         home.path().join(".outrim/gain.json"),
         json!({
             "rules": {
-                "log_compaction": { "count": 69, "before_chars": 240000, "after_chars": 48000 },
-                "search_hit_groups": { "count": 33, "before_chars": 140000, "after_chars": 122000 },
-                "path_prefix_groups": { "count": 6, "before_chars": 9280, "after_chars": 8816 }
+                "log_compaction": { "count": 69, "before_tokens": 60000, "after_tokens": 12000 },
+                "search_hit_groups": { "count": 33, "before_tokens": 35000, "after_tokens": 30500 },
+                "path_prefix_groups": { "count": 6, "before_tokens": 2320, "after_tokens": 2204 }
             },
             "outcomes": { "compressed": 108, "protected": 376, "recovery_skipped": 12,
                 "not_shorter": 123, "no_match": 418, "failed_open": 0 },
-            "recovery_chars": 0, "recovery_events": []
+            "recovery_tokens": 0, "recovery_events": []
         })
         .to_string(),
     )
@@ -79,7 +191,7 @@ fn gain_derives_a_token_only_summary_from_current_rules() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         concat!(
-            "Gain\n\n",
+            "Gain\n\nText tokens: o200k_base (not model billing)\n\n",
             "Processed outputs: 1,037\n",
             "Compression savings: 52.6k tokens\n",
             "Compression rate: 54%\n",
@@ -106,21 +218,21 @@ fn gain_derives_a_token_only_summary_from_current_rules() {
 fn gain_formats_token_boundaries_and_preserves_unknown_rule_labels() {
     let home = tempfile::tempdir().unwrap();
     fs::create_dir(home.path().join(".outrim")).unwrap();
-    for (chars, saved) in [
-        (3993, "998"),
-        (3994, "999"),
-        (3998, "1k"),
-        (192000, "48k"),
-        (3999796, "999.9k"),
-        (3999800, "1M"),
-        (4000000, "1M"),
-        (7076000, "1.77M"),
-        (4400000, "1.1M"),
+    for (tokens, saved) in [
+        (998, "998"),
+        (999, "999"),
+        (1000, "1k"),
+        (48000, "48k"),
+        (999949, "999.9k"),
+        (999950, "1M"),
+        (1000000, "1M"),
+        (1769000, "1.77M"),
+        (1100000, "1.1M"),
     ] {
         fs::write(home.path().join(".outrim/gain.json"), json!({
-            "rules": { "custom_rule": { "count": 1234, "before_chars": chars, "after_chars": 0 } },
+            "rules": { "custom_rule": { "count": 1234, "before_tokens": tokens, "after_tokens": 0 } },
             "outcomes": { "compressed": 1234 },
-            "recovery_chars": 0, "recovery_events": []
+            "recovery_tokens": 0, "recovery_events": []
         }).to_string()).unwrap();
         let output = gain_command(home.path(), &[]);
         assert!(output.status.success(), "{output:?}");
@@ -128,7 +240,7 @@ fn gain_formats_token_boundaries_and_preserves_unknown_rule_labels() {
             String::from_utf8(output.stdout).unwrap(),
             format!(
                 concat!(
-                    "Gain\n\n",
+                    "Gain\n\nText tokens: o200k_base (not model billing)\n\n",
                     "Processed outputs: 1,234\n",
                     "Compression savings: {saved} tokens\n",
                     "Compression rate: 100%\n",
@@ -148,7 +260,7 @@ fn gain_formats_token_boundaries_and_preserves_unknown_rule_labels() {
                 ),
                 saved = saved
             ),
-            "{chars} characters"
+            "{tokens} tokens"
         );
     }
 }
@@ -174,7 +286,7 @@ fn gain_distinguishes_empty_outcomes_from_recovery_and_zero_count_data() {
         (
             json!({}),
             json!(["confirmed-event"]),
-            4938000,
+            1234500,
             zero_output_report("1.23M", "-1.23M"),
         ),
     ] {
@@ -182,7 +294,7 @@ fn gain_distinguishes_empty_outcomes_from_recovery_and_zero_count_data() {
             home.path().join(".outrim/gain.json"),
             json!({
                 "rules": {}, "outcomes": outcomes,
-                "recovery_chars": recovery, "recovery_events": events
+                "recovery_tokens": recovery, "recovery_events": events
             })
             .to_string(),
         )
@@ -196,7 +308,7 @@ fn gain_distinguishes_empty_outcomes_from_recovery_and_zero_count_data() {
 fn zero_output_report(recovery: &str, net: &str) -> String {
     format!(
         concat!(
-            "Gain\n\n",
+            "Gain\n\nText tokens: o200k_base (not model billing)\n\n",
             "Processed outputs: 0\n",
             "Compression savings: 0 tokens\n",
             "Compression rate: 0%\n",
@@ -225,8 +337,8 @@ fn gain_rejects_old_incomplete_and_invalid_statistics_without_overwriting() {
     fs::create_dir(home.path().join(".outrim")).unwrap();
     let path = home.path().join(".outrim/gain.json");
     let complete = json!({
-        "rules": { "json_toon": { "count": 1, "before_chars": 100, "after_chars": 20 } },
-        "outcomes": { "compressed": 1 }, "recovery_chars": 0, "recovery_events": []
+        "rules": { "json_toon": { "count": 1, "before_tokens": 100, "after_tokens": 20 } },
+        "outcomes": { "compressed": 1 }, "recovery_tokens": 0, "recovery_events": []
     });
     let mut invalid = vec!["{invalid}".to_owned()];
     let mut old = complete.clone();
@@ -234,12 +346,12 @@ fn gain_rejects_old_incomplete_and_invalid_statistics_without_overwriting() {
     old["before_chars"] = json!(100);
     old["after_chars"] = json!(20);
     invalid.push(old.to_string());
-    for field in ["rules", "outcomes", "recovery_chars", "recovery_events"] {
+    for field in ["rules", "outcomes", "recovery_tokens", "recovery_events"] {
         let mut missing = complete.clone();
         missing.as_object_mut().unwrap().remove(field);
         invalid.push(missing.to_string());
     }
-    for field in ["count", "before_chars", "after_chars"] {
+    for field in ["count", "before_tokens", "after_tokens"] {
         let mut missing = complete.clone();
         missing["rules"]["json_toon"]
             .as_object_mut()
@@ -325,14 +437,14 @@ fn recovery_cost_is_independent_deduplicated_and_can_exceed_savings() {
         let delivery = json!({
             "type": "record_delivery", "version": 2, "id": "delivery",
             "disposition": "compressed", "applied_rule": "log_compaction",
-            "before_chars": 1000, "after_chars": 200
+            "original_text": " a".repeat(250), "final_text": " a".repeat(50)
         });
         assert_eq!(bridge.exchange(&delivery)["acknowledged"], true);
         let recovery = json!({
             "type": "record_recovery", "version": 2, "id": "transport-1",
             "event_id": "pi/session/call-1/recovery", "host": "pi",
             "session": "session", "tool_call_id": "call-1",
-            "characters": 600, "attribution": "confirmed"
+            "text": " a".repeat(150), "attribution": "confirmed"
         });
         assert_eq!(bridge.exchange(&recovery)["acknowledged"], true);
         let mut retry = recovery.clone();
@@ -449,7 +561,7 @@ fn recording_snapshots_startup_and_saves_real_text_separately_from_recovery() {
     let report = String::from_utf8(detail.stdout).unwrap();
     assert!(report.contains("compressed"));
     assert!(report.contains("host-call"));
-    assert!(report.contains(&format!("chars {} → ", count_codepoints(&text))));
+    assert!(report.contains("tokens 739 → "), "{report}");
     assert!(!report.contains("Some("));
     let native_instance = home
         .path()
@@ -623,8 +735,8 @@ fn delivery_request(
     id: &str,
     disposition: &str,
     applied_rule: Option<&str>,
-    before_chars: u64,
-    after_chars: u64,
+    before_tokens: u64,
+    after_tokens: u64,
 ) -> Value {
     json!({
         "type": "record_delivery",
@@ -632,8 +744,8 @@ fn delivery_request(
         "id": id,
         "disposition": disposition,
         "applied_rule": applied_rule,
-        "before_chars": before_chars,
-        "after_chars": after_chars
+        "original_text": " a".repeat(before_tokens as usize),
+        "final_text": " a".repeat(after_tokens as usize)
     })
 }
 
@@ -652,8 +764,8 @@ fn gain_counts_an_acknowledged_delivery_and_attributes_its_rule() {
         "id": "delivery-1",
         "disposition": response["disposition"],
         "applied_rule": response["applied_rule"],
-        "before_chars": count_codepoints(&text),
-        "after_chars": count_codepoints(response["text"].as_str().unwrap())
+        "original_text": text,
+        "final_text": response["text"]
     }));
     assert_eq!(acknowledgement["id"], "delivery-1");
     assert_eq!(acknowledgement["acknowledged"], true);
@@ -663,14 +775,11 @@ fn gain_counts_an_acknowledged_delivery_and_attributes_its_rule() {
     let stats_path = home.path().join(".outrim/gain.json");
     let persisted = fs::read_to_string(&stats_path).unwrap();
     let stats: Value = serde_json::from_str(&persisted).unwrap();
-    assert_eq!(
-        stats["rules"]["log_compaction"]["before_chars"],
-        count_codepoints(&text)
-    );
-    assert_eq!(
-        stats["rules"]["log_compaction"]["after_chars"],
-        count_codepoints(response["text"].as_str().unwrap())
-    );
+    assert_eq!(stats["rules"]["log_compaction"]["before_tokens"], 739);
+    let after = stats["rules"]["log_compaction"]["after_tokens"]
+        .as_u64()
+        .unwrap();
+    assert!(after > 0 && after < 739);
     assert!(!persisted.contains("old log line"));
     #[cfg(unix)]
     {
@@ -773,7 +882,7 @@ fn clear_removes_statistics_but_preserves_recovery_and_settings() {
     let stats: Value =
         serde_json::from_slice(&fs::read(directory.join("gain.json")).unwrap()).unwrap();
     assert_eq!(stats["outcomes"]["compressed"], 1);
-    assert_eq!(stats["rules"]["log_compaction"]["before_chars"], 100);
+    assert_eq!(stats["rules"]["log_compaction"]["before_tokens"], 100);
     assert_eq!(fs::read_dir(directory.join("records")).unwrap().count(), 1);
 }
 
@@ -873,13 +982,13 @@ fn gain_aggregates_all_delivery_outcomes_across_writes() {
         ("failed-open", "failed_open", None, 110, 110),
     ];
 
-    for (id, disposition, applied_rule, before_chars, after_chars) in deliveries {
+    for (id, disposition, applied_rule, before_tokens, after_tokens) in deliveries {
         let acknowledgement = bridge.exchange(&delivery_request(
             id,
             disposition,
             applied_rule,
-            before_chars,
-            after_chars,
+            before_tokens,
+            after_tokens,
         ));
         assert_eq!(acknowledgement["id"], id);
         assert_eq!(acknowledgement["acknowledged"], true);
@@ -897,7 +1006,7 @@ fn gain_aggregates_all_delivery_outcomes_across_writes() {
     let report = String::from_utf8(output.stdout).unwrap();
     for expected in [
         "Processed outputs: 8",
-        "Compression savings: 43 tokens",
+        "Compression savings: 170 tokens",
         "Compression rate: 53%",
         "JSON compact",
         "Compressed: 3",

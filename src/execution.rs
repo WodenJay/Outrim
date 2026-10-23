@@ -248,15 +248,6 @@ impl Execution {
         );
         output.write_all(response.text.as_bytes())?;
         output.flush()?;
-        self.processor.record_delivery(RecordDeliveryRequest {
-            message_type: DeliveryMessageType::RecordDelivery,
-            version: VERSION,
-            id: id.clone(),
-            disposition: response.disposition,
-            applied_rule: response.applied_rule.clone(),
-            before_chars: text.chars().count() as u64,
-            after_chars: response.text.chars().count() as u64,
-        });
         let outcome = match response.disposition {
             Disposition::Compressed => ObservationOutcome::Compressed,
             Disposition::Protected => ObservationOutcome::Protected,
@@ -265,20 +256,20 @@ impl Execution {
             Disposition::NoMatch => ObservationOutcome::NoMatch,
             Disposition::FailedOpen => ObservationOutcome::FailedOpen,
         };
-        self.processor.record_observation(RecordObservationRequest {
+        let observation = RecordObservationRequest {
             message_type: ObservationMessageType::RecordObservation,
             version: VERSION,
-            id,
+            id: id.clone(),
             host: self.context.host,
             session: self.context.session.clone(),
             tool_call_id: self.context.tool_call_id.clone(),
             tool,
-            original_text: Some(text),
-            final_text: Some(response.text),
+            original_text: Some(text.clone()),
+            final_text: Some(response.text.clone()),
             metadata_only: false,
             diagnostics: Some(diagnostics),
             outcome,
-            applied_rule: response.applied_rule,
+            applied_rule: response.applied_rule.clone(),
             original_path: response.original_path,
             candidates: response.candidates,
             reason: response.reason,
@@ -288,6 +279,16 @@ impl Execution {
                 stream,
                 recording: self.recording,
             }),
+        };
+        self.processor.record_delivery(RecordDeliveryRequest {
+            message_type: DeliveryMessageType::RecordDelivery,
+            version: VERSION,
+            id,
+            disposition: response.disposition,
+            applied_rule: response.applied_rule,
+            original_text: text,
+            final_text: response.text,
+            observation: Some(Box::new(observation)),
         });
         Ok(())
     }

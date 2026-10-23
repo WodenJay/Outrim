@@ -92,8 +92,9 @@ pub struct RecordDeliveryRequest {
     pub id: String,
     pub disposition: Disposition,
     pub applied_rule: Option<String>,
-    pub before_chars: u64,
-    pub after_chars: u64,
+    pub original_text: String,
+    pub final_text: String,
+    pub observation: Option<Box<RecordObservationRequest>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,7 +158,7 @@ pub struct Diagnostics {
     pub observed_chars: Option<u64>,
     pub total_bytes: Option<u64>,
     pub limit_bytes: Option<u64>,
-    pub recovery: Option<RecoveryRequest>,
+    pub recovery: Option<RecoveryDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,9 +217,18 @@ pub struct RecoveryRequest {
     pub host: Host,
     pub session: String,
     pub tool_call_id: String,
-    pub characters: u64,
+    pub text: String,
     pub attribution: RecoveryAttribution,
     #[serde(default)]
+    pub original_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryDetails {
+    pub event_id: String,
+    pub tokens: u64,
+    pub attribution: RecoveryAttribution,
     pub original_paths: Vec<String>,
 }
 

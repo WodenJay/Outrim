@@ -472,11 +472,13 @@ export async function registerOpenCodePlugin(
       return;
     }
     if (inputReferencesOriginals(input)) {
-      bridge.recordObservation(observation, originalText, originalText, {
-        outcome: "recovery_skipped",
-        reason: "original_directory_in_arguments",
+      bridge.recordDelivery(selection.texts, "recovery_skipped", undefined, {
+        context: observation,
+        facts: {
+          outcome: "recovery_skipped",
+          reason: "original_directory_in_arguments",
+        },
       });
-      bridge.recordDelivery(selection.texts, "recovery_skipped");
       return;
     }
 
@@ -515,16 +517,41 @@ export async function registerOpenCodePlugin(
         });
         return;
       }
-      selection.texts.forEach((original, index) => {
-        bridge.recordDelivery(original, processedResults[index], controller.signal);
-      });
       const replacements = processedResults.map((processed) => processed?.text);
-      bridge.recordObservation(
-        observation,
-        originalText,
-        selection.texts.map((text, index) => replacements[index] ?? text).join("\n"),
-        processingFacts(processedResults),
-      );
+      const finalText = selection.texts
+        .map((text, index) => replacements[index] ?? text)
+        .join("\n");
+      const representative =
+        processedResults.find((processed) => processed?.disposition === "compressed") ??
+        (processedResults.some((processed) => processed === undefined)
+          ? undefined
+          : processedResults[0]);
+      const compressedRules = [
+        ...new Set(
+          processedResults.flatMap((processed) =>
+            processed?.disposition === "compressed" && processed.appliedRule
+              ? [processed.appliedRule]
+              : [],
+          ),
+        ),
+      ].sort();
+      // Cross-part BPE merges belong to the whole result, not an arbitrary rule.
+      // Keep the single-part result identity for native read delivery tracking.
+      const delivery =
+        selection.texts.length === 1
+          ? processedResults[0]
+          : {
+              text: finalText,
+              disposition: representative?.disposition ?? ("failed_open" as const),
+              appliedRule: compressedRules.join(" + ") || null,
+              originalPath: representative?.originalPath ?? null,
+              candidates: representative?.candidates ?? [],
+              reason: representative?.reason ?? null,
+            };
+      bridge.recordDelivery(selection.texts, delivery, controller.signal, {
+        context: observation,
+        facts: { ...processingFacts(processedResults), appliedRule: delivery?.appliedRule ?? null },
+      });
       if (
         replacements.some((text, index) => text !== undefined && text !== selection.texts[index])
       ) {

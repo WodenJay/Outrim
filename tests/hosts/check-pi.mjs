@@ -149,7 +149,7 @@ if (process.argv[2] === "--host") {
       "two streams + recovery + custom tool + four delivered file reads",
     );
     assert.equal(stats.rules.read_dedup.count, 3);
-    assert.ok(stats.rules.read_dedup.after_chars < stats.rules.read_dedup.before_chars);
+    assert.ok(stats.rules.read_dedup.after_tokens < stats.rules.read_dedup.before_tokens);
     const events = readdirSync(join(home, ".outrim/records")).flatMap((instance) =>
       readFileSync(join(home, ".outrim/records", instance, "events.jsonl"), "utf8")
         .trim()
@@ -170,8 +170,8 @@ if (process.argv[2] === "--host") {
     );
     const recovery = events.filter((event) => event.diagnostics?.recovery);
     assert.equal(recovery.length, 1);
-    assert.equal(stats.recovery_chars, recovery[0].diagnostics.recovery.characters);
-    assert.ok(stats.recovery_chars > 0);
+    assert.equal(stats.recovery_tokens, recovery[0].diagnostics.recovery.tokens);
+    assert.ok(stats.recovery_tokens > 0);
     const stdout = streams.find((event) => event.execution.stream === "stdout");
     assert.deepEqual(recovery[0].original_references, [
       { original_path: stdout.original_path, record_id: stdout.event_id },

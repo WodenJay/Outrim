@@ -674,11 +674,16 @@ function createBridge(host, executable, spawnProcess) {
     recordWrapping(session, toolCallId, "shell", rewritten ? "planned" : "rejected", response?.reason ?? (response ? "unsupported_command" : "bridge_unavailable"), dialect);
     return rewritten;
   }
-  function recordDelivery(original, outcome, signal) {
-    if (closed || signal?.aborted)
+  function recordDelivery(original, outcome, signal, observation) {
+    if (closed)
       return;
-    const texts = typeof original === "string" ? [original] : original;
-    const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
+    const originalText = typeof original === "string" ? original : original.join(`
+`);
+    if (signal?.aborted) {
+      if (observation)
+        recordObservation(observation.context, originalText, originalText, observation.facts);
+      return;
+    }
     const processed = typeof outcome === "object" ? outcome : undefined;
     const read = processed && readIds.get(processed);
     if (processed && read && read.epoch === readEpoch) {
@@ -689,15 +694,23 @@ function createBridge(host, executable, spawnProcess) {
       type: "record_delivery",
       disposition: processed?.disposition ?? (typeof outcome === "string" ? outcome : "failed_open"),
       applied_rule: processed?.appliedRule ?? null,
-      before_chars: beforeChars,
-      after_chars: processed ? Array.from(processed.text).length : beforeChars
+      original_text: originalText,
+      final_text: processed?.text ?? originalText,
+      ...observation && recording ? {
+        observation: observationPayload(observation.context, originalText, processed?.text ?? originalText, observation.facts)
+      } : {}
     });
   }
   function recordObservation(context, original, final, facts) {
     if (closed || !recording)
       return;
-    exchange({
+    exchange(observationPayload(context, original, final, facts));
+  }
+  function observationPayload(context, original, final, facts) {
+    return {
       type: "record_observation",
+      version: 2,
+      id: "",
       host,
       session: context.session,
       tool_call_id: context.toolCallId,
@@ -706,7 +719,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "b71c29e9c230b0986df4e0342c73994332051d39ca72c7e78d8d3e57faaac6c5",
+        adapter_build: "b1963c7cc5b7b9cb20c0f3cb2a1bfd3b66794afbcfbd129e28c5f794857d8e8a",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -720,7 +733,7 @@ function createBridge(host, executable, spawnProcess) {
       candidates: facts.candidates ?? [],
       reason: facts.reason ?? null,
       parts: facts.parts ?? []
-    });
+    };
   }
   function recordRecovery(session, toolCallId, texts, evidence) {
     exchange({
@@ -729,7 +742,8 @@ function createBridge(host, executable, spawnProcess) {
       session,
       tool_call_id: toolCallId,
       event_id: JSON.stringify([host, session, toolCallId, "recovery"]),
-      characters: texts.reduce((count, text) => count + Array.from(text).length, 0),
+      text: texts.join(`
+`),
       ...evidence
     });
   }
@@ -929,28 +943,28 @@ function registerPiExtension(pi, options = {}) {
     const original = content;
     const text = original.text;
     if (inputReferencesOriginals(originalInput)) {
-      bridge.recordObservation(observation, text, text, {
-        outcome: context.signal?.aborted ? "cancelled" : "recovery_skipped",
-        reason: "original_directory_in_arguments"
+      bridge.recordDelivery(text, "recovery_skipped", context.signal, {
+        context: observation,
+        facts: {
+          outcome: context.signal?.aborted ? "cancelled" : "recovery_skipped",
+          reason: "original_directory_in_arguments"
+        }
       });
-      bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return;
     }
     const processed = await bridge.process(observation.session, observation.tool, text, context.signal, cwd, selection, event.toolName === "read" && !event.isError ? (() => {
       const selection = nativeReadSelection("pi", originalInput, text, cwd, observation.diagnostics.host_truncation ?? {});
       return selection ? { selection } : undefined;
     })() : undefined);
-    bridge.recordObservation(observation, text, context.signal?.aborted ? text : processed?.text ?? text, {
-      ...processingFacts([processed]),
-      ...context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}
+    bridge.recordDelivery(text, processed, context.signal, {
+      context: observation,
+      facts: {
+        ...processingFacts([processed]),
+        ...context.signal?.aborted ? { outcome: "cancelled", reason: "host_signal_aborted" } : {}
+      }
     });
-    if (processed === undefined) {
-      bridge.recordDelivery(text, undefined, context.signal);
+    if (processed === undefined || context.signal?.aborted)
       return;
-    }
-    if (context.signal?.aborted)
-      return;
-    bridge.recordDelivery(text, processed, context.signal);
     if (processed.text === text)
       return;
     return {

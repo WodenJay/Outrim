@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 base64 = "0.23.1"
+tiktoken = { version = "=4.1.2", default-features = false, features = ["vocab-o200k_base"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toon-format = { version = "0.7", default-features = false }
@@ -12,6 +13,11 @@ tempfile = "3"
 ureq = "3.4.2"
 sha2 = "0.11.1"
 semver = "1.0.28"
+
+# The embedded vocabulary decoder overflows Windows' default stack without
+# optimization (large temporary decoding tables in debug builds).
+[profile.dev.package.tiktoken]
+opt-level = 1
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp"] }

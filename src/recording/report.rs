@@ -16,6 +16,12 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
         },
         home.join(".outrim").join("records").display()
     );
+    writeln!(
+        report,
+        "Text tokens: {} (not model billing)\n",
+        crate::tokens::ENCODING
+    )
+    .unwrap();
     let events = events(home)?;
     let mut executed = BTreeSet::new();
     let mut fallbacks = BTreeSet::new();
@@ -68,16 +74,16 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
             .unwrap();
             writeln!(
                 report,
-                "  Outcome: {} · rule {} · chars {} → {}",
+                "  Outcome: {} · rule {} · tokens {} → {}",
                 serde_json::to_value(&event.outcome)?
                     .as_str()
                     .unwrap_or("unknown"),
                 event.applied_rule.as_deref().unwrap_or("none"),
                 event
-                    .before_chars
+                    .before_tokens
                     .map_or_else(|| "unknown".into(), |value| value.to_string()),
                 event
-                    .after_chars
+                    .after_tokens
                     .map_or_else(|| "unknown".into(), |value| value.to_string())
             )
             .unwrap();
@@ -134,7 +140,7 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
             if let Some(execution) = &event.execution {
                 writeln!(
                     report,
-                    "Execution: {} · {} · {} · chars {} → {}\n  Events: {}",
+                    "Execution: {} · {} · {} · tokens {} → {}\n  Events: {}",
                     execution.unit_id,
                     serde_json::to_value(execution.stream)?
                         .as_str()
@@ -143,10 +149,10 @@ pub fn render_detail(home: &Path, session: Option<&str>) -> io::Result<String> {
                         .as_str()
                         .unwrap_or("unknown"),
                     event
-                        .before_chars
+                        .before_tokens
                         .map_or_else(|| "unmeasured".into(), |count| count.to_string()),
                     event
-                        .after_chars
+                        .after_tokens
                         .map_or_else(|| "unmeasured".into(), |count| count.to_string()),
                     directory.join("events.jsonl").display()
                 )

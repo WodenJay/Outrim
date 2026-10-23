@@ -9,7 +9,7 @@ pub use settings::set_recording;
 
 use crate::{
     protocol::{RecordObservationRequest, VERSION},
-    storage,
+    storage, tokens,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,6 +59,9 @@ struct Event {
     parts: Vec<crate::protocol::ProcessingPart>,
     before_chars: Option<usize>,
     after_chars: Option<usize>,
+    token_encoding: String,
+    before_tokens: Option<u64>,
+    after_tokens: Option<u64>,
     original_path: Option<String>,
     original_references: Vec<OriginalReference>,
     content: Content,
@@ -92,7 +95,11 @@ impl Recorder {
         }
     }
 
-    pub(crate) fn record(&self, request: RecordObservationRequest) -> io::Result<()> {
+    pub(crate) fn record(
+        &self,
+        request: RecordObservationRequest,
+        counts: Option<tokens::Counts>,
+    ) -> io::Result<()> {
         if request.version != VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -133,6 +140,21 @@ impl Recorder {
                 .map(|text| instance.save(text, ".txt"))
                 .transpose()?
         };
+        let (before_tokens, after_tokens) = if request.metadata_only {
+            (None, None)
+        } else if let Some(counts) = counts {
+            (Some(counts.before), Some(counts.after))
+        } else if let (Some(original), Some(final_text)) =
+            (&request.original_text, &request.final_text)
+        {
+            let counts = tokens::Counts::new(original, final_text);
+            (Some(counts.before), Some(counts.after))
+        } else {
+            (
+                request.original_text.as_deref().map(tokens::count),
+                request.final_text.as_deref().map(tokens::count),
+            )
+        };
         let event = Event {
             format_version: 1,
             event_id: format!("{}-{}", instance.id, instance.sequence),
@@ -164,6 +186,9 @@ impl Recorder {
                 .final_text
                 .as_deref()
                 .map(|text| text.chars().count()),
+            token_encoding: tokens::ENCODING.into(),
+            before_tokens,
+            after_tokens,
             original_path: request.original_path,
             original_references,
             execution: request.execution,

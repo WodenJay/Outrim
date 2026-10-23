@@ -195,9 +195,9 @@ if (process.argv[2] === "--host") {
       );
       assert.equal(stats.outcomes.compressed, 6);
       assert.equal(stats.rules.read_dedup.count, 3);
-      assert.ok(stats.rules.read_dedup.after_chars < stats.rules.read_dedup.before_chars);
+      assert.ok(stats.rules.read_dedup.after_tokens < stats.rules.read_dedup.before_tokens);
       assert.equal(stats.outcomes.recovery_skipped, 1);
-      assert.ok(stats.recovery_chars > 0);
+      assert.ok(stats.recovery_tokens > 0);
       if (!recording) {
         assert.throws(() => readdirSync(join(home, ".outrim/records")), { code: "ENOENT" });
         continue;

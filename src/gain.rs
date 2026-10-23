@@ -1,6 +1,6 @@
 use crate::{
     protocol::{Disposition, RecordDeliveryRequest, RecoveryAttribution, RecoveryRequest, VERSION},
-    storage,
+    storage, tokens,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -42,8 +42,12 @@ impl Store {
         }
     }
 
-    pub(crate) fn record(&self, delivery: RecordDeliveryRequest) -> io::Result<()> {
-        if !valid_delivery(&delivery) {
+    pub(crate) fn record(
+        &self,
+        delivery: &RecordDeliveryRequest,
+        counts: tokens::Counts,
+    ) -> io::Result<()> {
+        if !valid_delivery(delivery) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid delivery statistics",
@@ -53,11 +57,15 @@ impl Store {
         let _lock = self.lock()?;
 
         let mut stats = self.read()?;
-        stats.record(&delivery);
+        stats.record(delivery, counts);
         self.persist(&stats)
     }
 
-    pub(crate) fn record_recovery(&self, recovery: &RecoveryRequest) -> io::Result<()> {
+    pub(crate) fn record_recovery(
+        &self,
+        recovery: &RecoveryRequest,
+        tokens: u64,
+    ) -> io::Result<()> {
         if recovery.version != VERSION || recovery.event_id.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -69,7 +77,7 @@ impl Store {
         let mut stats = self.read()?;
         if stats.recovery_events.insert(recovery.event_id.clone()) {
             if recovery.attribution == RecoveryAttribution::Confirmed {
-                stats.recovery_chars = stats.recovery_chars.saturating_add(recovery.characters);
+                stats.recovery_tokens = stats.recovery_tokens.saturating_add(tokens);
             }
             self.persist(&stats)?;
         }
@@ -123,7 +131,7 @@ impl Store {
 struct Stats {
     rules: BTreeMap<String, RuleStats>,
     outcomes: BTreeMap<Disposition, u64>,
-    recovery_chars: u64,
+    recovery_tokens: u64,
     recovery_events: BTreeSet<String>,
 }
 
@@ -131,12 +139,12 @@ struct Stats {
 #[serde(deny_unknown_fields)]
 struct RuleStats {
     count: u64,
-    before_chars: u64,
-    after_chars: u64,
+    before_tokens: u64,
+    after_tokens: u64,
 }
 
 impl Stats {
-    fn record(&mut self, delivery: &RecordDeliveryRequest) {
+    fn record(&mut self, delivery: &RecordDeliveryRequest, counts: tokens::Counts) {
         let count = self.outcomes.entry(delivery.disposition).or_default();
         *count = count.saturating_add(1);
 
@@ -146,8 +154,8 @@ impl Stats {
                 .entry(delivery.applied_rule.as_deref().unwrap().to_owned())
                 .or_default();
             rule.count = rule.count.saturating_add(1);
-            rule.before_chars = rule.before_chars.saturating_add(delivery.before_chars);
-            rule.after_chars = rule.after_chars.saturating_add(delivery.after_chars);
+            rule.before_tokens = rule.before_tokens.saturating_add(counts.before);
+            rule.after_tokens = rule.after_tokens.saturating_add(counts.after);
         }
     }
 }
@@ -157,14 +165,11 @@ fn valid_delivery(delivery: &RecordDeliveryRequest) -> bool {
         return false;
     }
     match delivery.disposition {
-        Disposition::Compressed => {
-            delivery
-                .applied_rule
-                .as_ref()
-                .is_some_and(|rule| !rule.is_empty())
-                && delivery.after_chars < delivery.before_chars
-        }
-        _ => delivery.applied_rule.is_none() && delivery.after_chars == delivery.before_chars,
+        Disposition::Compressed => delivery
+            .applied_rule
+            .as_ref()
+            .is_some_and(|rule| !rule.is_empty()),
+        _ => delivery.applied_rule.is_none() && delivery.final_text == delivery.original_text,
     }
 }
 
@@ -202,40 +207,40 @@ fn render_stats(stats: &Stats) -> String {
         return "No gain data.\n".into();
     }
 
-    let before_chars: u64 = stats.rules.values().map(|rule| rule.before_chars).sum();
-    let after_chars = stats.rules.values().map(|rule| rule.after_chars).sum();
-    let saved_chars = before_chars.saturating_sub(after_chars);
-    let savings_rate = percentage(saved_chars, before_chars);
+    let before_tokens: u64 = stats.rules.values().map(|rule| rule.before_tokens).sum();
+    let after_tokens: u64 = stats.rules.values().map(|rule| rule.after_tokens).sum();
+    let saved_tokens = i128::from(before_tokens) - i128::from(after_tokens);
+    let savings_rate = percentage(saved_tokens, before_tokens);
     let outputs = stats.outcomes.values().sum();
     let mut report = String::new();
 
     writeln!(report, "Gain\n").unwrap();
+    writeln!(
+        report,
+        "Text tokens: {} (not model billing)\n",
+        tokens::ENCODING
+    )
+    .unwrap();
     writeln!(report, "Processed outputs: {}", format_number(outputs)).unwrap();
     writeln!(
         report,
         "Compression savings: {} tokens",
-        format_tokens(estimate_tokens(saved_chars))
+        format_tokens(saved_tokens)
     )
     .unwrap();
     writeln!(report, "Compression rate: {savings_rate:.0}%").unwrap();
     writeln!(
         report,
         "Recovery cost: {} tokens",
-        format_tokens(estimate_tokens(stats.recovery_chars))
+        format_tokens(i128::from(stats.recovery_tokens))
     )
     .unwrap();
-    let net = i128::from(saved_chars) - i128::from(stats.recovery_chars);
-    writeln!(
-        report,
-        "Net savings: {}{} tokens",
-        if net < 0 { "-" } else { "" },
-        format_tokens(estimate_tokens(net.unsigned_abs() as u64))
-    )
-    .unwrap();
+    let net = saved_tokens - i128::from(stats.recovery_tokens);
+    writeln!(report, "Net savings: {} tokens", format_tokens(net)).unwrap();
     writeln!(
         report,
         "\nSavings: {}",
-        bar(saved_chars, before_chars, SAVINGS_BAR_WIDTH)
+        bar(saved_tokens, i128::from(before_tokens), SAVINGS_BAR_WIDTH)
     )
     .unwrap();
 
@@ -248,16 +253,16 @@ fn render_stats(stats: &Stats) -> String {
     .unwrap();
     let mut rules: Vec<_> = stats.rules.iter().collect();
     rules.sort_by(|(left_name, left), (right_name, right)| {
-        saved_chars_for(right)
-            .cmp(&saved_chars_for(left))
+        saved_tokens_for(right)
+            .cmp(&saved_tokens_for(left))
             .then_with(|| left_name.cmp(right_name))
     });
     if rules.is_empty() {
         writeln!(report, "No compressed outputs.").unwrap();
     }
-    let largest_saving = rules.first().map_or(0, |(_, rule)| saved_chars_for(rule));
+    let largest_saving = rules.first().map_or(0, |(_, rule)| saved_tokens_for(rule));
     for (name, rule) in rules {
-        let saved = saved_chars_for(rule);
+        let saved = saved_tokens_for(rule);
         let label = RULE_DISPLAY_NAMES
             .iter()
             .find_map(|(id, label)| (*id == name).then_some(*label))
@@ -266,8 +271,8 @@ fn render_stats(stats: &Stats) -> String {
             report,
             "{label:<22} {:>7} {:>10} {:>5.0}%  {}",
             format_number(rule.count),
-            format_tokens(estimate_tokens(saved)),
-            percentage(saved, rule.before_chars),
+            format_tokens(saved),
+            percentage(saved, rule.before_tokens),
             bar(saved, largest_saving, RULE_BAR_WIDTH)
         )
         .unwrap();
@@ -296,15 +301,11 @@ fn exists(path: &Path) -> io::Result<bool> {
     }
 }
 
-fn saved_chars_for(rule: &RuleStats) -> u64 {
-    rule.before_chars.saturating_sub(rule.after_chars)
+fn saved_tokens_for(rule: &RuleStats) -> i128 {
+    i128::from(rule.before_tokens) - i128::from(rule.after_tokens)
 }
 
-fn estimate_tokens(chars: u64) -> u64 {
-    chars / 4 + u64::from(chars % 4 >= 2)
-}
-
-fn percentage(numerator: u64, denominator: u64) -> f64 {
+fn percentage(numerator: i128, denominator: u64) -> f64 {
     if denominator == 0 {
         0.0
     } else {
@@ -312,16 +313,12 @@ fn percentage(numerator: u64, denominator: u64) -> f64 {
     }
 }
 
-fn bar(value: u64, maximum: u64, width: usize) -> String {
-    if maximum == 0 {
+fn bar(value: i128, maximum: i128, width: usize) -> String {
+    if maximum <= 0 || value <= 0 {
         return "░".repeat(width);
     }
-    let filled = if value == 0 {
-        0
-    } else {
-        ((u128::from(value) * width as u128 + u128::from(maximum) / 2) / u128::from(maximum))
-            .clamp(1, width as u128) as usize
-    };
+    let filled = ((value as u128 * width as u128 + maximum as u128 / 2) / maximum as u128)
+        .clamp(1, width as u128) as usize;
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
@@ -341,7 +338,10 @@ fn format_number(number: u64) -> String {
     formatted
 }
 
-fn format_tokens(tokens: u64) -> String {
+fn format_tokens(tokens: i128) -> String {
+    if tokens < 0 {
+        return format!("-{}", format_tokens(-tokens));
+    }
     if tokens < 1_000 {
         return tokens.to_string();
     }
