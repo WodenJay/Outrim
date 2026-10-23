@@ -26,7 +26,7 @@ use std::{
 pub(crate) struct Recorder {
     home: PathBuf,
     enabled: bool,
-    instance_id: String,
+    scope: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,7 +85,7 @@ impl Recorder {
         Self {
             home: home.into(),
             enabled,
-            instance_id: format!("r-{scope}"),
+            scope: scope.into(),
         }
     }
 
@@ -113,22 +113,49 @@ impl Recorder {
             .as_ref()
             .is_some_and(|d| d.recovery.is_some())
         {
-            for (directory, event) in events(&self.home)? {
+            for (directory, event) in recorded_events(&self.home, true)? {
                 if event.event_id == event_id {
-                    OpenOptions::new()
-                        .write(true)
-                        .open(directory.join("events.jsonl"))?
-                        .sync_all()?;
+                    let path = directory.join("events.jsonl");
+                    let bytes = fs::read(&path)?;
+                    let mut index = OpenOptions::new().append(true).open(path)?;
+                    if !bytes.ends_with(b"\n")
+                        && serde_json::from_slice::<Event>(
+                            bytes.rsplit(|b| *b == b'\n').next().unwrap_or_default(),
+                        )
+                        .is_ok()
+                    {
+                        index.write_all(b"\n")?;
+                    }
+                    index.sync_all()?;
                     return sync_directory(&directory);
                 }
             }
         }
         let root = self.home.join(".outrim/records");
-        let directory = root.join(&self.instance_id);
-        for path in [self.home.join(".outrim"), root, directory.clone()] {
-            storage::private_directory(&path)?;
-            sync_directory(path.parent().unwrap())?;
+        storage::private_directory(&root)?;
+        sync_directory(root.parent().unwrap())?;
+        let prefix = format!("r-{}-", self.scope);
+        let mut existing = None;
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with(&prefix)
+                && entry.file_type()?.is_dir()
+            {
+                existing = Some(entry.path());
+                break;
+            }
         }
+        // Scope survives transport retries, but an instance deleted by clear must
+        // never be recreated with its old identity and restarted sequence numbers.
+        let directory = match existing {
+            Some(path) => path,
+            None => tempfile::Builder::new()
+                .prefix(&prefix)
+                .tempdir_in(&root)?
+                .keep(),
+        };
+        storage::private_directory(&directory)?;
+        sync_directory(&root)?;
         let index_path = directory.join("events.jsonl");
         let bytes = match fs::read(&index_path) {
             Ok(bytes) => bytes,
@@ -221,7 +248,11 @@ impl Recorder {
         let event = Event {
             format_version: 1,
             event_id: event_id.into(),
-            instance_id: self.instance_id.clone(),
+            instance_id: directory
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
             sequence,
             timestamp_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -313,6 +344,10 @@ fn complete_events(bytes: &[u8]) -> io::Result<(Vec<Event>, usize)> {
 }
 
 fn events(home: &Path) -> io::Result<Vec<(PathBuf, Event)>> {
+    recorded_events(home, false)
+}
+
+fn recorded_events(home: &Path, include_tail: bool) -> io::Result<Vec<(PathBuf, Event)>> {
     let root = home.join(".outrim").join("records");
     let instances = match fs::read_dir(root) {
         Ok(entries) => entries,
@@ -334,7 +369,18 @@ fn events(home: &Path) -> io::Result<Vec<(PathBuf, Event)>> {
             Err(error) => return Err(error),
         };
         // A live writer may not yet have finished its last line, even its UTF-8.
-        for event in complete_events(&bytes)?.0 {
+        let (mut complete, length) = complete_events(&bytes)?;
+        if include_tail && length < bytes.len() {
+            match serde_json::from_slice::<Event>(&bytes[length..]) {
+                Ok(event) => {
+                    validate_event(&event)?;
+                    complete.push(event);
+                }
+                Err(error) if error.is_eof() => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        for event in complete {
             result.push((directory.clone(), event));
         }
     }
@@ -462,10 +508,7 @@ mod tests {
         let event_id = "b".repeat(64);
         let recorder = Recorder::new(home.path(), true, &scope);
         recorder.record(&event_id, request(), None).unwrap();
-        let directory = home
-            .path()
-            .join(".outrim/records")
-            .join(format!("r-{scope}"));
+        let directory = events(home.path()).unwrap()[0].0.clone();
         let index = directory.join("events.jsonl");
         let before = fs::read(&index).unwrap();
         Recorder::new(home.path(), true, &scope)
@@ -489,6 +532,7 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].1.event_id, next_id);
         assert_eq!(recorded[0].1.sequence, 1);
+        assert_ne!(recorded[0].0, directory);
     }
 
     #[test]
@@ -498,9 +542,7 @@ mod tests {
         let recorder = Recorder::new(home.path(), true, &scope);
         let first = "b".repeat(64);
         recorder.record(&first, request(), None).unwrap();
-        let index = home
-            .path()
-            .join(format!(".outrim/records/r-{scope}/events.jsonl"));
+        let index = events(home.path()).unwrap()[0].0.join("events.jsonl");
         let before = fs::read(&index).unwrap();
         let mut interrupted = before.clone();
         interrupted.extend_from_slice(b"{\"format_version\":1,\"event_id\":\"partial");
@@ -523,6 +565,31 @@ mod tests {
         fs::write(&index, &corrupt).unwrap();
         assert!(recorder.record(&first, request(), None).is_err());
         assert_eq!(fs::read(&index).unwrap(), corrupt);
+    }
+
+    #[test]
+    fn recovery_retry_after_caller_restart_repairs_the_original_index() {
+        let home = tempfile::tempdir().unwrap();
+        let event_id = "e".repeat(64);
+        let recovery = || {
+            let mut request = request();
+            request.metadata_only = true;
+            request.diagnostics = Some(serde_json::from_value(serde_json::json!({
+                "recovery": {"event_id":"read", "tokens":2, "attribution":"confirmed", "original_paths":[]}
+            })).unwrap());
+            request
+        };
+        Recorder::new(home.path(), true, &"a".repeat(64))
+            .record(&event_id, recovery(), None)
+            .unwrap();
+        let index = events(home.path()).unwrap()[0].0.join("events.jsonl");
+        let complete = fs::read(&index).unwrap();
+        fs::write(&index, &complete[..complete.len() - 1]).unwrap();
+        Recorder::new(home.path(), true, &"b".repeat(64))
+            .record(&event_id, recovery(), None)
+            .unwrap();
+        assert_eq!(fs::read(&index).unwrap(), complete);
+        assert_eq!(events(home.path()).unwrap().len(), 1);
     }
 
     #[test]
