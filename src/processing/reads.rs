@@ -28,6 +28,10 @@ pub struct Body {
     pub lines: Vec<Line>,
     #[serde(default)]
     pub suffix: String,
+    // Hosts may discard the final source newline. This rendered suffix prefix
+    // can be omitted on an exact repeat, but never establishes range evidence.
+    #[serde(default)]
+    pub final_line: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -183,7 +187,7 @@ impl Reads {
                 file: key,
                 selection: selection.key.clone(),
                 text: complete.then(|| original.to_owned()),
-                retain_exact: ranged,
+                retain_exact: ranged && comparison.identical,
                 lines,
             },
         );
@@ -220,9 +224,13 @@ impl Reads {
 impl Body {
     fn valid(&self, text: &str) -> bool {
         self.start > 0
-            && !self.lines.is_empty()
+            && (!self.lines.is_empty() || self.final_line.is_some())
+            && self.final_line.as_ref().is_none_or(|line| {
+                !line.is_empty() && !line.contains('\n') && self.suffix.starts_with(line)
+            })
             && self.start.checked_add(self.lines.len() as u64).is_some()
-            && (!self.end_relative || self.start == self.lines.len() as u64)
+            && (!self.end_relative
+                || (self.start == self.lines.len() as u64 && self.final_line.is_none()))
             && self.lines.iter().all(|line| {
                 !line.rendered.is_empty()
                     && !line.text.is_empty()
@@ -248,6 +256,18 @@ impl Body {
                 self.start + index as u64
             },
         )
+    }
+
+    pub(super) fn omit_exact(&self, selection: &Selection) -> String {
+        let mut complete = self.clone();
+        if let Some(line) = &self.final_line {
+            complete.suffix = self.suffix[line.len()..].to_owned();
+            complete.lines.push(Line {
+                text: line.clone(),
+                rendered: line.clone(),
+            });
+        }
+        complete.omit(selection, &vec![true; complete.lines.len()])
     }
 
     pub(super) fn omit(&self, selection: &Selection, omitted: &[bool]) -> String {
@@ -291,6 +311,7 @@ fn shell_body(key: &str, text: &str) -> Option<Body> {
         end_relative,
         prefix: String::new(),
         suffix: String::new(),
+        final_line: None,
         lines: text
             .split_inclusive('\n')
             .map(|line| Line {

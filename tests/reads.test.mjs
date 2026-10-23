@@ -74,10 +74,9 @@ test("Pi explicit-limit and byte-limit notices preserve the final source line", 
     expect(reconstructed(value)).toBe(text);
   }
 });
-test("ambiguous final and first partial lines never become evidence", () => {
-  for (const text of ["only", "\n[Showing lines 1-1 of 8. Use offset=2 to continue.]"]) {
-    expect(body("pi", text)).toBeUndefined();
-  }
+test("ambiguous final lines permit exact repeats but never become range evidence", () => {
+  expect(body("pi", "only")).toMatchObject({ lines: [], final_line: "only" });
+  expect(body("pi", "\n[Showing lines 1-1 of 8. Use offset=2 to continue.]")).toBeUndefined();
   expect(
     body(
       "pi",
@@ -86,7 +85,10 @@ test("ambiguous final and first partial lines never become evidence", () => {
       { truncated: true, firstLineExceedsLimit: true },
     ),
   ).toBeUndefined();
-  expect(body("opencode", "Read file source.ts, lines 1-1\n1: only")).toBeUndefined();
+  expect(body("opencode", "Read file source.ts, lines 1-1\n1: only")).toMatchObject({
+    lines: [],
+    final_line: "1: only",
+  });
 });
 test("unknown notices and inconsistent pagination are not range evidence", () => {
   expect(

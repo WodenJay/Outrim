@@ -6,6 +6,7 @@ interface ReadBody {
   prefix?: string;
   lines: { text: string; rendered: string }[];
   suffix: string;
+  final_line?: string;
 }
 
 export interface ReadSelection {
@@ -31,10 +32,12 @@ function piBody(text: string, start: number, facts: Record<string, unknown>): Re
     if (Number(notice[3] ?? notice[4]) !== end + 1) return undefined;
   }
   const lines = chunks.slice(0, -1).map((line) => ({ text: `${line}\n`, rendered: `${line}\n` }));
-  if (!lines.length) return undefined;
+  const final_line = chunks.at(-1);
+  if (!lines.length && !final_line) return undefined;
   return {
     start,
     lines,
+    ...(final_line ? { final_line } : {}),
     suffix: text.slice(lines.reduce((size, line) => size + line.rendered.length, 0)),
   };
 }
@@ -64,11 +67,13 @@ function openCodeBody(
     if (index < chunks.length - 1)
       lines.push({ text: `${chunk.slice(number.length)}\n`, rendered: `${chunk}\n` });
   }
-  if (!lines.length) return undefined;
+  const final_line = chunks.at(-1);
+  if (!final_line) return undefined;
   return {
     start,
     prefix,
     lines,
+    final_line,
     suffix: rest.slice(lines.reduce((size, line) => size + line.rendered.length, 0)),
   };
 }

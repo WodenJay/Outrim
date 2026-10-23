@@ -256,6 +256,52 @@ fn concurrent_conflicting_deliveries_do_not_mix_file_baselines() {
 }
 
 #[test]
+fn exact_native_repeats_omit_ambiguous_final_lines_but_keep_host_metadata() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("source.rs");
+    fs::write(&path, "source").unwrap();
+    let mut bridge = Bridge::new(home.path());
+    for short in [true, false] {
+        let end = if short { 11 } else { 10 };
+        let prefix = format!("Read file source.rs, lines 10-{end}\n");
+        let final_line = format!("{end}: {}", "x".repeat(10000));
+        let notice = format!(
+            "\n[Output truncated. Continue reading with offset: {}]",
+            end + 1
+        );
+        let rendered = if short { "10: short\n" } else { "" };
+        let text = format!("{prefix}{rendered}{final_line}{notice}");
+        let lines = if short {
+            vec![json!({"text": "short\n", "rendered": rendered})]
+        } else {
+            vec![]
+        };
+        let request = json!({
+            "type": "read_process", "host": "opencode", "session": format!("exact-{short}"),
+            "tool": {"name": "read", "input": {"path": path}, "source": "source_code"},
+            "text": text,
+            "selection": {
+                "path": path, "key": "native", "label": format!("10–{end}"),
+                "body": {"start": 10, "prefix": prefix, "lines": lines,
+                    "suffix": format!("{final_line}{notice}"), "final_line": final_line}
+            }
+        });
+        let first = bridge.send(request.clone());
+        bridge.adopt(&first);
+        let second = bridge.send(request);
+        let recovery = second["original_path"].as_str().unwrap();
+        assert_eq!(
+            second["text"],
+            format!(
+                "{prefix}[outrim]: Already read {}:10–{end}; verified unchanged, so omitted.\n{notice}\n[outrim]: Full output: read \"{recovery}\".",
+                path.display()
+            )
+        );
+        assert_eq!(fs::read_to_string(recovery).unwrap(), text);
+    }
+}
+
+#[test]
 fn ranges_require_verified_rendering_and_final_savings() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("source.rs");

@@ -167,7 +167,7 @@ impl Processor {
             .then(|| reads::Reads::key(request.host, &request.session, &selection))
             .flatten();
         let textual = reads::text_read(&request.text);
-        let comparison = key.as_ref().filter(|_| textual).map(|key| {
+        let mut comparison = key.as_ref().filter(|_| textual).map(|key| {
             self.reads
                 .borrow_mut()
                 .compare(key, &selection, &request.text)
@@ -176,17 +176,25 @@ impl Processor {
         let host = request.host;
         let session = request.session.clone();
         let mut response = self.process_selected(request, &policy);
-        if let Some(comparison) = &comparison {
-            let omission = if comparison.omitted.iter().any(|omit| *omit) {
+        if let Some(comparison) = &mut comparison {
+            let omission = if comparison.identical {
+                // Exact equality also verifies the host's ambiguous final line,
+                // without promoting that line into cross-selection evidence.
+                comparison.omitted.fill(true);
+                Some(comparison.body.as_ref().map_or_else(
+                    || {
+                        format!(
+                            "[outrim]: Already read {}:{}; verified unchanged, so omitted.\n",
+                            selection.path, selection.label
+                        )
+                    },
+                    |body| body.omit_exact(&selection),
+                ))
+            } else if comparison.omitted.iter().any(|omit| *omit) {
                 comparison
                     .body
                     .as_ref()
                     .map(|body| body.omit(&selection, &comparison.omitted))
-            } else if comparison.identical && comparison.body.is_none() {
-                Some(format!(
-                    "[outrim]: Already read {}:{}; verified unchanged, so omitted.\n",
-                    selection.path, selection.label
-                ))
             } else {
                 None
             };
