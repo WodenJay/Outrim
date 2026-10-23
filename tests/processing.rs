@@ -1310,7 +1310,9 @@ fn context_search_preserves_positions_body_and_windows_paths() {
 #[test]
 fn context_search_preserves_record_endings_and_terminal_blank_lines() {
     let home = tempfile::tempdir().unwrap();
-    let file = format!("workspace/{}/module.rs", "long-component/".repeat(12));
+    // Repeated paths must cover the recovery hint, including the temporary home.
+    let path_length = home.path().to_string_lossy().chars().count() + 256;
+    let file = format!("workspace/{}/module.rs", "x".repeat(path_length));
     for (first_ending, second_ending, tail) in [
         ("\n", "\n", ""),
         ("\r\n", "\r\n", "\r\n\r\n"),
@@ -1416,7 +1418,9 @@ fn malformed_context_search_results_are_not_partially_grouped() {
 fn context_search_requires_strict_final_unicode_savings_including_hint_separator() {
     let home = tempfile::tempdir().unwrap();
     let processor = Processor::new(home.path());
-    let file = format!("workspace/{}/a.rs", "long-component/".repeat(12));
+    // Ensure the probe compresses even when the temporary home has a long path.
+    let path_length = home.path().to_string_lossy().chars().count() + 256;
+    let file = format!("workspace/{}/a.rs", "x".repeat(path_length));
     let probe = processor.process(request(
         &format!("{file}:1:hit\n{file}-2-context"),
         Source::Search,
