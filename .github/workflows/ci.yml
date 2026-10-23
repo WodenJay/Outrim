@@ -118,16 +118,14 @@ jobs:
           RELEASE_NOTES: |
             ## What's changed
 
-            - Reuse verified overlapping file-read ranges across Pi, OpenCode, and supported native shell reads. Reads still execute; changed content and ambiguous final lines remain protected against stale reuse.
-            - Count exact o200k text tokens instead of character estimates across delivery, recovery, and recording. Include unchanged output in `outrim gain` totals and preserve signed savings.
-            - Recognize complete bannerless Bun test cycles and default test filenames while retaining guards against incomplete or opaque reports.
-            - Merge search-grouping diagnostics and distinguish inapplicable grouping from failed compression.
-            - Guide agents to search saved output when details are needed; preserve specific read-reuse guidance.
-            - Fix Windows command-rewrite tests to avoid platform argument-length limits.
+            - Reduce bookkeeping overhead with a resident tokenizer and buffered durable gain snapshots.
+            - Keep recording retries deduplicated across worker fallback and statistics clears; repair complete recovery events missing a final newline.
+            - Bound worker communication with absolute deadlines and safely fall back when workers are unavailable, hung, or incompatible.
+            - Preserve Windows path quoting and let installed binaries hand off to private worker copies across upgrades.
+            - Preserve valid legacy snapshots and remove the token billing disclaimer from `outrim gain` output.
+            - Stop isolated test residents before cleanup so Windows host checks can remove private worker executables.
 
-            **Compatibility:** Internal accounting payloads and stored statistics now use text/token fields, without migration or legacy compatibility.
-
-            Full comparison: https://github.com/WodenJay/Outrim/compare/v0.5.0...v0.6.0
+            Full comparison: https://github.com/WodenJay/Outrim/compare/v0.6.0...v0.6.1
 
             ## Installation
 
