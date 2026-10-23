@@ -44,8 +44,8 @@ pub struct Line {
 struct Baseline {
     exact: HashMap<String, String>,
     lines: BTreeMap<(bool, u64), String>,
-    // Ambiguous terminal newlines are comparable only within the same selection.
-    final_lines: HashMap<(String, u64), String>,
+    // Conflict-only source observations: unknown terminal newlines never allow omission.
+    final_lines: HashMap<u64, String>,
 }
 
 struct Pending {
@@ -140,10 +140,10 @@ impl Reads {
         let mut conflict = false;
         if let (Some(baseline), Some(body)) = (baseline, &body) {
             if let Some((position, text)) = body.final_observation() {
-                conflict = baseline.final_changed(&selection.key, position, text);
+                conflict = baseline.final_changed(position, text);
             }
             for (index, line) in body.lines.iter().enumerate() {
-                conflict |= baseline.changed(&selection.key, body.position(index), &line.text);
+                conflict |= baseline.changed(body.position(index), &line.text);
                 omitted[index] = baseline.lines.get(&body.position(index)) == Some(&line.text);
             }
         } else if let Some(old) = baseline.and_then(|b| b.exact.get(&selection.key)) {
@@ -202,29 +202,30 @@ impl Reads {
 
     pub(super) fn adopt(&mut self, id: &str) {
         if let Some(pending) = self.pending.remove(id) {
-            let conflict =
-                self.delivered.get(&pending.file).is_some_and(|baseline| {
-                    pending.lines.iter().any(|(position, text)| {
-                        baseline.changed(&pending.selection, *position, text)
-                    }) || pending.final_line.as_ref().is_some_and(|(position, text)| {
-                        baseline.final_changed(&pending.selection, *position, text)
-                    }) || (pending.lines.is_empty()
+            let conflict = self.delivered.get(&pending.file).is_some_and(|baseline| {
+                pending
+                    .lines
+                    .iter()
+                    .any(|(position, text)| baseline.changed(*position, text))
+                    || pending
+                        .final_line
+                        .as_ref()
+                        .is_some_and(|(position, text)| baseline.final_changed(*position, text))
+                    || (pending.lines.is_empty()
                         && pending.text.as_ref().is_some_and(|text| {
                             baseline
                                 .exact
                                 .get(&pending.selection)
                                 .is_some_and(|old| old != text)
                         }))
-                });
+            });
             if conflict {
                 self.delivered.remove(&pending.file);
                 self.pending.retain(|_, old| old.file != pending.file);
             }
             let baseline = self.delivered.entry(pending.file).or_default();
             if let Some((position, text)) = pending.final_line {
-                baseline
-                    .final_lines
-                    .insert((pending.selection.clone(), position), text);
+                baseline.final_lines.insert(position, text);
             }
             if let Some(text) = pending.text {
                 baseline.exact.insert(pending.selection, text);
@@ -237,18 +238,18 @@ impl Reads {
 }
 
 impl Baseline {
-    fn changed(&self, selection: &str, position: (bool, u64), text: &str) -> bool {
+    fn changed(&self, position: (bool, u64), text: &str) -> bool {
         self.lines.get(&position).is_some_and(|old| old != text)
             || (!position.0
                 && self
                     .final_lines
-                    .get(&(selection.to_owned(), position.1))
+                    .get(&position.1)
                     .is_some_and(|old| old != text.strip_suffix('\n').unwrap_or(text)))
     }
 
-    fn final_changed(&self, selection: &str, position: u64, text: &str) -> bool {
+    fn final_changed(&self, position: u64, text: &str) -> bool {
         self.final_lines
-            .get(&(selection.to_owned(), position))
+            .get(&position)
             .is_some_and(|old| old != text)
             || self
                 .lines

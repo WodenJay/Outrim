@@ -335,7 +335,10 @@ fn changed_native_final_line_returns_full_output_and_clears_file_evidence() {
             let pending = bridge.range(&path, 20, &line);
             let first = bridge.send(request("old", old_extra));
             bridge.adopt(&first);
-            let next = request("new", new_extra);
+            let mut next = request("new", new_extra);
+            if initially_partial {
+                next["selection"]["key"] = json!("different-limit");
+            }
             let changed = bridge.send(next.clone());
             assert_eq!(changed["text"], next["text"]);
             bridge.adopt(&changed);
