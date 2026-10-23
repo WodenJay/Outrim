@@ -229,6 +229,8 @@ export function hostOutputFacts(host: Host, value: unknown): Record<string, unkn
   const truncation = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const facts: Record<string, unknown> = {};
   if (typeof truncation.truncated === "boolean") facts.truncated = truncation.truncated;
+  if (host === "opencode" && typeof details.linesTruncated === "boolean")
+    facts.linesTruncated = details.linesTruncated;
   if (host === "pi") {
     for (const name of [
       "totalLines",

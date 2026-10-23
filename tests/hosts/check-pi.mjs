@@ -98,18 +98,18 @@ if (process.argv[2] === "--host") {
         await handlers.get("tool_call")(event, context);
         const text =
           toolName === "read"
-            ? body
+            ? body.replace(/\n$/, "")
             : spawnSync("bash", ["-c", event.input.command], { encoding: "utf8" }).stdout;
         const result = await handlers.get("tool_result")(
           { ...event, content: [{ type: "text", text }] },
           context,
         );
-        assert.equal(
-          index === 0
-            ? (result?.content[0].text ?? text)
-            : result?.content[0].text.includes("unchanged, so omitted"),
-          index === 0 ? body : true,
-        );
+        const delivered = result?.content[0].text ?? text;
+        if (toolName === "read" && index === 0) assert.equal(delivered, text);
+        else {
+          assert.ok(delivered.length < text.length);
+          assert.ok(delivered.includes("; verified unchanged, so omitted."));
+        }
       }
     }
   } finally {
@@ -148,7 +148,7 @@ if (process.argv[2] === "--host") {
       8,
       "two streams + recovery + custom tool + four delivered file reads",
     );
-    assert.equal(stats.rules.read_dedup.count, 2);
+    assert.equal(stats.rules.read_dedup.count, 3);
     assert.ok(stats.rules.read_dedup.after_chars < stats.rules.read_dedup.before_chars);
     const events = readdirSync(join(home, ".outrim/records")).flatMap((instance) =>
       readFileSync(join(home, ".outrim/records", instance, "events.jsonl"), "utf8")

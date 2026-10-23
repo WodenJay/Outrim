@@ -186,28 +186,56 @@ impl Processor {
             .then(|| reads::Reads::key(request.host, &request.session, &selection))
             .flatten();
         let textual = reads::text_read(&request.text);
-        let identical = textual
-            && key
-                .as_ref()
-                .is_some_and(|key| self.reads.borrow().identical(key, &request.text));
+        let mut comparison = key.as_ref().filter(|_| textual).map(|key| {
+            self.reads
+                .borrow_mut()
+                .compare(key, &selection, &request.text)
+        });
         let text = request.text.clone();
         let host = request.host;
         let session = request.session.clone();
         let mut response = self.process_selected(request, &policy);
-        if identical {
-            // Source/config protection remains intact for ordinary compression, but exact
-            // duplicate reads can omit the body with an always-readable original.
-            response.text = text.clone();
-            response.applied_rule = None;
-            response.original_path = None;
-            response.reason = None;
-            response.candidates.clear();
-            self.originals
-                .omit_read(host, &session, &selection, &mut response);
-        } else if let Some(key) = key {
-            self.reads
-                .borrow_mut()
-                .stage(key, &response, textual && response.text == text);
+        if let Some(comparison) = &mut comparison {
+            let omission = if comparison.identical {
+                // Exact equality also verifies the host's ambiguous final line,
+                // without promoting that line into cross-selection evidence.
+                comparison.omitted.fill(true);
+                Some(comparison.body.as_ref().map_or_else(
+                    || {
+                        format!(
+                            "[outrim]: Already read {}:{}; verified unchanged, so omitted.\n",
+                            selection.path, selection.label
+                        )
+                    },
+                    |body| body.omit_exact(&selection),
+                ))
+            } else if comparison.omitted.iter().any(|omit| *omit) {
+                comparison
+                    .body
+                    .as_ref()
+                    .map(|body| body.omit(&selection, &comparison.omitted))
+            } else {
+                None
+            };
+            if omission.is_some() || (comparison.conflict && comparison.body.is_some()) {
+                // Range conflicts deliver the complete observation, not a delta or
+                // another compression. Source/config protection still permits reuse.
+                response.text = text.clone();
+                response.disposition = Disposition::NoMatch;
+                response.applied_rule = None;
+                response.original_path = None;
+                response.reason = None;
+                response.candidates.clear();
+            }
+            if let Some(body) = omission {
+                self.originals
+                    .omit_read(host, &session, &body, &mut response);
+            }
+            if let Some(key) = key {
+                self.reads
+                    .borrow_mut()
+                    .stage(key, &selection, &response, &text, comparison);
+            }
         }
         response
     }

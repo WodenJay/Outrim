@@ -43,7 +43,74 @@ class CallSnapshots {
 // adapters/reads.ts
 import { realpathSync, statSync } from "fs";
 import { isAbsolute, resolve } from "path";
-function nativeReadSelection(host, input, text, cwd) {
+function piBody(text, start, facts) {
+  if (facts.firstLineExceedsLimit === true)
+    return;
+  const notice = /\n\n?\[(?:Showing lines (\d+)-(\d+) of \d+(?: \([^\r\n]+ limit\))?\. Use offset=(\d+) to continue\.|\d+ more lines in file\. Use offset=(\d+) to continue\.)\]$/.exec(text);
+  if (facts.truncated === true && !notice)
+    return;
+  if (/\[(?:Showing lines |\d+ more lines in file\.)/.test(text) && !notice)
+    return;
+  const source = notice ? text.slice(0, notice.index) : text;
+  const chunks = source.split(`
+`);
+  if (notice) {
+    const end = start + chunks.length - 1;
+    if (notice[1] && (Number(notice[1]) !== start || Number(notice[2]) !== end))
+      return;
+    if (Number(notice[3] ?? notice[4]) !== end + 1)
+      return;
+  }
+  const lines = chunks.slice(0, -1).map((line) => ({ text: `${line}
+`, rendered: `${line}
+` }));
+  const final_line = chunks.at(-1);
+  if (final_line === undefined)
+    return;
+  return {
+    start,
+    lines,
+    final_line: { text: final_line, rendered: final_line },
+    suffix: text.slice(lines.reduce((size, line) => size + line.rendered.length, 0))
+  };
+}
+function openCodeBody(text, start, end, prefix, facts) {
+  if (facts.linesTruncated === true)
+    return;
+  const rest = text.slice(prefix.length);
+  const notice = /\n\[Output truncated\. Continue reading with offset: (\d+)\]$/.exec(rest);
+  if (facts.truncated === true && !notice)
+    return;
+  if (notice && Number(notice[1]) !== end + 1)
+    return;
+  const source = notice ? rest.slice(0, notice.index) : rest;
+  const chunks = source.split(`
+`);
+  if (chunks.length !== end - start + 1)
+    return;
+  const lines = [];
+  for (let index = 0;index < chunks.length; index++) {
+    const number = `${start + index}: `;
+    const chunk = chunks[index];
+    if (chunk === undefined || !chunk.startsWith(number))
+      return;
+    if (index < chunks.length - 1)
+      lines.push({ text: `${chunk.slice(number.length)}
+`, rendered: `${chunk}
+` });
+  }
+  const final_line = chunks.at(-1);
+  if (!final_line)
+    return;
+  return {
+    start,
+    prefix,
+    lines,
+    final_line: { text: final_line.slice(`${end}: `.length), rendered: final_line },
+    suffix: rest.slice(lines.reduce((size, line) => size + line.rendered.length, 0))
+  };
+}
+function nativeReadSelection(host, input, text, cwd, facts = {}) {
   const path = host === "opencode" ? input.filePath ?? input.path : input.path;
   if (typeof path !== "string" || !isAbsolute(path) && !cwd)
     return;
@@ -52,26 +119,36 @@ function nativeReadSelection(host, input, text, cwd) {
   if (!Number.isSafeInteger(start) || start < 1 || limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
     return;
   let label;
+  let body;
   if (host === "opencode") {
-    const range = /^Read file [^\r\n]+, lines (\d+)-(\d+)\r?\n/.exec(text);
-    if (!range || Number(range[1]) !== start)
+    const range = /^Read file [^\r\n]+, lines (\d+)-(\d+)\n/.exec(text);
+    if (!range || Number(range[1]) !== start || Number(range[2]) < start)
       return;
     label = `${range[1]}\u2013${range[2]}`;
+    body = openCodeBody(text, start, Number(range[2]), range[0], facts);
   } else {
-    if (/\[(?:Showing lines |\d+ more lines in file\.)/.test(text))
+    if (!text)
       return;
+    body = piBody(text, start, facts);
     const count = text.split(`
 `).length - (text.endsWith(`
 `) ? 1 : 0);
-    if (!count)
-      return;
-    label = `${start}\u2013${start + count - 1}`;
+    const notice = /\[(?:Showing lines (\d+)-(\d+) of |\d+ more lines in file\. Use offset=(\d+) to continue\.)/.exec(text);
+    const end = notice ? Number(notice[2] ?? Number(notice[3]) - 1) : start + count - 1;
+    label = `${start}\u2013${end}`;
   }
+  if ((facts.truncated === true || facts.linesTruncated === true) && !body)
+    return;
   try {
     const absolute = realpathSync(resolve(cwd ?? "", path));
     if (!statSync(absolute).isFile())
       return;
-    return { path: absolute, key: JSON.stringify([host, start, limit ?? null]), label };
+    return {
+      path: absolute,
+      key: JSON.stringify([host, start, limit ?? null]),
+      label,
+      ...body ? { body } : {}
+    };
   } catch {
     return;
   }
@@ -345,6 +422,8 @@ function hostOutputFacts(host, value) {
   const facts = {};
   if (typeof truncation.truncated === "boolean")
     facts.truncated = truncation.truncated;
+  if (host === "opencode" && typeof details.linesTruncated === "boolean")
+    facts.linesTruncated = details.linesTruncated;
   if (host === "pi") {
     for (const name of [
       "totalLines",
@@ -627,7 +706,7 @@ function createBridge(host, executable, spawnProcess) {
       final_text: facts.metadataOnly ? null : final,
       metadata_only: facts.metadataOnly ?? false,
       diagnostics: {
-        adapter_build: "ed633b735fdb22dcbb57a0d83d91d864df2af7970de2fe8e6218172c916e371d",
+        adapter_build: "b71c29e9c230b0986df4e0342c73994332051d39ca72c7e78d8d3e57faaac6c5",
         output_origin: "host_result",
         completeness: "unknown",
         observed_chars: original === null ? null : Array.from(original).length,
@@ -857,8 +936,8 @@ function registerPiExtension(pi, options = {}) {
       bridge.recordDelivery(text, "recovery_skipped", context.signal);
       return;
     }
-    const processed = await bridge.process(observation.session, observation.tool, text, context.signal, cwd, selection, event.toolName === "read" && !event.isError && observation.diagnostics.completeness !== "host_truncated" ? (() => {
-      const selection = nativeReadSelection("pi", originalInput, text, cwd);
+    const processed = await bridge.process(observation.session, observation.tool, text, context.signal, cwd, selection, event.toolName === "read" && !event.isError ? (() => {
+      const selection = nativeReadSelection("pi", originalInput, text, cwd, observation.diagnostics.host_truncation ?? {});
       return selection ? { selection } : undefined;
     })() : undefined);
     bridge.recordObservation(observation, text, context.signal?.aborted ? text : processed?.text ?? text, {

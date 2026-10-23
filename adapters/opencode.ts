@@ -496,10 +496,15 @@ export async function registerOpenCodePlugin(
         controller.signal,
         policy,
         event.tool === "read" &&
-          observation.diagnostics.completeness !== "host_truncated" &&
           selection.texts.length === 1 &&
           (!Array.isArray(result.content) || result.content.length === 1)
-          ? nativeReadSelection("opencode", input, selection.texts[0] ?? "", cwd)
+          ? nativeReadSelection(
+              "opencode",
+              input,
+              selection.texts[0] ?? "",
+              cwd,
+              (observation.diagnostics.host_truncation as Record<string, unknown> | null) ?? {},
+            )
           : undefined,
       );
       if (closed || controller.signal.aborted) {

@@ -130,12 +130,15 @@ if (process.argv[2] === "--host") {
         await handlers.get("tool.execute.before")(event);
         const text =
           tool === "read"
-            ? `Read file ${source}, lines 1-200\n${body}`
+            ? `Read file ${source}, lines 1-200\n${Array.from({ length: 200 }, (_, index) => `${index + 1}: fn source_content() {}`).join("\n")}`
             : spawnSync("bash", ["-c", event.input.command], { encoding: "utf8" }).stdout;
         event.result = { content: text, metadata: { exit: 0 } };
         await handlers.get("tool.execute.after")(event);
-        if (index === 0) assert.equal(event.result.content, text);
-        else assert.ok(event.result.content.includes("unchanged, so omitted"));
+        if (tool === "read" && index === 0) assert.equal(event.result.content, text);
+        else {
+          assert.ok(event.result.content.length < text.length);
+          assert.ok(event.result.content.includes("; verified unchanged, so omitted."));
+        }
       }
     }
   } finally {
@@ -190,8 +193,8 @@ if (process.argv[2] === "--host") {
         8,
         "two streams + recovery + custom tool + four delivered file reads",
       );
-      assert.equal(stats.outcomes.compressed, 5);
-      assert.equal(stats.rules.read_dedup.count, 2);
+      assert.equal(stats.outcomes.compressed, 6);
+      assert.equal(stats.rules.read_dedup.count, 3);
       assert.ok(stats.rules.read_dedup.after_chars < stats.rules.read_dedup.before_chars);
       assert.equal(stats.outcomes.recovery_skipped, 1);
       assert.ok(stats.recovery_chars > 0);

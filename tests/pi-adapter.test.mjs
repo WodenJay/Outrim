@@ -302,6 +302,32 @@ describe("Pi execution adapter", () => {
 });
 
 describe("Pi native result adapter", () => {
+  it("passes complete source lines through recognized host truncation, retaining the notice", async () => {
+    const path = join(homedir(), "paginated source.txt");
+    writeFileSync(path, "one\ntwo\nthree");
+    const h = harness();
+    const text = "one\ntwo\n\n[Showing lines 1-2 of 3. Use offset=3 to continue.]";
+    const pending = h.result(
+      event({
+        toolName: "read",
+        input: { path },
+        isError: false,
+        content: [{ type: "text", text }],
+        details: { truncation: { truncated: true, truncatedBy: "lines", lastLinePartial: false } },
+      }),
+    );
+    const child = h.children[0];
+    const request = child.writes[0];
+    expect(request.type).toBe("read_process");
+    expect(request.text).toBe(text);
+    expect(request.selection.body.lines).toEqual([{ text: "one\n", rendered: "one\n" }]);
+    expect(request.selection.body.suffix).toBe(
+      "two\n\n[Showing lines 1-2 of 3. Use offset=3 to continue.]",
+    );
+    child.respond(request, { text, disposition: "protected", applied_rule: null });
+    await pending;
+    h.handlers.get("session_shutdown")();
+  });
   it("supplies native read facts and adopts only delivered bodies across compacts", async () => {
     const path = join(homedir(), "native source.txt");
     writeFileSync(path, "source");
