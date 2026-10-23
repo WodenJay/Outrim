@@ -4,11 +4,57 @@ pub(super) fn compact(lines: &[&str], view: &[String]) -> Option<String> {
     if view.iter().any(|line| line.contains('\x1b')) {
         return None;
     }
-    // A launcher/script name alone does not identify a reporter. Its versioned
-    // banner and file headings must both be present in this supplied stream.
-    if !view.iter().any(|line| banner(line)) {
-        return None;
+    let mut result = String::new();
+    let mut start = 0;
+    for end in (0..view.len())
+        .filter(|&i| summary(&view[i]))
+        .map(|i| i + 1)
+        .chain(std::iter::once(view.len()))
+    {
+        let cycle = &view[start..end];
+        if cycle.iter().any(|line| banner(line)) || complete_without_banner(cycle) {
+            result.push_str(&compact_cycle(&lines[start..end], cycle));
+        } else {
+            result.extend(lines[start..end].iter().copied());
+        }
+        start = end;
     }
+    Some(result)
+}
+
+// A script name or echo alone is not reporter evidence. Without a banner,
+// require a report-shaped start and native statistics at this cycle's end.
+fn complete_without_banner(view: &[String]) -> bool {
+    let mut opening = view.iter().skip_while(|line| line.is_empty());
+    let mut first = opening.next().map(String::as_str).unwrap_or_default();
+    if first == "$ bun test" || first.starts_with("$ bun test ") {
+        first = opening
+            .find(|line| !line.is_empty())
+            .map(String::as_str)
+            .unwrap_or_default();
+    }
+    if !heading(first) || !view.last().is_some_and(|line| summary(line)) {
+        return false;
+    }
+    let mut pass_count = false;
+    let mut fail_count = false;
+    for line in view[..view.len() - 1].iter().rev() {
+        let words: Vec<_> = line.split_whitespace().collect();
+        match words.as_slice() {
+            [count, status @ ("pass" | "fail" | "skip" | "todo")]
+                if count.parse::<usize>().is_ok() =>
+            {
+                pass_count |= *status == "pass";
+                fail_count |= *status == "fail";
+            }
+            [count, "expect()", "calls"] if count.parse::<usize>().is_ok() => {}
+            _ => break,
+        }
+    }
+    pass_count && fail_count
+}
+
+fn compact_cycle(lines: &[&str], view: &[String]) -> String {
     let mut result = String::new();
     let mut i = 0;
     let mut in_file = false;
@@ -44,7 +90,7 @@ pub(super) fn compact(lines: &[&str], view: &[String]) -> Option<String> {
         result.push_str(lines[i]);
         i += 1;
     }
-    Some(result)
+    result
 }
 
 fn banner(line: &str) -> bool {

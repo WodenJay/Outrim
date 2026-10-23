@@ -54,6 +54,81 @@ fn bun_tests() -> String {
     )
 }
 
+// Historical split result streams, captured by Outrim 0.4.0 with Bun 1.4.3.
+#[test]
+fn bun_historical_result_streams_fold_only_owned_passes_and_recover_exactly() {
+    let home = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    let banner = "bun test v1.4.3 (c6da4a4d3)\n";
+    assert_eq!(processor.process(request("bun test", banner)).text, banner);
+    for (id, text, input_chars, folded) in [
+        (
+            "r-ogg4qt-2",
+            include_str!("fixtures/logs/bun-r-ogg4qt-2.txt"),
+            17653,
+            11,
+        ),
+        (
+            "r-7cC5WY-2",
+            include_str!("fixtures/logs/bun-r-7cC5WY-2.txt"),
+            6219,
+            68,
+        ),
+        (
+            "r-9lDQVX-2",
+            include_str!("fixtures/logs/bun-r-9lDQVX-2.txt"),
+            9731,
+            0,
+        ),
+    ] {
+        for command in ["bun test", "bun run test"] {
+            let response = processor.process(request(command, text));
+            let expected = if folded == 0 {
+                Disposition::NotShorter
+            } else {
+                Disposition::Compressed
+            };
+            assert_eq!(response.disposition, expected, "{id}: {command}");
+            assert_eq!(text.chars().count(), input_chars);
+            let omitted: usize = response
+                .text
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("[outrim]: ")?
+                        .strip_suffix(" successful tests omitted")?
+                        .parse::<usize>()
+                        .ok()
+                })
+                .sum();
+            assert_eq!(omitted, folded, "{id}");
+            for line in text.lines().filter(|line| !line.starts_with("(pass) ")) {
+                assert!(
+                    response.text.lines().any(|kept| kept == line),
+                    "{id}: {line}"
+                );
+            }
+            if id == "r-ogg4qt-2" {
+                let diagnostics = text.split_once("  ^ this test timed out").unwrap().1;
+                assert!(response.text.contains(diagnostics));
+            }
+            if let Some(path) = response.original_path {
+                assert_eq!(fs::read_to_string(path).unwrap(), text);
+            } else {
+                // Multiline names make this stream opaque after its first two
+                // pass lines; folding that prefix cannot pay for recovery.
+                assert_eq!(response.text, text);
+                assert_eq!(response.candidates[0].reason, "not_shorter_with_hint");
+            }
+            let final_chars = response.text.chars().count();
+            assert!(final_chars <= input_chars);
+            println!(
+                "{id}: input={input_chars}, folded={omitted}, final={final_chars}, saved={}",
+                input_chars - final_chars
+            );
+        }
+    }
+}
+
 #[test]
 fn bun_supports_default_test_file_names() {
     let home = tempfile::tempdir().unwrap();

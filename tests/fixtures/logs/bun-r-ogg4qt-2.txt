@@ -1,0 +1,365 @@
+
+tests\distribution.test.mjs:
+(pass) shell installer selects outrim-x86_64-unknown-linux-gnu and configures PATH once [1127.51ms]
+(pass) shell installer selects outrim-aarch64-unknown-linux-gnu and configures PATH once [1132.25ms]
+(pass) shell installer selects outrim-aarch64-apple-darwin and configures PATH once [1160.97ms]
+(pass) shell installer accepts a trusted local artifact without download or PATH changes [294.72ms]
+(pass) unsupported macOS Intel fails before download [136.33ms]
+(pass) checksum mismatch preserves an installed binary [451.25ms]
+(pass) download failure preserves an installed binary [251.22ms]
+(pass) PowerShell download: none [749.08ms]
+(pass) PowerShell download: checksum [903.25ms]
+(pass) PowerShell download: download [847.88ms]
+(pass) PowerShell installs a local artifact without changing user PATH or agent config [824.61ms]
+
+tests\opencode-adapter.test.mjs:
+(fail) preserves explicit OpenCode completeness without retaining result content [5000.94ms]
+  ^ this test timed out after 5000ms.
+160 |         ["build", "adapters/opencode-plugin.ts", "--target=bun", `--outfile=${asset}`],
+161 |         { cwd: root, stdio: "ignore" },
+162 |       );
+163 |       const raw = readFileSync(asset, "utf8").replace(/\r\n/g, "\n");
+164 |       const identity = createHash("sha256").update(raw).digest("hex");
+165 |       expect(raw.replaceAll("__OUTRIM_ADAPTER_BUILD__", identity)).toBe(
+                                                                         ^
+error: expect(received).toBe(expected)
+
+@@ -1,13 +1,50 @@
+  "// @bun
+  // adapters/opencode.ts
+  import { spawn as nodeSpawn } from "child_process";
+  
++ // adapters/reads.ts
++ import { realpathSync, statSync } from "fs";
++ import { isAbsolute, resolve } from "path";
++ function nativeReadSelection(host, input, text, cwd) {
++   const path = input.path;
++   if (typeof path !== "string" || !isAbsolute(path) && !cwd)
++     return;
++   const start = input.offset ?? 1;
++   const limit = input.limit;
++   if (!Number.isSafeInteger(start) || start < 1 || limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1))
++     return;
++   let label;
++   if (host === "opencode") {
++     const range = /^Read file [^\r\n]+, lines (\d+)-(\d+)\r?\n/.exec(text);
++     if (!range || Number(range[1]) !== start)
++       return;
++     label = `${range[1]}\u2013${range[2]}`;
++   } else {
++     if (/\[(?:Showing lines |\d+ more lines in file\.)/.test(text))
++       return;
++     const count = text.split(`
++ `).length - (text.endsWith(`
++ `) ? 1 : 0);
++     if (!count)
++       return;
++     label = `${start}\u2013${start + count - 1}`;
++   }
++   try {
++     const absolute = realpathSync(resolve(cwd ?? "", path));
++     if (!statSync(absolute).isFile())
++       return;
++     return { path: absolute, key: JSON.stringify([host, start, limit ?? null]), label };
++   } catch {
++     return;
++   }
++ }
++ 
+  // adapters/shared.ts
+- import { readFileSync, realpathSync, statSync } from "fs";
++ import { readFileSync, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
+  import { homedir } from "os";
+- import { isAbsolute, join, relative } from "path";
++ import { isAbsolute as isAbsolute2, join, relative } from "path";
+  var TEST_COMMANDS = [
+    /^\s*cargo\s+test(?=\s|$)/i,
+    /^\s*(?:bun|npm|pnpm|yarn)\s+(?:test|run\s+test)(?=\s|$)/i,
+    /^\s*(?:pytest|go\s+test|jest|vitest)(?=\s|$)/i
+  ];
+@@ -236,17 +273,17 @@
+        return unattributed;
+      paths = words;
+    } else
+      return unattributed;
+    try {
+-     const root = realpathSync(join(homedir(), ".outrim", "outputs"));
++     const root = realpathSync2(join(homedir(), ".outrim", "outputs"));
+      return paths.length > 0 && paths.every((path) => {
+-       if (!isAbsolute(path))
++       if (!isAbsolute2(path))
+          return false;
+-       const resolved = realpathSync(path);
++       const resolved = realpathSync2(path);
+        const within = relative(root, resolved);
+-       return within !== "" && !within.startsWith("..") && !isAbsolute(within) && statSync(resolved).isFile();
++       return within !== "" && !within.startsWith("..") && !isAbsolute2(within) && statSync2(resolved).isFile();
+      }) ? { attribution: "confirmed", original_paths: [...new Set(paths)] } : unattributed;
+    } catch {
+      return unattributed;
+    }
+  }
+@@ -364,23 +401,36 @@
+        } catch {
+          fail(currentChild);
+        }
+      });
+    }
+-   async function process(session, tool, text, signal) {
++   let readEpoch = 0;
++   const readIds = new WeakMap;
++   function resetReads() {
++     readEpoch++;
++     exchange({ type: "read_reset" });
++   }
++   async function process(session, tool, text, signal, read) {
++     const epoch = readEpoch;
+      const payload = { version: 2, id: "", host, session, tool, text };
+-     const response = await exchange({ ...payload }, signal);
++     const facts = !read ? {} : ("selection" in read) ? { type: "read_process", selection: read.selection } : { type: "shell_read", tool_call_id: read.call };
++     const response = await exchange({ ...payload, ...facts }, signal);
++     if (read && epoch !== readEpoch)
++       return;
+      if (!response || typeof response.text !== "string" || typeof response.disposition !== "string" || !(response.applied_rule === null || typeof response.applied_rule === "string"))
+        return;
+-     return {
++     const result = {
+        text: response.text,
+        disposition: response.disposition,
+        appliedRule: response.applied_rule,
+        originalPath: typeof response.original_path === "string" ? response.original_path : null,
+        candidates: Array.isArray(response.candidates) ? response.candidates : [],
+        reason: typeof response.reason === "string" ? response.reason : null
+      };
++     if (read)
++       readIds.set(result, { id: response.id, epoch });
++     return result;
+    }
+    async function rewrite(session, toolCallId, command, dialect, signal) {
+      const response = await exchange({
+        type: "rewrite",
+        host,
+@@ -402,10 +452,15 @@
+      if (!currentChild)
+        return;
+      const texts = typeof original === "string" ? [original] : original;
+      const beforeChars = texts.reduce((total, text) => total + Array.from(text).length, 0);
+      const processed = typeof outcome === "object" ? outcome : undefined;
++     const read = processed && readIds.get(processed);
++     if (read && read.epoch === readEpoch) {
++       readIds.delete(processed);
++       exchange({ type: "read_delivered", request_id: read.id }, signal);
++     }
+      const id = String(++nextId);
+      const request = {
+        type: "record_delivery",
+        version: 2,
+        id,
+@@ -448,11 +503,11 @@
+        tool: facts.metadataOnly ? { ...context.tool, input: null } : context.tool,
+        original_text: facts.metadataOnly ? null : original,
+        final_text: facts.metadataOnly ? null : final,
+        metadata_only: facts.metadataOnly ?? false,
+        diagnostics: {
+-         adapter_build: "4ac0f6f4e45cba60022b167e06d2f65e6c8c63293cb27a708ea0b8a3863dc2f7",
++         adapter_build: "9983151896d4240d23e9b4627fdaef1fc977d3b9c92d9ee889b14c3720c2bf09",
+          output_origin: "host_result",
+          completeness: "unknown",
+          observed_chars: original === null ? null : Array.from(original).length,
+          observed_bytes: original === null ? null : Buffer.byteLength(original, "utf8"),
+          ...context.diagnostics,
+@@ -530,10 +585,11 @@
+      }
+    }
+    return {
+      rewrite,
+      process,
++     resetReads,
+      recordDelivery,
+      recordObservation,
+      recordRecovery,
+      recordWrapping,
+      close
+@@ -709,10 +765,35 @@
+  `) ?? null, null, {
+          outcome: event.status === "cancelled" ? "cancelled" : "unsupported",
+          reason: event.status === "completed" ? "shell_result_observed" : "host_error",
+          metadataOnly: true
+        });
++       const result = event.result;
++       const selection = result ? textSelection(result) : undefined;
++       const input = record(recoveryInput);
++       if (event.status !== "completed" || isCodeModeCall || !result || !selection || selection.texts.length !== 1 || !input || inputReferencesOriginals(input) || Array.isArray(result.content) && result.content.length !== 1)
++         return;
++       const text = selection.texts[0];
++       const controller = new AbortController;
++       let calls = activeCallsBySession.get(event.sessionID);
++       if (!calls) {
++         calls = new Set;
++         activeCallsBySession.set(event.sessionID, calls);
++       }
++       calls.add(controller);
++       try {
++         const processed = await bridge.process(event.sessionID, { name: event.tool, input, source: "unknown", exit_code: exitCodeFrom(result.metadata) }, text, controller.signal, { call: event.id });
++         if (!processed || closed || controller.signal.aborted || processed.reason === "unverified_shell_read")
++           return;
++         bridge.recordDelivery(text, processed, controller.signal);
++         if (processed.text !== text)
++           event.result = { ...result, content: selection.apply([processed.text]) };
++       } finally {
++         calls.delete(controller);
++         if (!calls.size)
++           activeCallsBySession.delete(event.sessionID);
++       }
+        return;
+      }
+      const input = record(event.input);
+      const result = event.result;
+      const selection = result ? textSelection(result) : undefined;
+@@ -756,11 +837,14 @@
+        const processedResults = await Promise.all(selection.texts.map((text) => bridge.process(event.sessionID, {
+          name: event.tool,
+          input,
+          source: sourceFor("opencode", event.tool, input),
+          exit_code: exitCodeFrom(result.metadata)
+-       }, text, controller.signal)));
++       }, text, controller.signal, event.tool === "read" && selection.texts.length === 1 && (!Array.isArray(result.content) || result.content.length === 1) ? (() => {
++         const selection = nativeReadSelection("opencode", input, text, undefined);
++         return selection ? { selection } : undefined;
++       })() : undefined)));
+        if (closed || controller.signal.aborted) {
+          bridge.recordObservation(observation, originalText, originalText, {
+            ...processingFacts(processedResults),
+            outcome: "cancelled",
+            reason: "host_signal_aborted"
+@@ -824,16 +908,29 @@
+    const events = context.event;
+    if (events) {
+      eventLoop = (async () => {
+        try {
+          for await (const event of events.subscribe({ signal: eventController.signal })) {
++           if ([
++             "session.compaction.ended",
++             "session.forked",
++             "session.revert.committed",
++             "session.revert.cleared"
++           ].includes(String(event.type))) {
++             bridge.resetReads();
++             for (const session of activeCallsBySession.keys())
++               abortSession(session);
++             continue;
++           }
+            if (event.type !== "session.deleted" && event.type !== "session.execution.interrupted") {
+              continue;
+            }
+            const session = sessionIdFrom(event);
+-           if (session)
++           if (session) {
+              abortSession(session);
++             bridge.resetReads();
++           }
+          }
+        } catch {}
+      })();
+    }
+    return async () => {
+
+- Expected  - 12
++ Received  + 109
+
+      at <anonymous> (D:\vibe_project\Outrim\.worktrees\issue-35\tests\opencode-adapter.test.mjs:165:68)
+(fail) OpenCode adapter > keeps the embedded plugin asset in sync with its sources [42.04ms]
+(pass) OpenCode adapter > rewrites bash input before native execution [1.55ms]
+(pass) OpenCode adapter > rewrites pwsh input before native execution [0.22ms]
+(pass) OpenCode adapter > rewrites powershell input before native execution [0.11ms]
+(pass) OpenCode adapter > restores the original if the launch shell changed to cmd.exe [0.26ms]
+(pass) OpenCode adapter > restores the original if the launch shell changed to /bin/zsh [0.11ms]
+(pass) OpenCode adapter > restores the original if the launch shell changed to pwsh.exe [0.12ms]
+(pass) OpenCode adapter > does not guess the unknown dialect or unknown session/agent [0.24ms]
+(pass) OpenCode adapter > does not guess the cmd dialect or unknown session/agent [0.08ms]
+(pass) OpenCode adapter > does not guess the zsh dialect or unknown session/agent [0.08ms]
+(pass) OpenCode adapter > forgets stale descriptions and preserves Code Mode machine consumers [0.37ms]
+(pass) OpenCode adapter > leaves input untouched when the bridge declines: {} [0.18ms]
+(pass) OpenCode adapter > leaves input untouched when the bridge declines: {"command":null} [0.25ms]
+(pass) OpenCode adapter > leaves input untouched when the bridge declines: {"command":"cargo test"} [0.18ms]
+(pass) OpenCode adapter > passes through startup failure and bridge exit [0.43ms]
+(pass) OpenCode adapter > does not adopt a pending rewrite after interrupt [0.31ms]
+(pass) OpenCode adapter > does not adopt a pending rewrite after dispose [0.11ms]
+(pass) OpenCode adapter > does not overwrite input changed by another hook while awaiting the bridge [0.22ms]
+(fail) OpenCode adapter > never compresses or accounts for shell results [5000.98ms]
+  ^ this test timed out after 5000ms.
+(fail) OpenCode adapter > never compresses or accounts for bash results [5000.98ms]
+  ^ this test timed out after 5000ms.
+(fail) OpenCode adapter > never compresses or accounts for powershell results [5000.97ms]
+  ^ this test timed out after 5000ms.
+(pass) OpenCode adapter > correlates concurrent sessions without changing non-command arguments [2.29ms]
+(pass) OpenCode adapter > preserves structured data and per-part delivery for non-shell tools [1.23ms]
+(pass) OpenCode adapter > preserves grep search classification [0.29ms]
+(pass) OpenCode adapter > preserves find search classification [0.13ms]
+(pass) OpenCode adapter > preserves ls search classification [0.13ms]
+(pass) OpenCode adapter > preserves glob search classification [0.14ms]
+(pass) OpenCode adapter > preserves list search classification [0.10ms]
+(pass) OpenCode adapter > protects recovered originals but not paths mentioned in output [0.58ms]
+455 |     expect(h.child.requests()).toEqual([]);
+456 |     h.interrupt("a");
+457 |     await Promise.resolve();
+458 |     const nested = after({ tool: "read", sessionID: "b" });
+459 |     await h.call("tool.execute.after", nested);
+460 |     expect(h.child.requests()).toEqual([]);
+                                     ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   {
++     "id": "1",
++     "type": "read_reset",
++     "version": 2,
++   },
++ ]
+
+- Expected  - 1
++ Received  + 7
+
+      at <anonymous> (D:\vibe_project\Outrim\.worktrees\issue-35\tests\opencode-adapter.test.mjs:460:32)
+(fail) OpenCode adapter > preserves Code Mode nesting across colliding session call IDs [4.82ms]
+(pass) OpenCode adapter > releases pending non-shell results on unload without adopting them [0.38ms]
+
+tests\pi-adapter.test.mjs:
+(pass) Pi execution adapter > retains only explicit host truncation facts on metadata-only results [1.83ms]
+(pass) Pi execution adapter > records wrapping stages without retaining newly observed inputs [1.20ms]
+(pass) Pi execution adapter > mutates the original argument object before native execution [0.15ms]
+(pass) Pi execution adapter > never processes or accounts bash results [0.14ms]
+(pass) Pi execution adapter > never processes or accounts powershell results [0.05ms]
+(pass) Pi execution adapter > never processes or accounts shell results [0.03ms]
+(pass) Pi execution adapter > keeps the command unchanged on %s [0.14ms]
+(pass) Pi execution adapter > keeps the command unchanged on error [0.14ms]
+(pass) Pi execution adapter > keeps the command unchanged on exit [0.06ms]
+(pass) Pi execution adapter > keeps the command unchanged on cancel [0.06ms]
+(pass) Pi execution adapter > keeps the command unchanged on shutdown [0.07ms]
+(pass) Pi execution adapter > fails open when the rewrite bridge stops responding [5000.94ms]
+(pass) Pi execution adapter > does not overwrite a command changed while awaiting the bridge [0.29ms]
+(pass) Pi execution adapter > keeps custom or unknown-dialect shell tools native [0.12ms]
+(pass) Pi execution adapter > leaves nested calls and non-shell calls alone [0.09ms]
+(pass) Pi native result adapter > charges returned Unicode text per successful recovery, including shell results [5.16ms]
+(pass) Pi native result adapter > preserves metadata and correlates concurrent native tool results [1.87ms]
+(pass) Pi native result adapter > protects original references and unsupported content [0.57ms]
+(pass) Pi native result adapter > cancels without delivering, then reuses the same bridge [0.27ms]
+(pass) Pi native result adapter > fails open, records delivery, and restarts the bridge [0.16ms]
+
+6 tests failed:
+(fail) preserves explicit OpenCode completeness without retaining result content [5000.94ms]
+  ^ this test timed out after 5000ms.
+(fail) OpenCode adapter > keeps the embedded plugin asset in sync with its sources [42.04ms]
+(fail) OpenCode adapter > never compresses or accounts for shell results [5000.98ms]
+  ^ this test timed out after 5000ms.
+(fail) OpenCode adapter > never compresses or accounts for bash results [5000.98ms]
+  ^ this test timed out after 5000ms.
+(fail) OpenCode adapter > never compresses or accounts for powershell results [5000.97ms]
+  ^ this test timed out after 5000ms.
+(fail) OpenCode adapter > preserves Code Mode nesting across colliding session call IDs [4.82ms]
+
+ 57 pass
+ 6 fail
+ 204 expect() calls
+Ran 63 tests across 3 files. [32.99s]
