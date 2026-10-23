@@ -63,7 +63,9 @@ fn independent_commands_reuse_a_resident_bookkeeper() {
         "disposition": "no_match", "applied_rule": null,
         "original_text": "hello world", "final_text": "hello world"
     });
-    let mut first = Bridge::start(home.path());
+    let mut trailing_home = home.path().as_os_str().to_owned();
+    trailing_home.push(std::path::MAIN_SEPARATOR.to_string());
+    let mut first = Bridge::start(std::path::Path::new(&trailing_home));
     assert_eq!(first.exchange(&delivery)["acknowledged"], true);
     first.stop();
     let endpoint_path = home.path().join(".outrim/bookkeeping.json");
@@ -74,6 +76,43 @@ fn independent_commands_reuse_a_resident_bookkeeper() {
     assert_eq!(fs::read(endpoint_path).unwrap(), endpoint);
     let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
     assert!(report.contains("Processed outputs: 2"), "{report}");
+}
+
+#[test]
+fn unavailable_startup_and_incompatible_worker_fall_back_without_archiving_text() {
+    for incompatible in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join(".outrim");
+        fs::create_dir(&directory).unwrap();
+        let lock = if incompatible {
+            fs::write(directory.join("bookkeeping.json"), serde_json::to_vec(&json!({
+                "version":999, "build":"old", "port":1, "secret":"a".repeat(64), "pid":std::process::id()
+            })).unwrap()).unwrap();
+            let lock = fs::File::create(directory.join("bookkeeping-worker.lock")).unwrap();
+            lock.lock().unwrap();
+            Some(lock)
+        } else {
+            fs::create_dir(directory.join("bookkeeping-start.lock")).unwrap();
+            None
+        };
+        let mut bridge = Bridge::start(home.path());
+        assert_eq!(
+            bridge.exchange(&json!({
+                "type":"record_delivery", "version":2, "id":"fallback",
+                "disposition":"no_match", "applied_rule":null,
+                "original_text":"private-marker-48", "final_text":"private-marker-48"
+            }))["acknowledged"],
+            true
+        );
+        assert!(bridge.stop().stderr.is_empty());
+        let report = String::from_utf8(gain_command(home.path(), &[]).stdout).unwrap();
+        assert!(report.contains("Processed outputs: 1"), "{report}");
+        let stats = fs::read_to_string(directory.join("gain.json")).unwrap();
+        assert!(!stats.contains("private-marker-48"));
+        assert!(!directory.join("records").exists());
+        assert!(!directory.join("workers").exists());
+        drop(lock);
+    }
 }
 
 #[test]

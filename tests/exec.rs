@@ -343,7 +343,12 @@ fn storage_and_diagnostic_failures_never_replace_the_child_result() {
                 .args(["gain", "--detail"])
                 .output()
                 .unwrap();
-            assert_eq!(String::from_utf8_lossy(&detail.stdout).matches("  Events:").count(), 2);
+            assert_eq!(
+                String::from_utf8_lossy(&detail.stdout)
+                    .matches("  Events:")
+                    .count(),
+                2
+            );
         } else if broken == "records" {
             assert_eq!(
                 errors.matches("[outrim] Failed to save recording:").count(),

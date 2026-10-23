@@ -10,6 +10,7 @@ mod exec;
 mod upgrade;
 
 pub(crate) fn run() -> ExitCode {
+    outrim::bookkeeping::enable_resident();
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     if arguments.len() == 3 && arguments[0] == "__bookkeeping" {
         return finish(outrim::bookkeeping::run(

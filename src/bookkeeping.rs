@@ -9,6 +9,7 @@ use std::{
     io::{self, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
+    sync::OnceLock,
     thread,
     time::{Duration, Instant},
 };
@@ -17,6 +18,16 @@ const WIRE_VERSION: u32 = 1;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_FRAME: usize = 128 * 1024 * 1024;
 const ENDPOINT: &str = "bookkeeping.json";
+static EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Opt the CLI into launching its private worker entry point. Library consumers
+/// still share a running resident, but never launch their own executable as one.
+#[doc(hidden)]
+pub fn enable_resident() {
+    if let Ok(path) = std::env::current_exe() {
+        let _ = EXECUTABLE.set(path);
+    }
+}
 
 pub(crate) struct Client {
     home: PathBuf,
@@ -213,7 +224,7 @@ fn apply(home: &Path, submission: Submission) -> Outcome {
     outcome
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Endpoint {
     version: u32,
@@ -231,16 +242,18 @@ fn endpoint(home: &Path) -> io::Result<Endpoint> {
 fn remote(home: &Path, submission: &Submission) -> io::Result<Outcome> {
     // Restrict the discovery capability before reading it or sending any text.
     storage::private_directory(&home.join(".outrim"))?;
-    if let Ok(current) = endpoint(home) {
+    let attempted = endpoint(home).ok();
+    let mut stopped = false;
+    if let Some(current) = &attempted {
         if current.version == WIRE_VERSION
             && current.build == submission.build
-            && let Ok(result) = exchange(&current, submission)
+            && let Ok(result) = exchange(current, submission)
         {
             return Ok(result);
         }
         // Only the authenticated old worker can act on this request. An unknown
         // wire version is never asked to parse a new-format bookkeeping event.
-        if current.version == WIRE_VERSION {
+        if current.version == WIRE_VERSION && current.build != submission.build {
             let stop = Submission {
                 version: WIRE_VERSION,
                 build: current.build.clone(),
@@ -249,11 +262,12 @@ fn remote(home: &Path, submission: &Submission) -> io::Result<Outcome> {
                 recording: false,
                 operation: Operation::Stop,
             };
-            let _ = exchange(&current, &stop);
+            stopped = exchange(current, &stop).is_ok();
         }
     }
     let _startup = storage::lock(&home.join(".outrim/bookkeeping-start.lock"))?;
     if let Ok(current) = endpoint(home)
+        && attempted.as_ref() != Some(&current)
         && current.version == WIRE_VERSION
         && current.build == submission.build
         && let Ok(result) = exchange(&current, submission)
@@ -261,10 +275,16 @@ fn remote(home: &Path, submission: &Submission) -> io::Result<Outcome> {
         return Ok(result);
     }
     // An unresponsive/incompatible live worker must not cause repeated spawns.
-    let worker_lock = open_lock(&home.join(".outrim/bookkeeping-worker.lock"))?;
-    worker_lock
-        .try_lock()
-        .map_err(|_| io::Error::other("Resident unavailable"))?;
+    let lock_path = home.join(".outrim/bookkeeping-worker.lock");
+    let worker_lock = if stopped {
+        // A stop reply precedes process teardown; wait only for its bounded exit.
+        storage::lock(&lock_path)?
+    } else {
+        let lock = open_lock(&lock_path)?;
+        lock.try_lock()
+            .map_err(|_| io::Error::other("Resident unavailable"))?;
+        lock
+    };
     drop(worker_lock);
     spawn(home, &submission.build)?;
     let deadline = Instant::now() + TIMEOUT;
@@ -294,11 +314,9 @@ fn open_lock(path: &Path) -> io::Result<File> {
 }
 
 fn spawn(home: &Path, build: &str) -> io::Result<()> {
-    let executable = std::env::current_exe()?;
-    // Library consumers without the CLI entry point use the synchronous adapter.
-    if !executable.file_stem().is_some_and(|name| name == "outrim") {
-        return Err(io::Error::other("Resident executable unavailable"));
-    }
+    let executable = EXECUTABLE
+        .get()
+        .ok_or_else(|| io::Error::other("Resident executable unavailable"))?;
     #[cfg(windows)]
     let executable = {
         let directory = home.join(".outrim/workers");
@@ -306,7 +324,7 @@ fn spawn(home: &Path, build: &str) -> io::Result<()> {
         let target = directory.join(format!("worker-{build}.exe"));
         if !target.exists() {
             let mut copy = tempfile::NamedTempFile::new_in(&directory)?;
-            io::copy(&mut File::open(&executable)?, copy.as_file_mut())?;
+            io::copy(&mut File::open(executable)?, copy.as_file_mut())?;
             copy.as_file().sync_all()?;
             copy.persist_noclobber(&target).map_err(|e| e.error)?;
         }
@@ -319,7 +337,7 @@ fn spawn(home: &Path, build: &str) -> io::Result<()> {
         }
         target
     };
-    launch(&executable, home, build)
+    launch(executable.as_path(), home, build)
 }
 
 #[cfg(unix)]
@@ -366,7 +384,9 @@ fn launch(executable: &Path, home: &Path, build: &str) -> io::Result<()> {
     let mut arguments = OsString::from("\"");
     arguments.push(executable);
     arguments.push("\" __bookkeeping \"");
-    arguments.push(home);
+    // A final backslash would escape the closing quote in Windows argv parsing.
+    // Windows paths cannot contain quotes; appending '.' also handles drive roots.
+    arguments.push(home.join("."));
     arguments.push("\" \"");
     arguments.push(build);
     arguments.push("\"");
@@ -419,11 +439,10 @@ pub fn run(home: &Path, build: &str) -> io::Result<()> {
     file.flush()?;
     storage::replace(file, &home.join(".outrim").join(ENDPOINT))?;
     for connection in listener.incoming() {
-        let Ok(mut stream) = connection else {
+        let Ok(stream) = connection else {
             continue;
         };
-        let _ = stream.set_read_timeout(Some(TIMEOUT));
-        let _ = stream.set_write_timeout(Some(TIMEOUT));
+        let mut stream = Connection::new(stream);
         if authenticate(&mut stream, &current.secret, false).is_err() {
             continue;
         }
@@ -449,17 +468,58 @@ pub fn run(home: &Path, build: &str) -> io::Result<()> {
 
 fn exchange(endpoint: &Endpoint, submission: &Submission) -> io::Result<Outcome> {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.port));
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(200))?;
-    stream.set_read_timeout(Some(TIMEOUT))?;
-    stream.set_write_timeout(Some(TIMEOUT))?;
+    let mut stream = Connection::new(TcpStream::connect_timeout(
+        &address,
+        Duration::from_millis(200),
+    )?);
     authenticate(&mut stream, &endpoint.secret, true)?;
     write_frame(&mut stream, submission)?;
     read_frame(&mut stream)
 }
 
+// One absolute deadline covers authentication, framing and the commit reply.
+// Per-syscall timeouts alone would let a trickling peer extend the wait forever.
+struct Connection {
+    stream: TcpStream,
+    deadline: Instant,
+}
+
+impl Connection {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            deadline: Instant::now() + TIMEOUT,
+        }
+    }
+
+    fn remaining(&self) -> io::Result<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "Resident exchange timed out"))
+    }
+}
+
+impl Read for Connection {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(bytes)
+    }
+}
+
+impl Write for Connection {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 // Mutual challenge/response: never send text to an unauthenticated server,
 // including when another user has rebound a stale loopback port. Nonces prevent replay.
-fn authenticate(stream: &mut TcpStream, secret: &str, client: bool) -> io::Result<()> {
+fn authenticate(stream: &mut Connection, secret: &str, client: bool) -> io::Result<()> {
     if !valid_id(secret) {
         return Err(io::Error::other("Invalid resident capability"));
     }
@@ -515,7 +575,7 @@ fn verify(left: &[u8; 32], right: &[u8; 32]) -> io::Result<()> {
     }
 }
 
-fn write_frame(stream: &mut TcpStream, value: &impl Serialize) -> io::Result<()> {
+fn write_frame(stream: &mut Connection, value: &impl Serialize) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.len() > MAX_FRAME {
         return Err(io::Error::other("Bookkeeping message too large"));
@@ -524,7 +584,7 @@ fn write_frame(stream: &mut TcpStream, value: &impl Serialize) -> io::Result<()>
     stream.write_all(&bytes)
 }
 
-fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> io::Result<T> {
+fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut Connection) -> io::Result<T> {
     let mut size = [0; 4];
     stream.read_exact(&mut size)?;
     let size = u32::from_be_bytes(size) as usize;
@@ -573,6 +633,74 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn trickling_peer_cannot_extend_the_exchange_deadline() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        let writer = thread::spawn(move || {
+            for _ in 0..100 {
+                if peer.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let start = Instant::now();
+        let mut connection = Connection {
+            stream: client,
+            deadline: start + Duration::from_millis(100),
+        };
+        assert!(connection.read_exact(&mut [0; 100]).is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        drop(connection);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn hung_resident_falls_back_after_a_bounded_wait() {
+        let home = tempfile::tempdir().unwrap();
+        storage::private_directory(&home.path().join(".outrim")).unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let endpoint = Endpoint {
+            version: WIRE_VERSION,
+            build: build_id().unwrap(),
+            port: listener.local_addr().unwrap().port(),
+            secret: random_id().unwrap(),
+            pid: std::process::id(),
+        };
+        fs::write(
+            home.path().join(".outrim/bookkeeping.json"),
+            serde_json::to_vec(&endpoint).unwrap(),
+        )
+        .unwrap();
+        let lock = open_lock(&home.path().join(".outrim/bookkeeping-worker.lock")).unwrap();
+        lock.lock().unwrap();
+        let worker = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut connection = Connection::new(stream);
+            authenticate(&mut connection, &endpoint.secret, false).unwrap();
+            read_frame::<Submission>(&mut connection).unwrap();
+            // Remain alive without committing or replying until the client leaves.
+            connection
+                .stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            assert_eq!(connection.stream.read(&mut [0]).unwrap(), 0);
+        });
+        let start = Instant::now();
+        assert!(Client::new(home.path(), false).delivery(serde_json::from_value(json!({
+            "type":"record_delivery", "version":2, "id":"hung", "disposition":"no_match", "applied_rule":null,
+            "original_text":"hello", "final_text":"hello"
+        })).unwrap()));
+        assert!(start.elapsed() < Duration::from_secs(8));
+        worker.join().unwrap();
+        let stats: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.path().join(".outrim/gain.json")).unwrap())
+                .unwrap();
+        assert_eq!(stats["outcomes"]["no_match"], 1);
+    }
+
+    #[test]
     fn lost_commit_reply_falls_back_without_duplicate_gain_or_recording() {
         let home = tempfile::tempdir().unwrap();
         storage::private_directory(&home.path().join(".outrim")).unwrap();
@@ -592,7 +720,8 @@ mod tests {
         let worker_home = home.path().to_owned();
         // The real transport and stores, failing only at the commit/reply seam.
         let worker = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let mut stream = Connection::new(stream);
             authenticate(&mut stream, &endpoint.secret, false).unwrap();
             let submission = read_frame::<Submission>(&mut stream).unwrap();
             let result = apply(&worker_home, submission);

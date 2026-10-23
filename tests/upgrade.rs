@@ -249,6 +249,52 @@ fn new_release_updates_in_place_using_new_binary_resources() {
     }
 }
 
+#[test]
+fn resident_does_not_lock_upgrade_and_next_build_switches_workers() {
+    let install = Installation::new();
+    let binary = release_binary();
+    let release = Release::serve("999.0.0", Some(binary.clone()), false);
+    let deliver = || {
+        let mut child = install
+            .command(&["bridge"], &release)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(child.stdin.take().unwrap(), "{}", serde_json::json!({
+            "type":"record_delivery", "version":2, "id":"upgrade", "disposition":"no_match", "applied_rule":null,
+            "original_text":"hello", "final_text":"hello"
+        })).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["acknowledged"], true);
+    };
+    deliver();
+    let endpoint = install.home.path().join(".outrim/bookkeeping.json");
+    let old: serde_json::Value = serde_json::from_slice(&fs::read(&endpoint).unwrap()).unwrap();
+    let result = install.run(&["upgrade"], &release);
+    assert!(result.status.success(), "{result:?}");
+    wait_until(|| fs::read(&install.binary).is_ok_and(|content| content == binary));
+    // Install a real bookkeeping-capable next build after checking the release fixture.
+    fs::copy(env!("CARGO_BIN_EXE_outrim"), &install.binary).unwrap();
+    // Native executables permit trailing data; distinguish this build fingerprint.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&install.binary)
+        .unwrap()
+        .write_all(b"next-test-build")
+        .unwrap();
+    deliver();
+    let new: serde_json::Value = serde_json::from_slice(&fs::read(&endpoint).unwrap()).unwrap();
+    assert_ne!(old["build"], new["build"]);
+    assert_ne!(old["secret"], new["secret"]);
+    let gain = install.run(&["gain"], &release);
+    assert!(String::from_utf8_lossy(&gain.stdout).contains("Processed outputs: 2"));
+}
+
 #[cfg(windows)]
 struct Bridge(std::process::Child);
 #[cfg(windows)]
