@@ -177,12 +177,14 @@ impl Recorder {
                 Err(error) => return Err(error.into()),
             }
         };
-        let mut index = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&index_path)?;
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut index = options.open(&index_path)?;
         if let Some(event) = recovered {
             // Preserve a valid object whose terminating newline was interrupted.
             index.seek(SeekFrom::End(0))?;

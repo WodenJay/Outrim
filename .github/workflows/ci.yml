@@ -124,6 +124,7 @@ jobs:
             - Preserve Windows path quoting and let installed binaries hand off to private worker copies across upgrades.
             - Preserve valid legacy snapshots and remove the token billing disclaimer from `outrim gain` output.
             - Stop isolated test residents before cleanup so Windows host checks can remove private worker executables.
+            - Restore owner-only Unix permissions when creating recording indexes.
 
             Full comparison: https://github.com/WodenJay/Outrim/compare/v0.6.0...v0.6.1
 
