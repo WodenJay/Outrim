@@ -1,7 +1,10 @@
-//! Session-local exact read baselines. Only adopted, unchanged bodies establish a baseline.
+//! Session-local read evidence. Only adopted source text establishes a baseline.
 use crate::protocol::{Host, Request, Response};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+};
 use tempfile::NamedTempFile;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -9,6 +12,49 @@ pub struct Selection {
     pub path: String,
     pub key: String,
     pub label: String,
+    #[serde(default)]
+    pub body: Option<Body>,
+}
+
+/// Verified host formatting, separate from source lines. The rendered pieces must
+/// reproduce the actual tool result exactly before any evidence can be reused.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Body {
+    pub start: u64,
+    #[serde(default)]
+    pub end_relative: bool,
+    #[serde(default)]
+    pub prefix: String,
+    pub lines: Vec<Line>,
+    #[serde(default)]
+    pub suffix: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Line {
+    pub text: String,
+    pub rendered: String,
+}
+
+#[derive(Default)]
+struct Baseline {
+    exact: HashMap<String, String>,
+    lines: BTreeMap<(bool, u64), String>,
+}
+
+struct Pending {
+    file: String,
+    selection: String,
+    text: Option<String>,
+    retain_exact: bool,
+    lines: Vec<((bool, u64), String)>,
+}
+
+pub(super) struct Comparison {
+    pub body: Option<Body>,
+    pub omitted: Vec<bool>,
+    pub conflict: bool,
+    pub identical: bool,
 }
 
 #[derive(Deserialize)]
@@ -22,8 +68,8 @@ pub struct ReadRequest {
 
 #[derive(Default)]
 pub(super) struct Reads {
-    delivered: HashMap<String, String>,
-    pending: HashMap<String, (String, Option<String>)>,
+    delivered: HashMap<String, Baseline>,
+    pending: HashMap<String, Pending>,
     shells: HashMap<String, (NamedTempFile, Selection)>,
 }
 
@@ -61,6 +107,7 @@ impl Reads {
             return None;
         }
         selection.path = receipt.path.to_string_lossy().into_owned();
+        selection.body = shell_body(&selection.key, text);
         Some(selection)
     }
 
@@ -73,31 +120,185 @@ impl Reads {
         if !path.is_file() {
             return None;
         }
-        serde_json::to_string(&(host, session, path, &selection.key)).ok()
+        serde_json::to_string(&(host, session, path)).ok()
     }
 
-    pub(super) fn identical(&self, key: &str, text: &str) -> bool {
-        self.delivered
-            .get(key)
-            .is_some_and(|previous| previous == text)
+    pub(super) fn compare(&mut self, key: &str, selection: &Selection, text: &str) -> Comparison {
+        let body = selection.body.clone().filter(|body| body.valid(text));
+        let baseline = self.delivered.get(key);
+        let identical = baseline
+            .and_then(|b| b.exact.get(&selection.key))
+            .is_some_and(|old| old == text);
+        let mut omitted = vec![false; body.as_ref().map_or(0, |b| b.lines.len())];
+        let mut conflict = false;
+        if let (Some(baseline), Some(body)) = (baseline, &body) {
+            for (index, line) in body.lines.iter().enumerate() {
+                if let Some(old) = baseline.lines.get(&body.position(index)) {
+                    if old != &line.text {
+                        conflict = true;
+                    } else {
+                        omitted[index] = true;
+                    }
+                }
+            }
+        } else if let Some(old) = baseline.and_then(|b| b.exact.get(&selection.key)) {
+            conflict = old != text;
+        }
+        if conflict {
+            self.delivered.remove(key);
+            // A file conflict is an epoch change: older unadopted results cannot
+            // revive its evidence even if their acknowledgements arrive later.
+            self.pending.retain(|_, pending| pending.file != key);
+            omitted.fill(false);
+        }
+        Comparison {
+            body,
+            omitted,
+            conflict,
+            identical: identical && !conflict,
+        }
     }
 
-    pub(super) fn stage(&mut self, key: String, response: &Response, complete: bool) {
+    pub(super) fn stage(
+        &mut self,
+        key: String,
+        selection: &Selection,
+        response: &Response,
+        original: &str,
+        comparison: &Comparison,
+    ) {
+        let complete = response.text == original;
+        let ranged = response.applied_rule.as_deref() == Some("read_dedup");
+        let mut lines = Vec::new();
+        if let Some(body) = &comparison.body {
+            for (index, line) in body.lines.iter().enumerate() {
+                if complete || (ranged && !comparison.omitted[index]) {
+                    lines.push((body.position(index), line.text.clone()));
+                }
+            }
+        }
         self.pending.insert(
             response.id.clone(),
-            (key, complete.then(|| response.text.clone())),
+            Pending {
+                file: key,
+                selection: selection.key.clone(),
+                text: complete.then(|| original.to_owned()),
+                retain_exact: ranged,
+                lines,
+            },
         );
     }
 
     pub(super) fn adopt(&mut self, id: &str) {
-        if let Some((key, text)) = self.pending.remove(id) {
-            if let Some(text) = text {
-                self.delivered.insert(key, text);
-            } else {
-                self.delivered.remove(&key);
+        if let Some(pending) = self.pending.remove(id) {
+            let conflict = self.delivered.get(&pending.file).is_some_and(|baseline| {
+                pending.lines.iter().any(|(position, text)| {
+                    baseline.lines.get(position).is_some_and(|old| old != text)
+                }) || (pending.lines.is_empty()
+                    && pending.text.as_ref().is_some_and(|text| {
+                        baseline
+                            .exact
+                            .get(&pending.selection)
+                            .is_some_and(|old| old != text)
+                    }))
+            });
+            if conflict {
+                self.delivered.remove(&pending.file);
+                self.pending.retain(|_, old| old.file != pending.file);
             }
+            let baseline = self.delivered.entry(pending.file).or_default();
+            if let Some(text) = pending.text {
+                baseline.exact.insert(pending.selection, text);
+            } else if !pending.retain_exact {
+                baseline.exact.remove(&pending.selection);
+            }
+            baseline.lines.extend(pending.lines);
         }
     }
+}
+
+impl Body {
+    fn valid(&self, text: &str) -> bool {
+        self.start > 0
+            && !self.lines.is_empty()
+            && self.start.checked_add(self.lines.len() as u64).is_some()
+            && (!self.end_relative || self.start == self.lines.len() as u64)
+            && self.lines.iter().all(|line| {
+                !line.rendered.is_empty()
+                    && !line.text.is_empty()
+                    && line.text.split_inclusive('\n').count() == 1
+            })
+            && format!(
+                "{}{}{}",
+                self.prefix,
+                self.lines
+                    .iter()
+                    .map(|line| line.rendered.as_str())
+                    .collect::<String>(),
+                self.suffix
+            ) == text
+    }
+
+    fn position(&self, index: usize) -> (bool, u64) {
+        (
+            self.end_relative,
+            if self.end_relative {
+                self.start - index as u64
+            } else {
+                self.start + index as u64
+            },
+        )
+    }
+
+    pub(super) fn omit(&self, selection: &Selection, omitted: &[bool]) -> String {
+        let mut output = self.prefix.clone();
+        let mut index = 0;
+        while index < self.lines.len() {
+            if !omitted[index] {
+                output.push_str(&self.lines[index].rendered);
+                index += 1;
+                continue;
+            }
+            let start = index;
+            while index < self.lines.len() && omitted[index] {
+                index += 1;
+            }
+            let range = if self.end_relative {
+                format!("last {} lines", self.position(start).1)
+            } else {
+                format!("{}–{}", self.position(start).1, self.position(index - 1).1)
+            };
+            output.push_str(&format!(
+                "[outrim]: Already read {}:{range}; verified unchanged, so omitted.\n",
+                selection.path
+            ));
+        }
+        output.push_str(&self.suffix);
+        output
+    }
+}
+
+fn shell_body(key: &str, text: &str) -> Option<Body> {
+    let parts: Vec<_> = key.strip_prefix("shell:")?.split(':').collect();
+    let (start, end_relative) = match parts.as_slice() {
+        ["whole"] | ["head", _] => (1, false),
+        ["from", start] | ["sed", start] | ["sed", start, _] => (positive(start)?, false),
+        ["tail", _] => (text.split_inclusive('\n').count() as u64, true),
+        _ => return None,
+    };
+    Some(Body {
+        start,
+        end_relative,
+        prefix: String::new(),
+        suffix: String::new(),
+        lines: text
+            .split_inclusive('\n')
+            .map(|line| Line {
+                text: line.into(),
+                rendered: line.into(),
+            })
+            .collect(),
+    })
 }
 
 fn shell_key(host: Host, session: &str, call: &str) -> String {
@@ -188,6 +389,7 @@ pub(crate) fn shell_selection(words: &[String]) -> Option<Selection> {
         path: args[0].clone(),
         key: format!("shell:{key}"),
         label,
+        body: None,
     })
 }
 

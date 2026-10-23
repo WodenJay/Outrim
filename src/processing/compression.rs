@@ -101,23 +101,15 @@ impl Originals {
         }
     }
 
-    pub(super) fn omit_read(
-        &self,
-        host: Host,
-        session: &str,
-        selection: &super::reads::Selection,
-        response: &mut Response,
-    ) {
+    pub(super) fn omit_read(&self, host: Host, session: &str, body: &str, response: &mut Response) {
         let result = (|| -> io::Result<_> {
             let file = self.reserve(host, session)?;
             let path = file
                 .path()
                 .to_str()
                 .ok_or_else(|| io::Error::other("non-Unicode original path"))?;
-            let text = format!(
-                "[outrim]: Already read {}:{}; unchanged, so omitted. Reread: read \"{path}\".",
-                selection.path, selection.label
-            );
+            let separator = if body.ends_with('\n') { "" } else { "\n" };
+            let text = format!("{body}{separator}[outrim]: Full output: read \"{path}\".");
             if text.chars().count() >= response.text.chars().count() {
                 return Ok(None);
             }
