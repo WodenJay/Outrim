@@ -18,6 +18,25 @@ use crate::{
 };
 use std::{cell::RefCell, path::Path};
 
+enum Grouping {
+    Unrecognized,
+    NotApplicable,
+    Candidate(String),
+}
+
+impl Grouping {
+    fn recognized(&self) -> bool {
+        !matches!(self, Self::Unrecognized)
+    }
+
+    fn candidate(self) -> Option<String> {
+        match self {
+            Self::Candidate(text) => Some(text),
+            Self::Unrecognized | Self::NotApplicable => None,
+        }
+    }
+}
+
 pub struct Processor {
     home: std::path::PathBuf,
     originals: compression::Originals,
@@ -233,12 +252,14 @@ impl Processor {
                         }
                     }
                     Method::SearchHitGroups => {
-                        if let Some(text) = search_hits::group_search_hits(&response.text) {
+                        if let Some(text) =
+                            search_hits::group_search_hits(&response.text).candidate()
+                        {
                             candidates.push(("search_hit_groups", text));
                         }
                     }
                     Method::PathPrefixGroups => {
-                        if let Some(text) = path_list::group_prefixes(&response.text) {
+                        if let Some(text) = path_list::group_prefixes(&response.text).candidate() {
                             candidates.push(("path_prefix_groups", text));
                         }
                     }
@@ -262,11 +283,13 @@ impl Processor {
             return response;
         }
         // Search paths are query scope only when the output parses as hit records.
-        let search_candidate = if matches!(request.tool.source, Source::Search) {
+        let search_grouping = if matches!(request.tool.source, Source::Search) {
             search_hits::group_search_hits(&response.text)
         } else {
-            None
+            Grouping::Unrecognized
         };
+        let mut recognized_grouping = search_grouping.recognized();
+        let search_candidate = search_grouping.candidate();
         if protection::protected(&request.tool) && search_candidate.is_none() {
             response.disposition = Disposition::Protected;
             response.reason = Some("source_or_configuration_protection".into());
@@ -284,7 +307,11 @@ impl Processor {
         } else if let Some(grouped) = search_candidate {
             vec![("search_hit_groups", grouped)]
         } else if let Some(grouped) = matches!(request.tool.source, Source::Search)
-            .then(|| path_list::group_prefixes(&response.text))
+            .then(|| {
+                let grouping = path_list::group_prefixes(&response.text);
+                recognized_grouping |= grouping.recognized();
+                grouping.candidate()
+            })
             .flatten()
         {
             vec![("path_prefix_groups", grouped)]
@@ -292,7 +319,9 @@ impl Processor {
             json_candidates
         } else {
             response.reason = Some(
-                if matches!(request.tool.source, Source::Search) {
+                if recognized_grouping {
+                    "no_applicable_grouping"
+                } else if matches!(request.tool.source, Source::Search) {
                     "parse_failed"
                 } else {
                     "source_not_applicable"

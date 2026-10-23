@@ -162,6 +162,39 @@ fn explicit_methods_override_protection_without_substitution() {
 }
 
 #[test]
+fn explicit_grouping_without_candidates_keeps_selected_methods_diagnostic() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let processor = Processor::new(home.path());
+    for methods in [
+        json!("search_hit_groups"),
+        json!("path_prefix_groups"),
+        json!(["search_hit_groups", "path_prefix_groups"]),
+    ] {
+        config(
+            project.path(),
+            json!([{"match": {}, "compression": methods}]),
+        );
+        for text in ["src/a.rs:1:hit\n", "a/one.rs\na/two.rs\n", "invalid record"] {
+            let mut input = request(project.path());
+            input.tool.source = Source::Search;
+            input.text = text.into();
+            let response = processor.process(input);
+            assert_eq!(response.disposition, Disposition::NoMatch);
+            assert_eq!(
+                response.reason.as_deref(),
+                Some("selected_methods_not_applicable")
+            );
+            assert_eq!(response.text, text);
+            assert!(response.candidates.is_empty());
+            assert!(response.applied_rule.is_none());
+            assert!(response.original_path.is_none());
+        }
+    }
+    assert!(!home.path().join(".outrim/outputs").exists());
+}
+
+#[test]
 fn nearest_project_does_not_merge_ancestors_and_invalid_files_fail_open() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
